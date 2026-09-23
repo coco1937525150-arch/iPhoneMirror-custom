@@ -3,7 +3,7 @@ name: Build custom Windows x64 artifact
 on:
   workflow_dispatch:
   push:
-    branches: ['**']
+    branches: [main]
 
 permissions:
   contents: read
@@ -43,14 +43,14 @@ jobs:
             mingw-w64-ucrt-x86_64-libplist
             mingw-w64-ucrt-x86_64-openssl
 
-      - name: Restore pinned AirPlay runtime binaries
+      - name: Restore binary runtime files omitted from source archive
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $destinationRoot = Join-Path $PWD 'third_party\airplay-server\bin\x64'
-          New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
 
-          $files = @(
+          $airPlayRoot = Join-Path $PWD 'third_party\airplay-server\bin\x64'
+          New-Item -ItemType Directory -Force -Path $airPlayRoot | Out-Null
+          $airPlayFiles = @(
             'airplay2dll.dll',
             'avcodec-58.dll',
             'avutil-56.dll',
@@ -58,9 +58,9 @@ jobs:
             'swresample-3.dll',
             'swscale-5.dll'
           )
-          foreach ($name in $files) {
+          foreach ($name in $airPlayFiles) {
             $url = "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/main/third_party/airplay-server/bin/x64/$name"
-            $destination = Join-Path $destinationRoot $name
+            $destination = Join-Path $airPlayRoot $name
             Write-Host "Downloading $name"
             & curl.exe -L --fail --retry 3 --retry-delay 2 --output $destination $url
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $destination -PathType Leaf)) {
@@ -75,11 +75,25 @@ jobs:
             }
             $expected = $Matches[1].ToLowerInvariant()
             $name = $Matches[2]
-            $path = Join-Path $destinationRoot $name
+            $path = Join-Path $airPlayRoot $name
             $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -ne $expected) {
               throw "AirPlay runtime hash mismatch for $name"
             }
+          }
+
+          $libUsbRoot = Join-Path $PWD 'third_party\libusb\bin\x64'
+          New-Item -ItemType Directory -Force -Path $libUsbRoot | Out-Null
+          $libUsbDestination = Join-Path $libUsbRoot 'libusb-1.0.dll'
+          $libUsbUrl = 'https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/main/third_party/libusb/bin/x64/libusb-1.0.dll'
+          & curl.exe -L --fail --retry 3 --retry-delay 2 --output $libUsbDestination $libUsbUrl
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libUsbDestination -PathType Leaf)) {
+            throw 'Could not restore libusb-1.0.dll'
+          }
+          $expectedLibUsbHash = '4c3c67ecf36270bfb796a5cbc4b3bf6931c0900c2fcbf12ebd808bd4c464b407'
+          $actualLibUsbHash = (Get-FileHash -LiteralPath $libUsbDestination -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualLibUsbHash -ne $expectedLibUsbHash) {
+            throw "libusb-1.0.dll hash mismatch: $actualLibUsbHash"
           }
 
       - name: Build Release
