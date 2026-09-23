@@ -1179,7 +1179,7 @@ internal sealed class NativePreviewWindow : IDisposable
 
         var sourceWidth = (_rotation & 1) == 0 ? _sourceWidth : _sourceHeight;
         var sourceHeight = (_rotation & 1) == 0 ? _sourceHeight : _sourceWidth;
-        _pointerInput(new PreviewPointerEventArgs(kind, x, y, button, wheel,
+        _pointerInput(new PreviewPointerEventArgs(kind, (short)x, (short)y, button, wheel,
             screen.Width, screen.Height, sourceWidth, sourceHeight, _rotation));
     }
 
