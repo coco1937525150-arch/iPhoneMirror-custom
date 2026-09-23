@@ -1226,6 +1226,15 @@
                                     <TextBlock Text="{DynamicResource BluetoothControlLabel}" Margin="6,0,0,0"/>
                                 </StackPanel>
                             </Button>
+                            <Button Command="{Binding ToggleScreenCurtainCommand}"
+                                    Style="{StaticResource PreviewToolButton}"
+                                    ToolTip="{DynamicResource ScreenCurtainTooltip}"
+                                    AutomationProperties.AutomationId="ScreenCurtainButton">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="◐" FontSize="16" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{DynamicResource ScreenCurtainButton}" Margin="6,0,0,0"/>
+                                </StackPanel>
+                            </Button>
                             <Button x:Name="QuickMediaOutputButton"
                                     Click="OnMediaOutputToolbarClick"
                                     Style="{StaticResource PreviewToolButton}"

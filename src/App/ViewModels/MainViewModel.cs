@@ -325,6 +325,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     public RelayCommand StartBluetoothControlCommand { get; }
     public RelayCommand StopBluetoothControlCommand { get; }
     public RelayCommand ToggleBluetoothControlCommand { get; }
+    public RelayCommand ToggleScreenCurtainCommand { get; }
     public RelayCommand ToggleUsbControlCommand { get; }
     public string BluetoothControlStatus => _bluetoothControlStatus;
     public bool IsBluetoothControlEnabled => _bluetoothControlEnabled;
@@ -339,6 +340,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     public bool CanToggleBluetoothControl => !_bluetoothControlStarting &&
         !_bluetoothControlStopping &&
         (_bluetoothControlEnabled || CanEnableBluetoothControlFor(SelectedDevice?.Udid));
+    public bool CanToggleScreenCurtain => BluetoothControlIsInputEnabled;
     public string BluetoothControlActionText => LocalizationService.Get(
         _bluetoothControlEnabled && _bluetoothControlInputEnabled
             ? "StopBluetoothControl" : "StartBluetoothControl");
@@ -1198,6 +1200,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             () => CanStopBluetoothControl);
         ToggleBluetoothControlCommand = new RelayCommand(
             () => _ = ToggleBluetoothControlAsync(), () => CanToggleBluetoothControl);
+        ToggleScreenCurtainCommand = new RelayCommand(
+            () => _ = ToggleScreenCurtainAsync(), () => CanToggleScreenCurtain);
         ToggleUsbControlCommand = new RelayCommand(
             () => _ = ToggleUsbControlAsync(), () => CanToggleUsbControl);
         BluetoothControlNoticeWindow.ActiveNoticeClosed += OnBluetoothControlNoticeClosed;
@@ -1227,9 +1231,11 @@ internal sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(CanStartBluetoothControl));
                 OnPropertyChanged(nameof(CanStopBluetoothControl));
                 OnPropertyChanged(nameof(CanToggleBluetoothControl));
+                OnPropertyChanged(nameof(CanToggleScreenCurtain));
                 StartBluetoothControlCommand.NotifyCanExecuteChanged();
                 StopBluetoothControlCommand.NotifyCanExecuteChanged();
                 ToggleBluetoothControlCommand.NotifyCanExecuteChanged();
+                ToggleScreenCurtainCommand.NotifyCanExecuteChanged();
                 if (_bluetoothControlEnabled)
                     _ = EnsureBluetoothControlBindingAsync();
             }
@@ -2734,10 +2740,12 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CanStartBluetoothControl));
         OnPropertyChanged(nameof(CanStopBluetoothControl));
         OnPropertyChanged(nameof(CanToggleBluetoothControl));
+        OnPropertyChanged(nameof(CanToggleScreenCurtain));
         OnPropertyChanged(nameof(BluetoothControlActionText));
         StartBluetoothControlCommand.NotifyCanExecuteChanged();
         StopBluetoothControlCommand.NotifyCanExecuteChanged();
         ToggleBluetoothControlCommand.NotifyCanExecuteChanged();
+        ToggleScreenCurtainCommand.NotifyCanExecuteChanged();
     }
 
     private void OnBluetoothControlNoticeClosed(object? sender, EventArgs e)
@@ -2764,6 +2772,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             ("device", AppLog.Device(_bluetoothControlDeviceUdid)),
             ("connected", _bluetoothControlConnected)));
         OnPropertyChanged(nameof(BluetoothControlIsInputEnabled));
+        OnPropertyChanged(nameof(CanToggleScreenCurtain));
+        ToggleScreenCurtainCommand.NotifyCanExecuteChanged();
     }
 
     private void ResetBluetoothControlInputState()
@@ -2771,6 +2781,30 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         _bluetoothControlInputEnabled = false;
         _bluetoothControlNoticePending = false;
         _bluetoothControlDeviceUdid = null;
+    }
+
+    private async Task ToggleScreenCurtainAsync()
+    {
+        if (!CanToggleScreenCurtain) return;
+        try
+        {
+            AddDiagnosticLog(AppLog.Event("screen_curtain_toggle_begin",
+                ("device", AppLog.Device(_bluetoothControlDeviceUdid)),
+                ("transport", "bluetooth_hid")));
+            await _bluetoothControl.ToggleIphoneScreenCurtainAsync();
+            AddUiLog(LocalizationService.Get("ScreenCurtainToggleSent"));
+            AddDiagnosticLog(AppLog.Event("screen_curtain_toggle_sent",
+                ("device", AppLog.Device(_bluetoothControlDeviceUdid)),
+                ("shortcut", "VO+Globe+Hyphen")));
+        }
+        catch (Exception error)
+        {
+            AddUiLog(LocalizationService.Format("ScreenCurtainToggleFailedFormat",
+                error.Message));
+            AddDiagnosticLog(AppLog.Event("screen_curtain_toggle_failed",
+                ("device", AppLog.Device(_bluetoothControlDeviceUdid)),
+                ("error", AppLog.Error(error))));
+        }
     }
 
     internal async Task ToggleBluetoothControlAsync()

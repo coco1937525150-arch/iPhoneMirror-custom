@@ -642,6 +642,40 @@ internal sealed class BluetoothHidMouseService : IAsyncDisposable
         await SendNavigationControlAsync(NavigationMenu).ConfigureAwait(false);
     }
 
+    internal async Task ToggleIphoneScreenCurtainAsync()
+    {
+        if (!IsConnected)
+            throw new IOException("The selected Bluetooth HID client is not connected.");
+
+        // Current iPhone VoiceOver external-keyboard command:
+        // VO-Globe-Hyphen, where VO is Control+Option by default.
+        // Keep Globe/Fn and the keyboard chord overlapped for the whole press.
+        const byte leftControlAndOption = 0x01 | 0x04;
+        const byte keyboardHyphen = 0x2D;
+        Exception? failure = null;
+        try
+        {
+            var globePressed = SendConsumerAsync(GlobeKeyboardLayoutUsage);
+            var keyPressed = SendKeyboardAsync(leftControlAndOption, [keyboardHyphen]);
+            await Task.WhenAll(globePressed, keyPressed).ConfigureAwait(false);
+            await Task.Delay(45).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            failure = error;
+        }
+
+        try
+        {
+            var keyReleased = SendKeyboardAsync(0, []);
+            var globeReleased = SendConsumerAsync(0);
+            await Task.WhenAll(keyReleased, globeReleased).ConfigureAwait(false);
+        }
+        catch (Exception error) { failure ??= error; }
+
+        if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
     private async Task SendNavigationControlAsync(ushort controls)
     {
         Exception? failure = null;

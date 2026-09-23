@@ -64,6 +64,10 @@
     <system:String x:Key="WirelessControlLabel">Wireless control</system:String>
     <system:String x:Key="WiredControlLabel">Wired control</system:String>
     <system:String x:Key="BluetoothControlLabel">Bluetooth control</system:String>
+    <system:String x:Key="ScreenCurtainButton">Screen Curtain</system:String>
+    <system:String x:Key="ScreenCurtainTooltip">Experimental: sends the iPhone VoiceOver Screen Curtain shortcut over Bluetooth HID. VoiceOver must already be enabled. Click again to restore the phone display, and verify mirroring continues on the PC.</system:String>
+    <system:String x:Key="ScreenCurtainToggleSent">Screen Curtain toggle sent. Verify the iPhone display is black while PC mirroring continues; click again to restore the phone display.</system:String>
+    <system:String x:Key="ScreenCurtainToggleFailedFormat">Screen Curtain toggle failed: {0}</system:String>
     <system:String x:Key="WiredControlEnable">Enable wired control</system:String>
     <system:String x:Key="WiredControlDisable">Disable wired control</system:String>
     <system:String x:Key="WirelessControlEnable">Enable wireless control</system:String>

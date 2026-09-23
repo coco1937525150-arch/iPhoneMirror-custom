@@ -64,6 +64,10 @@
     <system:String x:Key="WirelessControlLabel">無線控制</system:String>
     <system:String x:Key="WiredControlLabel">有線控制</system:String>
     <system:String x:Key="BluetoothControlLabel">藍牙控制</system:String>
+    <system:String x:Key="ScreenCurtainButton">手機黑屏</system:String>
+    <system:String x:Key="ScreenCurtainTooltip">實驗功能：透過藍牙 HID 向 iPhone 傳送「旁白」幕簾螢幕快捷鍵。需先在 iPhone 開啟「旁白」；再次按下可恢復顯示。請確認電腦投影仍持續。</system:String>
+    <system:String x:Key="ScreenCurtainToggleSent">已傳送幕簾螢幕切換命令。請確認手機螢幕變黑且電腦投影仍保持；再次按下可恢復手機顯示。</system:String>
+    <system:String x:Key="ScreenCurtainToggleFailedFormat">幕簾螢幕切換失敗：{0}</system:String>
     <system:String x:Key="WiredControlEnable">啟用有線控制</system:String>
     <system:String x:Key="WiredControlDisable">關閉有線控制</system:String>
     <system:String x:Key="WirelessControlEnable">啟用無線控制</system:String>

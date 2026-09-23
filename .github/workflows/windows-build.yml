@@ -60,6 +60,50 @@ jobs:
             mingw-w64-ucrt-x86_64-libplist
             mingw-w64-ucrt-x86_64-openssl
 
+      - name: Restore pinned runtime files omitted from source checkout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $upstreamCommit = '0e26a3f6b5079001d8920e552c329b2e6c97013e'
+
+          $airPlayRoot = Join-Path $PWD 'third_party\airplay-server\bin\x64'
+          New-Item -ItemType Directory -Force -Path $airPlayRoot | Out-Null
+          foreach ($name in @(
+            'airplay2dll.dll',
+            'avcodec-58.dll',
+            'avutil-56.dll',
+            'dnssd.dll',
+            'swresample-3.dll',
+            'swscale-5.dll'
+          )) {
+            $url = "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/$upstreamCommit/third_party/airplay-server/bin/x64/$name"
+            $destination = Join-Path $airPlayRoot $name
+            & curl.exe -L --fail --retry 3 --retry-delay 2 --output $destination $url
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+              throw "Could not restore AirPlay runtime file: $name"
+            }
+          }
+
+          $manifest = Join-Path $PWD 'third_party\airplay-server\SHA256SUMS.txt'
+          foreach ($line in Get-Content -LiteralPath $manifest) {
+            if ($line -notmatch '^([0-9a-fA-F]{64})\s{2}bin/x64/(.+)$') {
+              throw "Invalid AirPlay runtime manifest entry: $line"
+            }
+            $expected = $Matches[1].ToLowerInvariant()
+            $path = Join-Path $airPlayRoot $Matches[2]
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) { throw "AirPlay runtime hash mismatch: $($Matches[2])" }
+          }
+
+          $libUsbRoot = Join-Path $PWD 'third_party\libusb\bin\x64'
+          New-Item -ItemType Directory -Force -Path $libUsbRoot | Out-Null
+          $libUsbDestination = Join-Path $libUsbRoot 'libusb-1.0.dll'
+          $libUsbUrl = "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/$upstreamCommit/third_party/libusb/bin/x64/libusb-1.0.dll"
+          & curl.exe -L --fail --retry 3 --retry-delay 2 --output $libUsbDestination $libUsbUrl
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libUsbDestination -PathType Leaf)) {
+            throw 'Could not restore libusb-1.0.dll'
+          }
+
       - name: Verify Simplified Chinese and English resources
         shell: pwsh
         run: ./scripts/verify_localization.ps1
