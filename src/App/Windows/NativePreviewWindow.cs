@@ -1154,8 +1154,8 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (_pointerInput is null || !GetClientRect(_handle, out var rect)) return;
         var packed = lParam.ToInt64();
-        var x = unchecked((short)(packed & 0xFFFF));
-        var y = unchecked((short)((packed >> 16) & 0xFFFF));
+        var x = (int)unchecked((short)(packed & 0xFFFF));
+        var y = (int)unchecked((short)((packed >> 16) & 0xFFFF));
         var clientWidth = Math.Max(1, rect.Right - rect.Left);
         var clientHeight = Math.Max(1, rect.Bottom - rect.Top);
         var screen = _isFullScreen
