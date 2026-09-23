@@ -52,7 +52,7 @@ jobs:
         run: Compress-Archive -Path outputs/iPhoneMirror/* -DestinationPath iPhoneMirror-custom-win-x64.zip -Force
 
       - name: Upload portable build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iPhoneMirror-custom-win-x64
           path: iPhoneMirror-custom-win-x64.zip
