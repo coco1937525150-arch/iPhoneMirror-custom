@@ -13,7 +13,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up .NET 10 SDK
         uses: actions/setup-dotnet@v5
