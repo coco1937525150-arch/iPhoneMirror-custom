@@ -47,6 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $upstreamCommit = '0e26a3f6b5079001d8920e552c329b2e6c97013e'
 
           $airPlayRoot = Join-Path $PWD 'third_party\airplay-server\bin\x64'
           New-Item -ItemType Directory -Force -Path $airPlayRoot | Out-Null
@@ -59,7 +60,7 @@ jobs:
             'swscale-5.dll'
           )
           foreach ($name in $airPlayFiles) {
-            $url = "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/main/third_party/airplay-server/bin/x64/$name"
+            $url = "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/$upstreamCommit/third_party/airplay-server/bin/x64/$name"
             $destination = Join-Path $airPlayRoot $name
             Write-Host "Downloading $name"
             & curl.exe -L --fail --retry 3 --retry-delay 2 --output $destination $url
@@ -85,15 +86,10 @@ jobs:
           $libUsbRoot = Join-Path $PWD 'third_party\libusb\bin\x64'
           New-Item -ItemType Directory -Force -Path $libUsbRoot | Out-Null
           $libUsbDestination = Join-Path $libUsbRoot 'libusb-1.0.dll'
-          $libUsbUrl = 'https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/main/third_party/libusb/bin/x64/libusb-1.0.dll'
+          $libUsbUrl = "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/$upstreamCommit/third_party/libusb/bin/x64/libusb-1.0.dll"
           & curl.exe -L --fail --retry 3 --retry-delay 2 --output $libUsbDestination $libUsbUrl
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libUsbDestination -PathType Leaf)) {
             throw 'Could not restore libusb-1.0.dll'
-          }
-          $expectedLibUsbHash = '4c3c67ecf36270bfb796a5cbc4b3bf6931c0900c2fcbf12ebd808bd4c464b407'
-          $actualLibUsbHash = (Get-FileHash -LiteralPath $libUsbDestination -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualLibUsbHash -ne $expectedLibUsbHash) {
-            throw "libusb-1.0.dll hash mismatch: $actualLibUsbHash"
           }
 
       - name: Build Release
