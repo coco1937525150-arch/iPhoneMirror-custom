@@ -1,0 +1,60 @@
+name: Build custom Windows x64 artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Set up MSYS2 UCRT64 for UxPlay
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-libav
+            mingw-w64-ucrt-x86_64-libplist
+            mingw-w64-ucrt-x86_64-openssl
+
+      - name: Build Release
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release -SkipTests
+
+      - name: Package portable build
+        shell: pwsh
+        run: Compress-Archive -Path outputs/iPhoneMirror/* -DestinationPath iPhoneMirror-custom-win-x64.zip -Force
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneMirror-custom-win-x64
+          path: iPhoneMirror-custom-win-x64.zip
+          if-no-files-found: error
+          retention-days: 14
