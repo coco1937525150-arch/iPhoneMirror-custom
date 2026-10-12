@@ -143,6 +143,7 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly Action<nint>? _requestWirelessControl;
     private readonly Action<string>? _logDiagnostic;
     private ulong _sessionHandle;
+    private readonly string _windowTitle;
     private readonly double _cornerRadius;
     private readonly double _cornerExponent;
     private DeviceFrameProfile _deviceFrameProfile;
@@ -315,6 +316,7 @@ internal sealed class NativePreviewWindow : IDisposable
         _contextMenu.Items.Add(_closeItem);
         UpdateContextMenuLabels();
         var windowTitle = string.IsNullOrWhiteSpace(title) ? StableTitle : title;
+        _windowTitle = windowTitle;
         var parameters = new HwndSourceParameters(windowTitle)
         {
             Width = 720,
@@ -405,6 +407,19 @@ internal sealed class NativePreviewWindow : IDisposable
         (_rotation & 1) == 0
             ? (_sourceWidth, _sourceHeight, _rotation)
             : (_sourceHeight, _sourceWidth, _rotation);
+
+    internal void SetWaitingForWirelessReconnect(bool waiting)
+    {
+        if (_disposed || _handle == 0 || _managedContent is not null) return;
+        // Never present a stale frame as a live iPhone feed. The native session
+        // is already gone; only the user's window geometry is retained.
+        var title = waiting
+            ? _windowTitle + " · " + LocalizationService.Get("StatusWaitingDevice")
+            : _windowTitle;
+        _ = SetWindowTextW(_handle, title);
+        Log("independent_window_wireless_reconnect_wait",
+            ("waiting", waiting), ("mode", WindowMode));
+    }
 
     internal bool RebindSession(ulong sessionHandle)
     {
