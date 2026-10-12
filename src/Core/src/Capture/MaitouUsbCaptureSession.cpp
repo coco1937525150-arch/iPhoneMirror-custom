@@ -387,6 +387,13 @@ void MaitouUsbCaptureSession::start() try {
             "Maitou USB capture rejected startup: {}",
             std::string(reason.begin(), reason.end())));
     }
+    const auto initial_state = extract_json_string(reply, "state");
+    if (initial_state == L"DriverRequired" || initial_state == L"Error") {
+        const auto reason = extract_json_string(reply, "errorCode");
+        throw std::runtime_error(std::format(
+            "Maitou USB host refused the selected Windows driver: {}",
+            std::string(reason.begin(), reason.end())));
+    }
     set_status(State::ActivatingUsb, L"Maitou USB capture: connecting");
     reader_ = std::jthread([this](std::stop_token stop) { read_loop(stop); });
     logging::write("usb_capture_backend=maitou_external_v3");
@@ -405,6 +412,7 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
         auto last_frame = started;
         auto fps_start = started;
         std::uint32_t recent_frames{};
+        bool source_unavailable{};
         while (!stop.stop_requested()) {
             if (WaitForSingleObject(process_, 0) == WAIT_OBJECT_0) {
                 fail(FailureKind::ChildProcessExited, FailureStage::VideoStream,
@@ -421,14 +429,30 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
                     break;
                 }
                 const auto state = extract_json_string(status_reply, "state");
+                source_unavailable = state == L"NoDevice" ||
+                    state == L"DeviceDisconnected" ||
+                    state == L"Recovering" || state == L"TrustRequired";
+                if (source_unavailable) {
+                    // Never keep the previous phone's image published while
+                    // iOS is disconnected or waiting for trust. Maitou keeps
+                    // its own auto-reconnect worker armed; we only pause.
+                    std::scoped_lock lock(mutex_);
+                    latest_.reset();
+                    consumed_sequence_ = published_sequence_;
+                    status_.width = status_.height = 0;
+                    status_.fps = 0;
+                    status_.state = State::WaitingForDevice;
+                    status_.message = state == L"TrustRequired"
+                        ? L"Unlock iPhone and trust this computer"
+                        : L"USB disconnected; waiting for iPhone reconnect";
+                    last_frame = now;
+                }
                 if (state == L"DriverRequired") {
                     fail(FailureKind::Driver, FailureStage::UsbPreflight,
                         L"Maitou requires an approved libusb0/Apple USB driver. No driver was modified.");
                     break;
                 }
-                if (state == L"TrustRequired")
-                    set_status(State::WaitingForDevice, L"Unlock iPhone and trust this computer");
-                else if (state == L"Error") {
+                if (state == L"Error") {
                     fail(FailureKind::UsbConnection, FailureStage::UsbActivation,
                         L"Maitou USB error: " + extract_json_string(status_reply, "errorCode"));
                     break;
@@ -456,12 +480,12 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
                 recent_frames = 0;
                 fps_start = now;
             }
-            if (now - started > 30s && !latest_frame()) {
+            if (!source_unavailable && now - started > 30s && !latest_frame()) {
                 fail(FailureKind::NoVideoFrames, FailureStage::VideoStream,
                     L"Maitou USB did not deliver a decoded frame within 30 seconds");
                 break;
             }
-            if (latest_frame() && now - last_frame > 12s) {
+            if (!source_unavailable && latest_frame() && now - last_frame > 12s) {
                 fail(FailureKind::NoVideoFrames, FailureStage::VideoStream,
                     L"Maitou USB stopped publishing video frames");
                 break;
@@ -477,6 +501,9 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
 void MaitouUsbCaptureSession::stop() noexcept {
     if (reader_.joinable()) {
         reader_.request_stop();
+        // Polling uses synchronous named-pipe I/O. Request cancellation to
+        // avoid waiting indefinitely for GetStatus on disconnect or shutdown.
+        (void)CancelSynchronousIo(reader_.native_handle());
         reader_.join();
     }
     if (pipe_ && pipe_ != INVALID_HANDLE_VALUE) {
