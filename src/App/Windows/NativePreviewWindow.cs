@@ -450,8 +450,10 @@ internal sealed class NativePreviewWindow : IDisposable
         _ = NativeCore.SetDeviceWindowCornerProfile(sessionHandle, _handle,
             _cornersEnabled ? _cornerRadius : 0, _cornerExponent);
         ApplyDeviceFrameProfile();
-        if (_rotation != 0)
-            _ = NativeCore.SetDeviceWindowRotation(sessionHandle, _handle, _rotation);
+        if (_rotation != 0 &&
+            !NativeCore.SetDeviceWindowRotation(sessionHandle, _handle, _rotation))
+            Log("independent_window_rotation_rebind_failed",
+                ("quarter_turns", _rotation));
         Log("independent_window_rebound",
             ("mode", WindowMode), ("old_handle", AppLog.Handle(previousHandle)),
             ("new_handle", AppLog.Handle(sessionHandle)));
@@ -1320,13 +1322,23 @@ internal sealed class NativePreviewWindow : IDisposable
 
     private void Rotate(int delta)
     {
-        if (_handle == 0) return;
-        _rotation = ((_rotation + delta) % 4 + 4) % 4;
+        if (_disposed || _handle == 0) return;
+        var targetRotation = ((_rotation + delta) % 4 + 4) % 4;
+        // Never rotate the decorative shell if the video renderer rejected
+        // the same rotation. Both layers must share one committed state.
+        if (_managedContent is null && _sessionHandle != 0 &&
+            !NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, targetRotation))
+        {
+            Log("independent_window_rotation_rejected",
+                ("mode", WindowMode), ("quarter_turns", targetRotation));
+            return;
+        }
+        _rotation = targetRotation;
         if (_managedContent is not null)
             _managedContent.LayoutTransform = new RotateTransform(_rotation * 90);
-        else if (_sessionHandle != 0)
-            _ = NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, _rotation);
         ApplyRotatedDimensions();
+        if (_managedContent is null && _sessionHandle != 0)
+            _ = _refreshPreview(_handle);
         Log("independent_window_rotation",
             ("mode", WindowMode), ("quarter_turns", _rotation));
     }
