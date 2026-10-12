@@ -2098,6 +2098,27 @@ try
     Equal(false, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
             bridgeRuntimeExecutable, out bridgeRuntimeFailure),
         "USB touch bridge runtime rejects path traversal entries");
+    File.WriteAllText(Path.Combine(bridgeRuntimeTestRoot,
+        "iUsbBridge.runtime.json"), JsonSerializer.Serialize(new
+    {
+        schema = 2,
+        backend = "idevice",
+        files = new[]
+        {
+            new {
+                path = "iUsbBridge.exe",
+                sha256 = Convert.ToHexString(SHA256.HashData(
+                    File.ReadAllBytes(bridgeRuntimeExecutable))).ToLowerInvariant(),
+            },
+        },
+    }));
+    Equal(true, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
+            bridgeRuntimeExecutable, out bridgeRuntimeFailure),
+        "Rust single-file bridge schema-2 manifest validates");
+    File.AppendAllText(bridgeRuntimeExecutable, "-tampered");
+    Equal(false, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
+            bridgeRuntimeExecutable, out bridgeRuntimeFailure),
+        "tampering Rust bridge executable fails integrity check");
 }
 finally
 {
