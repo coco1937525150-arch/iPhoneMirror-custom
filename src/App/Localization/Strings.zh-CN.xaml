@@ -639,6 +639,7 @@
     <system:String x:Key="WirelessOriginalQualityWarningBody">原画模式在部分设备或网络环境下可能出现画面停帧。建议优先使用 1080p；如仍需原画，请确保局域网稳定，并从 iPhone“控制中心” → “屏幕镜像”连接。</system:String>
     <system:String x:Key="WirelessServiceAlwaysOn">常驻</system:String>
     <system:String x:Key="WirelessConnected">AirPlay 已连接</system:String>
+    <system:String x:Key="WirelessDisconnectedWaiting">AirPlay 已断开 · 等待重新连接</system:String>
     <system:String x:Key="WirelessLocalNetwork">本地网络</system:String>
     <system:String x:Key="WirelessReady">AirPlay 接收端已就绪</system:String>
     <system:String x:Key="WirelessStarting">正在启动 AirPlay 接收端...</system:String>
