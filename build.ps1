@@ -352,7 +352,7 @@ try {
             throw "Visual C++ runtime preparation script is missing: $PrepareVcRuntime"
         }
         & $PrepareVcRuntime -DestinationDirectory $AppNative `
-            -AdditionalDestinationDirectories $AppWireless | Out-Host
+            -AdditionalDestinationDirectories @($AppWireless, $MaitouVideoOutput) | Out-Host
     }
 
     if (-not $SkipTests) {
@@ -464,6 +464,9 @@ try {
             'CHANGELOG.md',
             'DRIVER_DEPENDENCIES.md',
             'tools\MaitouUsbCapture\Maitou.CaptureHost.exe',
+            'tools\MaitouUsbCapture\msvcp140.dll',
+            'tools\MaitouUsbCapture\vcruntime140.dll',
+            'tools\MaitouUsbCapture\vcruntime140_1.dll',
             'tools\MaitouUsbCapture\USB-ReadOnly-Diagnostics.cmd',
             'tools\MaitouUsbCapture\Maitou.DeviceSetup.exe',
             'tools\MaitouUsbCapture\libusb0.dll',
