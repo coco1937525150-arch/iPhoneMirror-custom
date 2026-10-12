@@ -1085,8 +1085,19 @@
                                                    FontSize="11" Margin="0,3,0,0"/>
                                         <TextBlock Text="{Binding OsDisplay}" Foreground="{DynamicResource MutedTextBrush}"
                                                    FontSize="11"/>
-                                        <TextBlock Text="{Binding StatusDisplay}" Foreground="{DynamicResource SuccessBrush}"
-                                                   FontSize="10" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding StatusDisplay}"
+                                                   FontSize="10" Margin="0,5,0,0" TextWrapping="Wrap">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsWirelessOffline}" Value="True">
+                                                            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                     </StackPanel>
                                 </Grid>
                             </DataTemplate>
