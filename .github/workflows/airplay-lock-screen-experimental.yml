@@ -3,10 +3,16 @@ name: Experimental AirPlay lock-screen transport
 on:
   workflow_dispatch:
   push:
-    branches: [feature/airplay-idle-rotation-smooth-zoom]
+    branches:
+      - feature/airplay-idle-rotation-smooth-zoom
+      - feature/airplay-1080p60-wifi-touch-v1
     paths:
       - 'third_party/airplay-server/patches/Apply-AirPlayMirrorRecoveryPatch.ps1'
       - 'scripts/build_airplay_receiver.ps1'
+      - 'src/Core/src/Capture/WirelessReceiverHub.cpp'
+      - 'src/Core/src/Capture/WirelessReceiverHub.h'
+      - 'src/Core/tests/CoreTests.cpp'
+      - 'src/App/ViewModels/MainViewModel.cs'
       - '.github/workflows/airplay-lock-screen-experimental.yml'
 
 permissions:
@@ -115,7 +121,7 @@ jobs:
       - name: Upload experimental portable build (single extraction)
         uses: actions/upload-artifact@v4
         with:
-          name: iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL
+          name: ${{ github.ref_name == 'feature/airplay-1080p60-wifi-touch-v1' && 'iPhoneMirror-AirPlay-1080p60-WiFiTouch-EXPERIMENTAL' || 'iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL' }}
           path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14
