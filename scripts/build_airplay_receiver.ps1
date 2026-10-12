@@ -186,7 +186,7 @@ foreach ($Marker in @('IPHONE_MIRROR_AIRPLAY_WIDTH', 'IPHONE_MIRROR_AIRPLAY_HEIG
         'IPHONE_MIRROR_RUNTIME_DEVICE_ID',
         'IPHONE_MIRROR_BOUND_MEDIA_SOCKETS',
         'IPHONE_MIRROR_PRESERVE_IPV6_MEDIA',
-        'Mirror TCP read timed out after %d ms',
+        'Mirror TCP partial packet idle timeout after %d seconds',
         'iphonemirror://pause',
         'iphonemirror://resume',
         'iphonemirror://seek',
