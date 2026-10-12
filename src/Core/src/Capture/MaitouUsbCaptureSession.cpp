@@ -408,6 +408,7 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
         FrameReader input;
         std::uint64_t sequence{};
         const auto started = std::chrono::steady_clock::now();
+        auto first_frame_deadline_origin = started;
         auto last_status = started - 2s;
         auto last_frame = started;
         auto fps_start = started;
@@ -446,6 +447,10 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
                         ? L"Unlock iPhone and trust this computer"
                         : L"USB disconnected; waiting for iPhone reconnect";
                     last_frame = now;
+                    // Re-arm first-frame timeout on each reconnect instead
+                    // of immediately failing when the session has already
+                    // existed for more than thirty seconds.
+                    first_frame_deadline_origin = now;
                 }
                 if (state == L"DriverRequired") {
                     fail(FailureKind::Driver, FailureStage::UsbPreflight,
@@ -480,7 +485,8 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
                 recent_frames = 0;
                 fps_start = now;
             }
-            if (!source_unavailable && now - started > 30s && !latest_frame()) {
+            if (!source_unavailable &&
+                now - first_frame_deadline_origin > 30s && !latest_frame()) {
                 fail(FailureKind::NoVideoFrames, FailureStage::VideoStream,
                     L"Maitou USB did not deliver a decoded frame within 30 seconds");
                 break;
