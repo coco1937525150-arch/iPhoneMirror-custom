@@ -369,15 +369,14 @@ float4 frameMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARG
     if (frameEnabled < 0.5) return float4(0.0, 0.0, 0.0, 0.0);
     float alpha = roundedRectCoverage(position.xy,
         float4(0.0, 0.0, outputSize.x, outputSize.y), frameOuterRadius);
-    float2 normalized = saturate(position.xy / max(outputSize, float2(1.0, 1.0)));
-    float edgeLight = 0.018 * (1.0 - abs(normalized.x * 2.0 - 1.0));
-    float3 body = float3(0.045 + edgeLight, 0.046 + edgeLight, 0.050 + edgeLight);
-    // Keep the physical display black before the first decoded frame arrives.
-    // The real video pass is drawn immediately afterwards into this same
-    // rounded inner rectangle, leaving only the graphite hardware bezel visible.
+    // Use a transparent-front-frame look: thin graphite bezel and no camera
+    // artwork or duplicated Dynamic Island. Video is drawn in the inner rect.
     float screenCoverage = roundedRectCoverage(position.xy, screenRect,
         max(cornerRadius, min(screenRect.z, screenRect.w) * 0.035));
-    body = lerp(body, float3(0.0, 0.0, 0.0), screenCoverage);
+    float2 normalized = saturate(position.xy / max(outputSize, float2(1.0, 1.0)));
+    float edgeLight = 0.007 * (1.0 - abs(normalized.x * 2.0 - 1.0));
+    float3 graphite = float3(0.016 + edgeLight, 0.017 + edgeLight, 0.019 + edgeLight);
+    float3 body = graphite * (1.0 - screenCoverage);
     return float4(body * alpha, alpha);
 }
 
@@ -1056,14 +1055,16 @@ struct D3D11PreviewRenderer::Impl {
         // hit-test geometry and keeps video, shell and reverse control aligned.
         const auto client_width = static_cast<float>(target_width);
         const auto client_height = static_cast<float>(target_height);
-        const auto display_short_edge = client_width <= client_height
-            ? client_width / std::max(0.01F, 1.0F + side_ratio * 2.0F)
-            : client_height / std::max(0.01F, 1.0F + top_ratio + bottom_ratio);
-        const auto side = side_ratio * display_short_edge;
-        const auto top = top_ratio * display_short_edge;
-        const auto bottom = bottom_ratio * display_short_edge;
-        return {side, top,
-            std::max(1.0F, client_width - side * 2.0F),
+        const bool landscape = client_width > client_height;
+        const auto display_short_edge = (landscape ? client_height : client_width) /
+            std::max(0.01F, 1.0F + side_ratio * 2.0F);
+        // Match DeviceFrameProfile.GetScreenRect, including 90-degree rotation.
+        const auto left = (landscape ? top_ratio : side_ratio) * display_short_edge;
+        const auto right = (landscape ? bottom_ratio : side_ratio) * display_short_edge;
+        const auto top = (landscape ? side_ratio : top_ratio) * display_short_edge;
+        const auto bottom = (landscape ? side_ratio : bottom_ratio) * display_short_edge;
+        return {left, top,
+            std::max(1.0F, client_width - left - right),
             std::max(1.0F, client_height - top - bottom)};
     }
 
@@ -1640,7 +1641,7 @@ struct D3D11PreviewRenderer::Impl {
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
                 rounded, turns);
-            if (framed) draw_device_cutout(frame_profile);
+            // No synthetic island or notch over the real iOS video.
         } else {
             ensure_render_texture(limited_width, limited_height);
             context->OMSetRenderTargets(1, render_target.GetAddressOf(), nullptr);
@@ -1672,7 +1673,7 @@ struct D3D11PreviewRenderer::Impl {
             context->PSSetShaderResources(2, 1, &copy_view);
             context->Draw(3, 0);
             context->PSSetShaderResources(0, 3, empty);
-            if (framed) draw_device_cutout(frame_profile);
+            // Likewise leave the limited-render path's original pixels unobscured.
         }
         // The render loop applies the requested frame-rate cap. A nonblocking
         // flip presentation must not hold up the newest landscape frame when

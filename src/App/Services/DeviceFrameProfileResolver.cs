@@ -17,13 +17,16 @@ internal static class DeviceFrameProfileResolver
 
     internal static readonly DeviceFrameProfile IPhoneNotch = new(
         "iphone-notch", true,
-        0.036, 0.040, 0.040, 0.205,
-        DeviceCutoutKind.Notch, 0.535, 0.105, 0.000);
+        0.030, 0.034, 0.034, 0.162,
+        // Never overlay a second notch on the mirrored frame.
+        DeviceCutoutKind.None, 0, 0, 0);
 
     internal static readonly DeviceFrameProfile IPhoneDynamicIsland = new(
         "iphone-dynamic-island", true,
-        0.034, 0.038, 0.038, 0.205,
-        DeviceCutoutKind.DynamicIsland, 0.315, 0.092, 0.030);
+        // Thin front-frame proportions of iPhone 16 Pro Max.
+        0.027, 0.028, 0.028, 0.158,
+        // Dynamic Island is already part of the decoded iOS picture.
+        DeviceCutoutKind.None, 0, 0, 0);
 
     internal static readonly DeviceFrameProfile IPad = new(
         "ipad", true,

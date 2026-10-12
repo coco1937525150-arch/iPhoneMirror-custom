@@ -3706,12 +3706,15 @@ Equal(0, DeviceCornerProfile.Rectangular.GetGdiRadius(1206),
 Equal("iphone-dynamic-island",
     DeviceFrameProfileResolver.Resolve("iPhone18,3", 1206, 2622).Id,
     "modern iPhone receives a hardware shell with Dynamic Island");
-Equal(DeviceCutoutKind.DynamicIsland,
+Equal(DeviceCutoutKind.None,
     DeviceFrameProfileResolver.Resolve("iPhone18,3", 1206, 2622).CutoutKind,
-    "modern iPhone cutout is Dynamic Island");
-Equal(DeviceCutoutKind.Notch,
+    "the original iOS Dynamic Island must not be drawn twice");
+Equal(DeviceCutoutKind.None,
     DeviceFrameProfileResolver.Resolve("iPhone17,5", 1170, 2532).CutoutKind,
-    "iPhone 16e keeps a notch shell");
+    "the original iOS notch must not be drawn twice");
+Equal("iphone-dynamic-island",
+    DeviceFrameProfileResolver.Resolve("iPhone17,4", 1320, 2868).Id,
+    "iPhone 16 Pro Max model uses the thin front shell");
 Equal("iphone-home-button",
     DeviceFrameProfileResolver.Resolve("iPhone14,6", 750, 1334).Id,
     "iPhone SE receives a home-button body profile");
@@ -3731,6 +3734,16 @@ var nativeInner = DeviceFrameProfileResolver.IPhoneDynamicIsland
 Equal(true, Math.Abs(nativeInner.Width / (double)nativeInner.Height -
     1206.0 / 2622.0) < 0.001,
     "device shell inversion preserves the mirrored display aspect ratio");
+var landscapeOuter = DeviceFrameProfileResolver.IPhoneDynamicIsland
+    .GetOuterDimensions(2622, 1206);
+var landscapeScreen = DeviceFrameProfileResolver.IPhoneDynamicIsland
+    .GetScreenRect((int)landscapeOuter.Width, (int)landscapeOuter.Height);
+Equal(true, Math.Abs(landscapeScreen.Width / (double)landscapeScreen.Height -
+    2622.0 / 1206.0) < 0.002,
+    "landscape shell inverts to the original display aspect ratio");
+Equal(true, Math.Abs(landscapeOuter.Width - nativeOuter.Height) <= 1 &&
+    Math.Abs(landscapeOuter.Height - nativeOuter.Width) <= 1,
+    "rotating the physical bezel swaps the outer dimensions");
 
 Equal("iPhoneMirror AirPlay",
     WirelessReceiverConfiguration.SanitizeReceiverName("  iPhoneMirror AirPlay  "),

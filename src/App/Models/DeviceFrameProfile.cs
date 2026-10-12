@@ -33,8 +33,14 @@ internal readonly record struct DeviceFrameProfile(
             return (screenWidth, screenHeight);
 
         var shortEdge = Math.Min(screenWidth, screenHeight);
-        var horizontal = shortEdge * Math.Max(0, SideInsetRatio) * 2.0;
-        var vertical = shortEdge * (Math.Max(0, TopInsetRatio) + Math.Max(0, BottomInsetRatio));
+        // When the phone rotates, top/bottom bezels become left/right bezels.
+        var landscape = screenWidth > screenHeight;
+        var horizontal = shortEdge * (landscape
+            ? Math.Max(0, TopInsetRatio) + Math.Max(0, BottomInsetRatio)
+            : Math.Max(0, SideInsetRatio) * 2.0);
+        var vertical = shortEdge * (landscape
+            ? Math.Max(0, SideInsetRatio) * 2.0
+            : Math.Max(0, TopInsetRatio) + Math.Max(0, BottomInsetRatio));
         return (
             Math.Max(1, (uint)Math.Round(screenWidth + horizontal)),
             Math.Max(1, (uint)Math.Round(screenHeight + vertical)));
@@ -52,16 +58,18 @@ internal readonly record struct DeviceFrameProfile(
         var sideRatio = Math.Clamp(SideInsetRatio, 0, 0.30);
         var topRatio = Math.Clamp(TopInsetRatio, 0, 0.35);
         var bottomRatio = Math.Clamp(BottomInsetRatio, 0, 0.35);
-        double displayShortEdge;
-        if (clientWidth <= clientHeight)
-            displayShortEdge = clientWidth / Math.Max(0.01, 1.0 + sideRatio * 2.0);
-        else
-            displayShortEdge = clientHeight / Math.Max(0.01, 1.0 + topRatio + bottomRatio);
-
-        var left = (int)Math.Round(displayShortEdge * sideRatio);
-        var right = left;
-        var top = (int)Math.Round(displayShortEdge * topRatio);
-        var bottom = (int)Math.Round(displayShortEdge * bottomRatio);
+        var landscape = clientWidth > clientHeight;
+        // Inverse of GetOuterDimensions; matches D3D11's video viewport.
+        var displayShortEdge = (landscape ? clientHeight : clientWidth) /
+            Math.Max(0.01, 1.0 + sideRatio * 2.0);
+        var left = (int)Math.Round(displayShortEdge *
+            (landscape ? topRatio : sideRatio));
+        var right = (int)Math.Round(displayShortEdge *
+            (landscape ? bottomRatio : sideRatio));
+        var top = (int)Math.Round(displayShortEdge *
+            (landscape ? sideRatio : topRatio));
+        var bottom = (int)Math.Round(displayShortEdge *
+            (landscape ? sideRatio : bottomRatio));
         var width = Math.Max(1, clientWidth - left - right);
         var height = Math.Max(1, clientHeight - top - bottom);
         return new DeviceScreenRect(left, top, width, height);

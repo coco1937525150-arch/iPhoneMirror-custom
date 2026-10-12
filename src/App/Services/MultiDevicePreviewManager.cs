@@ -148,6 +148,9 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         var profile = DeviceCornerProfileResolver.Resolve(device.ProductType, 1206, 2622);
         var frameProfile = DeviceFrameProfileResolver.Resolve(device.ProductType, 1206, 2622);
         var cornerRadius = profile.IsRounded ? profile.RadiusRatio : 0;
+        // Avoid exaggerated black corner caps on detached iPhone previews.
+        if (frameProfile.Id == "iphone-dynamic-island")
+            cornerRadius = Math.Min(cornerRadius, 0.132);
         _ = Interop.NativeCore.SetDeviceCornerProfile(started.Handle,
             cornerRadius, profile.CurveExponent);
         if (!NativePreviewWindow.TryCreateAndShowForSession(started.Handle, 1206, 2622,
