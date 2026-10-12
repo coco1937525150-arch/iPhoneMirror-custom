@@ -354,6 +354,10 @@ void MaitouUsbCaptureSession::start() try {
     if (connected.size() > 1)
         throw std::runtime_error(
             "Maitou USB backend is single-device only; unplug extra iPhones before capture");
+    if (connected.size() == 1 &&
+        !device::is_apple_usb_parent_present(selected_udid_))
+        throw std::runtime_error(
+            "The selected iPhone no longer matches the connected physical USB device");
     bool expected = false;
     if (!usb_host_lease.compare_exchange_strong(expected, true,
             std::memory_order_acq_rel))
