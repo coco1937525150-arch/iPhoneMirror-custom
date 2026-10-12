@@ -1337,8 +1337,8 @@ internal sealed class NativePreviewWindow : IDisposable
         if (_managedContent is not null)
             _managedContent.LayoutTransform = new RotateTransform(_rotation * 90);
         ApplyRotatedDimensions();
-        if (_managedContent is null && _sessionHandle != 0)
-            _ = _refreshPreview(_handle);
+        // The native renderer refreshes its retained frame from set_rotation().
+        // Reattaching the HWND here could reset its rotation state.
         Log("independent_window_rotation",
             ("mode", WindowMode), ("quarter_turns", _rotation));
     }
