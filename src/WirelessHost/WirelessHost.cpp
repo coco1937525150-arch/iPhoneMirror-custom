@@ -814,6 +814,26 @@ public:
     // upstream log. AirPlayServer messages may contain local IPs and socket
     // identifiers, so never forward the original string to app diagnostics.
     static std::string_view transport_reason(std::string_view text) noexcept {
+        // Allowlisted transport trace: never forward raw upstream log fields,
+        // which may include IP addresses, device IDs or socket descriptors.
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=peer_eof_observed") != text.npos)
+            return "mirror_header_peer_eof_observed";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=eof_during_local_stop") != text.npos)
+            return "mirror_header_eof_during_local_stop";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=recv_error") != text.npos)
+            return "mirror_header_recv_error";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=worker_exception_stop") != text.npos)
+            return "mirror_worker_exception_stop";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=stop_requested") != text.npos)
+            return "mirror_stop_requested";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=rtsp_teardown_received") != text.npos)
+            return "control_rtsp_teardown_received";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=peer_eof_observed") != text.npos)
+            return "control_peer_eof_observed";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=recv_error") != text.npos)
+            return "control_recv_error";
+        if (text.find("Mirror TCP partial packet idle timeout") != text.npos)
+            return "mirror_partial_packet_timeout";
         if (text.find("Mirror TCP read timed out") != text.npos)
             return "mirror_partial_packet_timeout";
         if (text.find("Mirror TCP socket closed") != text.npos)
