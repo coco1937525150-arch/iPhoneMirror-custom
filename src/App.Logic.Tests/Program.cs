@@ -5161,6 +5161,44 @@ Equal("UDID-A", reloadedBindings.FindById(profileA.Id)!.WiredIdentity!.Udid,
 if (Directory.Exists(deviceBindingTestRoot))
     Directory.Delete(deviceBindingTestRoot, recursive: true);
 
+// A recently disconnected iPhone remains a *non-active* AirPlay card.
+var sourceInfo = new NativeDeviceInfo
+{
+    Udid = "airplay://test-device",
+    Name = "Test iPhone",
+    ProductType = "iPhone17,2",
+    OsVersion = "27.2",
+    ConnectionType = "AirPlay",
+    Status = string.Empty,
+    State = ConnectionState.Ready,
+};
+var wirelessCard = DeviceViewModel.FromNative(sourceInfo);
+Equal(false, wirelessCard.IsWirelessOffline,
+    "discovered AirPlay devices are not offline placeholders");
+var offlineCard = wirelessCard.AsWirelessOffline();
+Equal(true, offlineCard.IsWirelessOffline,
+    "offline AirPlay placeholder is distinct from live discovery");
+Equal(false, offlineCard.Ready,
+    "offline AirPlay placeholder cannot be marked ready");
+Equal(ConnectionState.Disconnected, offlineCard.State,
+    "offline AirPlay placeholder exposes disconnected state");
+Equal(true, wirelessCard.UpdateFrom(offlineCard),
+    "offline transition propagates to the existing UI card");
+Equal(true, wirelessCard.IsWirelessOffline,
+    "existing AirPlay card transitions to offline without losing its identity");
+Equal(true, wirelessCard.UpdateFrom(DeviceViewModel.FromNative(sourceInfo)),
+    "reconnected AirPlay device returns to online state");
+Equal(false, wirelessCard.IsWirelessOffline,
+    "reconnected AirPlay card is active again");
+Equal("Test iPhone", wirelessCard.Name,
+    "offline reconnect retains the original device name");
+var wiredCard = DeviceViewModel.FromNative(new NativeDeviceInfo
+{
+    Udid = "usb-device", Name = "Wired iPhone", State = ConnectionState.Ready,
+});
+Throws<InvalidOperationException>(() => wiredCard.AsWirelessOffline(),
+    "wired phones cannot be converted to AirPlay placeholders");
+
 var stallTracker = new WirelessStallRecoveryTracker();
 var stallStart = DateTimeOffset.UtcNow;
 static NativeCaptureStatus StreamingStatus(uint width = 1920, uint height = 1080,
