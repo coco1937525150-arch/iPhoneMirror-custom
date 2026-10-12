@@ -336,6 +336,20 @@ void MaitouUsbCaptureSession::start() try {
     const auto path = host_executable();
     if (!std::filesystem::is_regular_file(path))
         throw std::runtime_error("Maitou USB host missing; reinstall full portable build");
+    // Preview resources are named per Windows SID, not per iPhone. A
+    // separately launched Maitou instance could otherwise publish unrelated
+    // phone frames under the same shared DXGI name. Fail closed if its
+    // preview-state mapping already exists before our host is started.
+    const auto preview_name = L"Local\\Maitou.PreviewState.v2." + user_sid();
+    const auto foreign_preview = OpenFileMappingW(
+        FILE_MAP_READ, FALSE, preview_name.c_str());
+    if (foreign_preview) {
+        CloseHandle(foreign_preview);
+        throw std::runtime_error(
+            "Close other Maitou USB capture applications before starting iPhoneMirror");
+    }
+    if (GetLastError() != ERROR_FILE_NOT_FOUND)
+        throw std::runtime_error("Cannot verify exclusive Maitou preview ownership");
     const auto connected = device::discover_physical_apple_usb_devices();
     if (connected.size() > 1)
         throw std::runtime_error(
