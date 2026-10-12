@@ -1,4 +1,5 @@
 #include "Capture/MaitouUsbCaptureSession.h"
+#include "Device/AppleUsbDiscovery.h"
 #include "Logging.h"
 
 #include <Windows.h>
@@ -24,6 +25,10 @@ constexpr wchar_t PipeName[] = LR"(\\.\pipe\Maitou.CaptureHost.v3)";
 constexpr std::uint32_t PreviewMagic = 0x4D545054;
 constexpr std::uint32_t PreviewVersion = 2;
 constexpr UINT TextureExtent = 1600;
+// Upstream CaptureHost has one global v3 control pipe and one per-user DXGI
+// texture. A second concurrent USB session would read the *first* phone's
+// frames. Until the upstream IPC becomes device-scoped, fail closed instead.
+std::atomic_bool usb_host_lease{false};
 
 #pragma pack(push, 8)
 struct PreviewState {
@@ -325,12 +330,25 @@ void MaitouUsbCaptureSession::fail(FailureKind kind, FailureStage stage,
     status_.message = std::move(message);
 }
 
-void MaitouUsbCaptureSession::start() {
+void MaitouUsbCaptureSession::start() try {
     if (process_ || pipe_ || reader_.joinable())
         throw std::runtime_error("Maitou USB capture already active");
     const auto path = host_executable();
     if (!std::filesystem::is_regular_file(path))
         throw std::runtime_error("Maitou USB host missing; reinstall full portable build");
+    const auto connected = device::discover_physical_apple_usb_devices();
+    if (connected.size() > 1)
+        throw std::runtime_error(
+            "Maitou USB backend is single-device only; unplug extra iPhones before capture");
+    bool expected = false;
+    if (!usb_host_lease.compare_exchange_strong(expected, true,
+            std::memory_order_acq_rel))
+        throw std::runtime_error(
+            "Maitou USB video capture already active for another device");
+    owns_usb_host_lease_ = true;
+    logging::write(std::format(
+        "maitou_usb requested_device_fp={} physical_apple_candidates={}",
+        logging::fingerprint(selected_udid_), connected.size()));
     // CaptureHost verifies that the connecting pipe client's PID is exactly
     // this GUI's PID. Driver installation or filters are NEVER performed.
     auto args = std::format(L"\"{}\" --parent-pid {}", path.wstring(),
@@ -372,6 +390,9 @@ void MaitouUsbCaptureSession::start() {
     set_status(State::ActivatingUsb, L"Maitou USB capture: connecting");
     reader_ = std::jthread([this](std::stop_token stop) { read_loop(stop); });
     logging::write("usb_capture_backend=maitou_external_v3");
+} catch (...) {
+    stop();
+    throw;
 }
 
 void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
@@ -480,6 +501,10 @@ void MaitouUsbCaptureSession::stop() noexcept {
     status_ = Snapshot{};
     status_.state = State::Stopped;
     status_.message = L"Maitou USB stopped";
+    if (owns_usb_host_lease_) {
+        owns_usb_host_lease_ = false;
+        usb_host_lease.store(false, std::memory_order_release);
+    }
 }
 
 Snapshot MaitouUsbCaptureSession::snapshot() const {

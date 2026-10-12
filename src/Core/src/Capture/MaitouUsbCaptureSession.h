@@ -46,6 +46,7 @@ private:
     std::uint64_t consumed_sequence_{};
     HANDLE process_{};
     HANDLE pipe_{};
+    bool owns_usb_host_lease_{};
     std::jthread reader_;
     std::atomic_uint32_t fps_limit_{60};
     std::atomic_uint32_t requested_decoder_{0};
