@@ -482,7 +482,9 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
                 } else if (!latest_frame())
                     set_status(State::WaitingForDevice, L"Maitou USB: waiting for first video frame");
             }
-            if (input.attach(sid)) {
+            // Do not consume a stale shared GPU frame while the publisher
+            // reports a disconnected or untrusted phone.
+            if (!source_unavailable && input.attach(sid)) {
                 if (auto frame = input.read(sid, sequence)) {
                     std::scoped_lock lock(mutex_);
                     latest_ = frame;
