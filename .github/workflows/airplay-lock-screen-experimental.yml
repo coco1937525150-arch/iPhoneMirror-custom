@@ -6,6 +6,7 @@ on:
     branches: [feature/airplay-idle-rotation-smooth-zoom]
     paths:
       - 'third_party/airplay-server/patches/Apply-AirPlayMirrorRecoveryPatch.ps1'
+      - 'scripts/build_airplay_receiver.ps1'
       - '.github/workflows/airplay-lock-screen-experimental.yml'
 
 permissions:
