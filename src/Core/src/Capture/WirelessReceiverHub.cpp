@@ -381,7 +381,14 @@ void WirelessClientStream::detach() noexcept {
 
 Snapshot WirelessClientStream::snapshot() const {
     std::scoped_lock lock(mutex_);
-    return snapshot_;
+    auto status = snapshot_;
+    // The average rate from the last completed sample must not remain at
+    // "60 FPS" when the iPhone has paused screen capture or locked.
+    // Keep historic frame counters intact for recovery diagnostics.
+    if (connected_ && last_video_at_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - last_video_at_ > std::chrono::seconds(2))
+        status.fps = 0;
+    return status;
 }
 
 std::int64_t WirelessClientStream::latest_frame_timestamp() const {
