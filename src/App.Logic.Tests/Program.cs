@@ -5184,41 +5184,49 @@ Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, telemetryOnlyChange, 1_010,
         stallStart.AddSeconds(1.5)),
     "telemetry-only changes do not mask a frozen wireless video stream");
-Equal(WirelessStallRecoveryAction.RefreshPreview,
-    stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
-        stallStart.AddMilliseconds(2900)),
-    "frozen wireless telemetry first requests a preview refresh");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
-        stallStart.AddSeconds(6)),
-    "wireless recovery cooldown prevents an immediate restart");
-Equal(WirelessStallRecoveryAction.RestartSession,
+        stallStart.AddMilliseconds(2900)),
+    "unchanged AirPlay screen does not force an early refresh");
+Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
         stallStart.AddSeconds(8)),
-    "continued freeze after cooldown requests a session restart");
+    "an idle connected screen must not restart after five seconds");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
+        stallStart.AddSeconds(14)),
+    "prolonged unchanged video permits one non-destructive redraw");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
         stallStart.AddSeconds(20)),
-    "wireless recovery is capped after the restart attempt");
+    "an established AirPlay stream never restarts solely due to no new frames");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(videoFrames: 1), 2_000,
         stallStart.AddSeconds(20.5)),
     "a replacement wireless session starts a fresh recovery window");
-Equal(WirelessStallRecoveryAction.RefreshPreview,
+Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(videoFrames: 1), 2_000,
         stallStart.AddSeconds(23)),
-    "a frozen replacement session can request recovery independently");
+    "fresh sessions also tolerate still pictures");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(1080, 1920, 1),
         2_000, stallStart.AddSeconds(24)),
     "orientation size changes begin a fresh recovery window");
-Equal(WirelessStallRecoveryAction.RefreshPreview,
+Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(1080, 1920, 1),
         2_000, stallStart.AddSeconds(26)),
-    "a second frozen orientation can request one new refresh");
+    "orientation alone does not imply a decoder stall");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    stallTracker.Observe(78, StreamingStatus(1080, 1920, 1),
+        2_000, stallStart.AddSeconds(38)),
+    "a long still orientation triggers one cached-frame redraw");
+Equal(WirelessStallRecoveryAction.None,
+    stallTracker.Observe(78, StreamingStatus(1080, 1920, 2),
+        2_100, stallStart.AddSeconds(39)),
+    "a new frame resets the soft-refresh allowance");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(state: CaptureState.Idle),
-        1_010, stallStart.AddSeconds(27)),
+        1_010, stallStart.AddSeconds(40)),
     "stopped wireless sessions never trigger recovery");
 
 // Streaming with no decoded frames used to reset the watchdog indefinitely,
