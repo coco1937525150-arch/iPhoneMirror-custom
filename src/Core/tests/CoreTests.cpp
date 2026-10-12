@@ -51,6 +51,13 @@ struct WirelessReceiverHubTestAccess {
         return found != hub.clients_.end() && found->second->connected();
     }
 
+    static void simulate_video_pause(WirelessClientStream& stream) {
+        std::scoped_lock lock(stream.mutex_);
+        stream.snapshot_.fps = 60.0;
+        stream.last_video_at_ = std::chrono::steady_clock::now() -
+            std::chrono::seconds(3);
+    }
+
     static float remote_volume(const WirelessReceiverHub& hub,
         std::wstring_view id) {
         std::scoped_lock lock(hub.mutex_);
@@ -1698,6 +1705,33 @@ void test_wireless_i420_conversion() {
                 std::lround(light_gray.blue * 255.0) == 243,
             "wireless full-range gray 243 is not expanded and clipped to white");
     }
+    // A live 60 FPS preview must not display buffered frames from before a
+    // render stall. Test the actual two-frame queue limit rather than an
+    // impossible (> 2) overflow condition.
+    check(stream.next_render_frame() == published,
+        "wireless preview initially displays its first decoded frame");
+    check(stream.next_render_frame() == nullptr,
+        "wireless preview consumes each queued frame only once");
+    auto second_i420 = i420;
+    second_i420[0] = 12;
+    stream.publish_video(header, second_i420);
+    const auto second_frame = stream.latest_frame();
+    auto third_i420 = i420;
+    third_i420[0] = 34;
+    stream.publish_video(header, third_i420);
+    const auto third_frame = stream.latest_frame();
+    check(second_frame && third_frame && second_frame != third_frame,
+        "wireless source produces distinct live frames");
+    check(stream.next_render_frame() == third_frame,
+        "wireless preview skips old queued frames after a delayed render tick");
+    check(stream.next_render_frame() == nullptr,
+        "wireless preview does not replay a frame after catching up");
+    iPhoneMirror::capture::WirelessReceiverHubTestAccess::simulate_video_pause(stream);
+    const auto paused_status = stream.snapshot();
+    check(paused_status.fps == 0 && paused_status.video_frames == 3,
+        "wireless source reports zero live FPS after a long no-frame interval "
+        "while retaining the real decoded frame count");
+
     check(!iPhoneMirror::capture::detail::convert_i420_to_nv12(
         header, std::span(i420).first(11), nv12, stride),
         "wireless conversion rejects truncated planes");

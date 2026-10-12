@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -814,6 +815,26 @@ public:
     // upstream log. AirPlayServer messages may contain local IPs and socket
     // identifiers, so never forward the original string to app diagnostics.
     static std::string_view transport_reason(std::string_view text) noexcept {
+        // Allowlisted transport trace: never forward raw upstream log fields,
+        // which may include IP addresses, device IDs or socket descriptors.
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=peer_eof_observed") != text.npos)
+            return "mirror_header_peer_eof_observed";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=eof_during_local_stop") != text.npos)
+            return "mirror_header_eof_during_local_stop";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=recv_error") != text.npos)
+            return "mirror_header_recv_error";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=worker_exception_stop") != text.npos)
+            return "mirror_worker_exception_stop";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=stop_requested") != text.npos)
+            return "mirror_stop_requested";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=rtsp_teardown_received") != text.npos)
+            return "control_rtsp_teardown_received";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=peer_eof_observed") != text.npos)
+            return "control_peer_eof_observed";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=recv_error") != text.npos)
+            return "control_recv_error";
+        if (text.find("Mirror TCP partial packet idle timeout") != text.npos)
+            return "mirror_partial_packet_timeout";
         if (text.find("Mirror TCP read timed out") != text.npos)
             return "mirror_partial_packet_timeout";
         if (text.find("Mirror TCP socket closed") != text.npos)
@@ -833,6 +854,17 @@ public:
         return {};
     }
 
+    // Parse numeric trace fields only after the event reason was allowlisted.
+    // Never propagate device names, raw addresses or socket identifiers.
+    static int trace_integer(std::string_view text, std::string_view field) noexcept {
+        const auto at = text.find(field);
+        if (at == text.npos) return -1;
+        const auto begin = text.data() + at + field.size();
+        int value = -1;
+        const auto [end, ec] = std::from_chars(begin, text.data() + text.size(), value);
+        return ec == std::errc{} && end != begin ? value : -1;
+    }
+
     void log(int level, const char* message) override {
         const auto text = safe_text(message);
         if (const auto metadata = parse_device_metadata(text)) {
@@ -846,7 +878,14 @@ public:
         }
         const auto log_index = log_callbacks_.fetch_add(1, std::memory_order_relaxed) + 1;
         if (const auto reason = transport_reason(text); !reason.empty()) {
-            diagnosticf("airplay_transport_event reason={} level={}", reason, level);
+            if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=") != text.npos ||
+                text.find("IPHONE_MIRROR_CONTROL_TRACE cause=") != text.npos) {
+                diagnosticf("airplay_transport_event reason={} level={} idle_seconds={} error_code={}",
+                    reason, level, trace_integer(text, "idle_seconds="),
+                    trace_integer(text, "error="));
+            } else {
+                diagnosticf("airplay_transport_event reason={} level={}", reason, level);
+            }
         }
         // AirPlayServer uses syslog levels (INFO=6, DEBUG=7). Keep the opening
         // handshake in full, then retain errors only so a long stream cannot

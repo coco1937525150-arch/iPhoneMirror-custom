@@ -381,7 +381,14 @@ void WirelessClientStream::detach() noexcept {
 
 Snapshot WirelessClientStream::snapshot() const {
     std::scoped_lock lock(mutex_);
-    return snapshot_;
+    auto status = snapshot_;
+    // The average rate from the last completed sample must not remain at
+    // "60 FPS" when the iPhone has paused screen capture or locked.
+    // Keep historic frame counters intact for recovery diagnostics.
+    if (connected_ && last_video_at_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - last_video_at_ > std::chrono::seconds(2))
+        status.fps = 0;
+    return status;
 }
 
 std::int64_t WirelessClientStream::latest_frame_timestamp() const {
@@ -397,10 +404,15 @@ std::shared_ptr<const media::DecodedFrame> WirelessClientStream::latest_frame() 
 std::shared_ptr<const media::DecodedFrame> WirelessClientStream::next_render_frame() {
     std::scoped_lock lock(mutex_);
     if (render_queue_.empty()) return nullptr;
-    auto frame = render_queue_.size() > 2 ? std::move(render_queue_.back())
-                                          : std::move(render_queue_.front());
-    if (render_queue_.size() > 2) render_queue_.clear();
-    else render_queue_.pop_front();
+    // Live 1080p60 prioritizes freshness over displaying every decoded frame.
+    // The producer already caps the queue at two entries, so the previous
+    // (> 2) catch-up condition was unreachable. A delayed render tick could
+    // present the *older* frame and retain a full frame of latency.
+    //
+    // A render consumer always receives the newest available frame. It never
+    // drains a delayed backlog after Windows scheduling or GPU upload stalls.
+    auto frame = std::move(render_queue_.back());
+    render_queue_.clear();
     return frame;
 }
 
