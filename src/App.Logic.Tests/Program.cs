@@ -5221,6 +5221,29 @@ Equal(WirelessStallRecoveryAction.None,
         1_010, stallStart.AddSeconds(27)),
     "stopped wireless sessions never trigger recovery");
 
+// Streaming with no decoded frames used to reset the watchdog indefinitely,
+// leaving a perfectly black independent window with no recovery path.
+var noFrameTracker = new WirelessStallRecoveryTracker();
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0, stallStart),
+    "receiver starts waiting for the first decoded frame");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(3)),
+    "first-frame recovery avoids premature retries");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(5)),
+    "streaming with zero frames refreshes the black preview");
+Equal(WirelessStallRecoveryAction.RestartSession,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(11)),
+    "persistent initial black preview triggers one bounded restart");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(498, 1080, 1), 123,
+        stallStart.AddSeconds(12)),
+    "first decoded frame clears recovery attempts");
+
 Console.WriteLine("App logic tests passed.");
 if (Directory.Exists(diagnosticTestRoot))
     Directory.Delete(diagnosticTestRoot, recursive: true);
