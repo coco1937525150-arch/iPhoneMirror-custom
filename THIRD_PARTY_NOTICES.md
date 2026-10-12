@@ -164,3 +164,17 @@ engine is redistributed under the Inno Setup License:
 https://jrsoftware.org/files/is/license.txt
 
 All third-party components are provided without warranty.
+
+
+## Native iUsbBridge external process (noncommercial license)
+
+The USB and wireless iOS HID input bridge is compiled from
+RayrenSX/iUsbBridge at pinned commit `8a588b7f13becabe22f4bd511c0a977b18ddb1d6`.
+Copyright (c) 2026 RayrenSX. Its own license is **noncommercial only**;
+retain `tools/iUsbBridge-LICENSE.txt` with all distributed binaries.
+Project: https://github.com/RayrenSX/iUsbBridge
+
+The source is used without modifications. The bridge is integrated as a
+separate executable via length-prefixed JSON IPC. It implements USB / wireless
+HID input **not USB video**. Commercial usage requires the author's prior
+written permission.

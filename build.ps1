@@ -46,77 +46,19 @@ $VersionProperty = if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$UsbControlRoot = if ([string]::IsNullOrWhiteSpace($env:IPHONE_MIRROR_USB_BRIDGE_ROOT)) {
-    Join-Path $Root 'scripts\usb-bridge-recipe'
-} else {
-    [IO.Path]::GetFullPath($env:IPHONE_MIRROR_USB_BRIDGE_ROOT)
-}
-$UsbControlBuild = Join-Path $UsbControlRoot 'build.ps1'
-$UsbControlSource = Join-Path $Root 'tools\usb_touch_bridge.py'
+$RustBridgeBuild = Join-Path $Root 'scripts\BuildRustUsbBridge.ps1'
 $UsbTouchBridgeOutput = Join-Path $Root 'dist\iUsbBridge.exe'
 $UsbTouchBridgeRuntimeManifest = Join-Path $Root 'dist\iUsbBridge.runtime.json'
 $UsbTouchBridgeRuntimeTools = Join-Path $Root 'scripts\UsbTouchBridgeRuntime.ps1'
-$UsbControlEnvironment = Join-Path $Root 'work\usb-touch-bridge-python'
-$UsbControlPython = Join-Path $UsbControlEnvironment 'Scripts\python.exe'
-
 if (-not (Test-Path -LiteralPath $UsbTouchBridgeRuntimeTools -PathType Leaf)) {
-    throw "USB touch bridge runtime validation script is missing: $UsbTouchBridgeRuntimeTools"
+    throw "USB touch bridge runtime validator missing: $UsbTouchBridgeRuntimeTools"
 }
 . $UsbTouchBridgeRuntimeTools
-. (Join-Path $Root 'scripts\UsbBridgeBuildSource.ps1')
 
 function Build-UsbTouchBridge {
-    # Use the versioned Python recipe so upstream backend migrations cannot
-    # replace the audited source in tools with an incompatible executable.
-    foreach ($required in @($UsbControlBuild, $UsbControlSource)) {
-        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-            throw "USB touch bridge build input is missing: $required"
-        }
-    }
-
-    $stageRoot = Join-Path $Root 'work\usb-bridge-build'
-    $stage = New-UsbBridgeBuildSource -RecipeRoot $UsbControlRoot `
-        -SourceRoot (Join-Path $Root 'tools') -WorkRoot $stageRoot
-    try {
-        & (Join-Path $stage 'build.ps1') -BridgeOnly `
-            -BridgeOutputPath $UsbTouchBridgeOutput -EnvironmentPath $UsbControlEnvironment
-        if ($LASTEXITCODE -ne 0) {
-            throw "USB touch bridge build failed: $LASTEXITCODE"
-        }
-    }
-    finally {
-        Remove-UsbBridgeBuildSource -Stage $stage -WorkRoot $stageRoot
-    }
-    if (-not (Test-Path -LiteralPath $UsbTouchBridgeOutput -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $UsbTouchBridgeRuntimeManifest -PathType Leaf)) {
-        throw 'USB touch bridge output is incomplete.'
-    }
-    if (-not (Test-Path -LiteralPath $UsbControlPython -PathType Leaf)) {
-        throw "USB touch bridge Python environment is missing: $UsbControlPython"
-    }
-    Assert-UsbTouchBridgeRuntime -Directory (Join-Path $Root 'dist') `
-        -Label 'Built USB touch bridge'
-
-    # Exercise the packaged executable before it becomes application content.
-    # The bridge help includes localized text. Run it with file-backed UTF-8
-    # redirection so runner console encoding cannot affect the smoke test.
-    $helpOutput = Join-Path $Root 'work\iUsbBridge-help.txt'
-    $helpError = Join-Path $Root 'work\iUsbBridge-help.err.txt'
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $helpOutput) | Out-Null
-    $previousPythonIoEncoding = $env:PYTHONIOENCODING
-    try {
-        $env:PYTHONIOENCODING = 'utf-8'
-        $helpProcess = Start-Process -FilePath $UsbTouchBridgeOutput -ArgumentList '--help' `
-            -Wait -PassThru -NoNewWindow -RedirectStandardOutput $helpOutput `
-            -RedirectStandardError $helpError
-        # Some localized bridge builds return 1 after printing help. The
-        # manifest/hash validation above is the release gate, so keep this
-        # optional probe silent and non-blocking.
-    }
-    finally {
-        $env:PYTHONIOENCODING = $previousPythonIoEncoding
-        Remove-Item -LiteralPath $helpOutput, $helpError -Force -ErrorAction SilentlyContinue
-    }
+    & $RustBridgeBuild -SkipTests:$SkipTests
+    if ($LASTEXITCODE -ne 0) { throw "Rust iUsbBridge build failed: $LASTEXITCODE" }
+    Assert-UsbTouchBridgeRuntime -Directory (Join-Path $Root 'dist') -Label 'Built Rust iUsbBridge'
 }
 
 function Resolve-CMakeTool([string]$Name) {
@@ -406,10 +348,7 @@ try {
         & $CTest --test-dir build/native -C $Configuration --output-on-failure
         if ($LASTEXITCODE -ne 0) { throw "Native tests failed: $LASTEXITCODE" }
 
-        $libUsbDirectory = Join-Path $Root 'third_party\libusb\bin\x64'
-        $env:PATH = "$libUsbDirectory$([IO.Path]::PathSeparator)$env:PATH"
-        & $UsbControlPython -m unittest discover -s tests -p '*test.py'
-        if ($LASTEXITCODE -ne 0) { throw "USB touch bridge tests failed: $LASTEXITCODE" }
+        # Rust iUsbBridge cargo tests run during Build-UsbTouchBridge.
         & (Join-Path $Root 'scripts\test_usb_bridge_build_source.ps1') | Out-Host
 
         $TestProjects = @(
@@ -514,6 +453,7 @@ try {
             'CHANGELOG.md',
             'DRIVER_DEPENDENCIES.md',
             'tools\iUsbBridge.exe',
+            'tools\iUsbBridge-LICENSE.txt',
             'tools\updater\Apply-ZipUpdate.ps1',
             'licenses\libusb-COPYING.txt',
             'licenses\libusb-win32-COPYING-LGPL.txt',

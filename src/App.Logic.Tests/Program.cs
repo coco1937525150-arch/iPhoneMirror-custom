@@ -2098,6 +2098,27 @@ try
     Equal(false, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
             bridgeRuntimeExecutable, out bridgeRuntimeFailure),
         "USB touch bridge runtime rejects path traversal entries");
+    File.WriteAllText(Path.Combine(bridgeRuntimeTestRoot,
+        "iUsbBridge.runtime.json"), JsonSerializer.Serialize(new
+    {
+        schema = 2,
+        backend = "idevice",
+        files = new[]
+        {
+            new {
+                path = "iUsbBridge.exe",
+                sha256 = Convert.ToHexString(SHA256.HashData(
+                    File.ReadAllBytes(bridgeRuntimeExecutable))).ToLowerInvariant(),
+            },
+        },
+    }));
+    Equal(true, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
+            bridgeRuntimeExecutable, out bridgeRuntimeFailure),
+        "Rust single-file bridge schema-2 manifest validates");
+    File.AppendAllText(bridgeRuntimeExecutable, "-tampered");
+    Equal(false, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
+            bridgeRuntimeExecutable, out bridgeRuntimeFailure),
+        "tampering Rust bridge executable fails integrity check");
 }
 finally
 {
@@ -5199,6 +5220,29 @@ Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(state: CaptureState.Idle),
         1_010, stallStart.AddSeconds(27)),
     "stopped wireless sessions never trigger recovery");
+
+// Streaming with no decoded frames used to reset the watchdog indefinitely,
+// leaving a perfectly black independent window with no recovery path.
+var noFrameTracker = new WirelessStallRecoveryTracker();
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0, stallStart),
+    "receiver starts waiting for the first decoded frame");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(3)),
+    "first-frame recovery avoids premature retries");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(5)),
+    "streaming with zero frames refreshes the black preview");
+Equal(WirelessStallRecoveryAction.RestartSession,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(11)),
+    "persistent initial black preview triggers one bounded restart");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(498, 1080, 1), 123,
+        stallStart.AddSeconds(12)),
+    "first decoded frame clears recovery attempts");
 
 Console.WriteLine("App logic tests passed.");
 if (Directory.Exists(diagnosticTestRoot))
