@@ -18,7 +18,7 @@ internal enum WirelessStallRecoveryAction
 /// </summary>
 internal sealed class WirelessStallRecoveryTracker
 {
-    internal static readonly TimeSpan StallThreshold = TimeSpan.FromMilliseconds(1800);
+    internal static readonly TimeSpan StallThreshold = TimeSpan.FromSeconds(12);
     internal static readonly TimeSpan FirstFrameThreshold = TimeSpan.FromSeconds(4);
     internal static readonly TimeSpan RestartCooldown = TimeSpan.FromSeconds(5);
 
@@ -80,17 +80,25 @@ internal sealed class WirelessStallRecoveryTracker
             return WirelessStallRecoveryAction.None;
         }
 
-        var threshold = _videoFrames == 0 ? FirstFrameThreshold : StallThreshold;
-        if (now - _lastProgressAt < threshold || _recoveryAttempts >= 2)
+        // AirPlay is allowed to stop emitting duplicate frames when the iPhone
+        // image is unchanged. Lack of NEW decoded frames alone cannot prove a
+        // dead connection. Once at least one frame has arrived, perform only
+        // a non-destructive renderer refresh and never tear down a healthy
+        // mirroring session on this signal alone.
+        var awaitingFirstFrame = _videoFrames == 0;
+        var threshold = awaitingFirstFrame ? FirstFrameThreshold : StallThreshold;
+        var maximumAttempts = awaitingFirstFrame ? 2 : 1;
+        if (now - _lastProgressAt < threshold ||
+            _recoveryAttempts >= maximumAttempts)
             return WirelessStallRecoveryAction.None;
         if (_recoveryAttempts == 1 && now - _lastActionAt < RestartCooldown)
             return WirelessStallRecoveryAction.None;
 
         _recoveryAttempts++;
         _lastActionAt = now;
-        return _recoveryAttempts == 1
-            ? WirelessStallRecoveryAction.RefreshPreview
-            : WirelessStallRecoveryAction.RestartSession;
+        return awaitingFirstFrame && _recoveryAttempts == 2
+            ? WirelessStallRecoveryAction.RestartSession
+            : WirelessStallRecoveryAction.RefreshPreview;
     }
 
     internal void Reset()
