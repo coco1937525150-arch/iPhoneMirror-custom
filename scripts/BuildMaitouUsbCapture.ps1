@@ -89,7 +89,9 @@ if ($policy.schemaVersion -ne 2 -or @($policy.profiles).Count -eq 0) {
 # It must never be compared with the bundled user-mode libusb0.dll.
 # Driver compatibility remains read-only and is enforced by DeviceSetup.
 $expectedDriverHash = [string]$policy.profiles[0].libusbSha256
-if ($expectedDriverHash -notmatch '^[0-9a-fA-F]{64}
+if ($expectedDriverHash -notmatch '^[0-9a-fA-F]{64}$') {
+    throw 'Maitou USB kernel-driver policy hash is missing or invalid.'
+}
 
 $licenses = @(
     @('LICENSE-Maitou.txt', 'LICENSE'),
@@ -105,21 +107,5 @@ foreach ($pair in $licenses) {
 $smoke = & (Join-Path $destination 'Maitou.CaptureHost.exe') '--lifecycle-self-test'
 if ($LASTEXITCODE -ne 0 -or -not ($smoke -match '"passed":true')) {
     throw 'Maitou CaptureHost lifecycle smoke test failed.'
-}
-Write-Host "Maitou USB video host bundled from pinned source: $pinned"
-) {
-    throw 'Maitou USB kernel-driver policy hash is missing or invalid.'
-}
-
-$licenses = @(
-    @('LICENSE-Maitou.txt', 'LICENSE'),
-    @('LICENSE-QuickTime.txt', 'third_party\quicktime_core\LICENSE'),
-    @('LICENSE-QuickTime-danielpaulus.txt',
-        'third_party\quicktime_core\LICENSE.danielpaulus.txt'),
-    @('LICENSE-FFmpeg-LGPL.txt', 'third_party\ffmpeg\COPYING.LGPLv2.1.txt'),
-    @('LICENSE-libusb-LGPL.txt', 'third_party\libusb-win32\COPYING_LGPL.txt')
-)
-foreach ($pair in $licenses) {
-    Copy-Item -LiteralPath (Join-Path $source $pair[1]) -Destination (Join-Path $destination $pair[0]) -Force
 }
 Write-Host "Maitou USB video host bundled from pinned source: $pinned"
