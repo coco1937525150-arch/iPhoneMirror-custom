@@ -3,7 +3,7 @@ name: Build custom Windows x64 artifact
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, feature/rust-usb-hid-bridge, feature/maitou-usb-video]
 
 permissions:
   contents: read
@@ -24,6 +24,11 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+
+      - name: Set up Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Set up MSYS2 UCRT64 for UxPlay
         uses: msys2/setup-msys2@v2
@@ -96,14 +101,12 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Configuration Release -SkipTests
 
-      - name: Package portable build
-        shell: pwsh
-        run: Compress-Archive -Path outputs/iPhoneMirror/* -DestinationPath iPhoneMirror-custom-win-x64.zip -Force
-
-      - name: Upload portable build
+      # GitHub Artifact is already a ZIP archive. Upload the directory
+      # directly so users unpack once (EXE and tools are at archive root).
+      - name: Upload portable build (single extraction)
         uses: actions/upload-artifact@v4
         with:
-          name: iPhoneMirror-custom-win-x64
-          path: iPhoneMirror-custom-win-x64.zip
+          name: ${{ github.ref_name == 'main' && 'iPhoneMirror-custom-win-x64' || 'iPhoneMirror-next-win-x64-preview' }}
+          path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14

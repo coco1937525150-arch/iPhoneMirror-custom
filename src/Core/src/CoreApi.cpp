@@ -3,6 +3,7 @@
 #include "Device/DeviceManager.h"
 #include "Device/AppleUsbDiscovery.h"
 #include "Capture/CaptureSession.h"
+#include "Capture/MaitouUsbCaptureSession.h"
 #include "Capture/WirelessCaptureSession.h"
 #include "Capture/WirelessReceiverHub.h"
 #include "Logging.h"
@@ -487,9 +488,9 @@ std::int32_t start_capture_locked(const wchar_t* udid,
                 preferences.contrast, preferences.saturation, preferences.gamma);
         }
         if (capture_session) capture_session->stop();
-        auto usb_capture = std::make_unique<iPhoneMirror::capture::CaptureSession>(
-            serial, preferences, product_type_for_udid(udid));
-        usb_capture->start(false);
+        auto usb_capture = std::make_unique<iPhoneMirror::capture::MaitouUsbCaptureSession>(
+            serial, preferences);
+        usb_capture->start();
         capture_session = std::move(usb_capture);
         last_error.clear();
         return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
@@ -1408,9 +1409,9 @@ std::int32_t IM_CALL im_session_create(const wchar_t* udid,
         auto context = std::make_shared<MultiSessionContext>();
         context->preferences = preferences_from_options(*options);
         context->wired_device_identity = wired_device_identity;
-        auto usb_capture = std::make_unique<iPhoneMirror::capture::CaptureSession>(
-            narrow(udid), context->preferences, product_type_for_udid(udid));
-        usb_capture->start(false);
+        auto usb_capture = std::make_unique<iPhoneMirror::capture::MaitouUsbCaptureSession>(
+            narrow(udid), context->preferences);
+        usb_capture->start();
         context->capture = std::move(usb_capture);
         std::scoped_lock lock(state_mutex);
         if (!initialized) {

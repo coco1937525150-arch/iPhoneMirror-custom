@@ -179,6 +179,7 @@
     <system:String x:Key="IndependentWindowEnterFullScreen">進入全螢幕</system:String>
     <system:String x:Key="IndependentWindowExitFullScreen">離開全螢幕</system:String>
     <system:String x:Key="IndependentWindowWindowMenu">視窗</system:String>
+    <system:String x:Key="IndependentWindowSize">螢幕大小</system:String>
     <system:String x:Key="IndependentWindowDisplayMenu">畫面</system:String>
     <system:String x:Key="IndependentWindowAudioMenu">音訊</system:String>
     <system:String x:Key="IndependentWindowFix">固定視窗</system:String>

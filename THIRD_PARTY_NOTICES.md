@@ -164,3 +164,36 @@ engine is redistributed under the Inno Setup License:
 https://jrsoftware.org/files/is/license.txt
 
 All third-party components are provided without warranty.
+
+
+## Native iUsbBridge external process (noncommercial license)
+
+The USB and wireless iOS HID input bridge is compiled from
+RayrenSX/iUsbBridge at pinned commit `8a588b7f13becabe22f4bd511c0a977b18ddb1d6`.
+Copyright (c) 2026 RayrenSX. Its own license is **noncommercial only**;
+retain `tools/iUsbBridge-LICENSE.txt` with all distributed binaries.
+Project: https://github.com/RayrenSX/iUsbBridge
+
+The source is used without modifications. The bridge is integrated as a
+separate executable via length-prefixed JSON IPC. It implements USB / wireless
+HID input **not USB video**. Commercial usage requires the author's prior
+written permission.
+
+
+## Maitou independent USB video capture (MIT with third-party terms)
+
+USB video is delegated to the unmodified Maitou.CaptureHost.exe built from
+https://github.com/NeoLin-9892/Maitou at pinned commit
+fb4a8d7eaa70c08538c5dd664350baa24d0e1fa3.
+
+Maitou handles USB activation, PnP re-enumeration, H.264 decoding and restore.
+The iPhoneMirror adapter connects via a parent-PID authenticated v3 named
+pipe and reads per-user D3D11 shared preview frames. It converts BGRA to
+NV12 for the existing renderer. It never installs drivers or changes Windows
+USB filters. The supported driver topology is restricted by the upstream
+usb-compatibility.json; other builds must fail closed.
+
+Maitou is under MIT. Separate license copies for Maitou, QuickTime,
+libusb-win32 and FFmpeg are shipped with the native capture host. Respect
+LGPL dependency/source distribution obligations. Note iUsbBridge HID
+control is independently licensed for noncommercial use only.

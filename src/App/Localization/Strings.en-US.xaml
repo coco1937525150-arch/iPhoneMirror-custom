@@ -179,6 +179,7 @@
     <system:String x:Key="IndependentWindowEnterFullScreen">Enter full screen</system:String>
     <system:String x:Key="IndependentWindowExitFullScreen">Exit full screen</system:String>
     <system:String x:Key="IndependentWindowWindowMenu">Window</system:String>
+    <system:String x:Key="IndependentWindowSize">Screen size</system:String>
     <system:String x:Key="IndependentWindowDisplayMenu">Image</system:String>
     <system:String x:Key="IndependentWindowAudioMenu">Audio</system:String>
     <system:String x:Key="IndependentWindowFix">Lock window</system:String>

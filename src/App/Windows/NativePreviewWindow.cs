@@ -109,6 +109,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly ContextMenu _contextMenu;
     private readonly MenuItem _fullScreenItem;
     private readonly MenuItem _windowMenuItem;
+    private readonly MenuItem _windowSizeItem;
+    private readonly List<(double Fraction, MenuItem Item)> _sizePresets = [];
     private readonly MenuItem _displayMenuItem;
     private readonly MenuItem _topMostItem;
     private readonly MenuItem _fixedItem;
@@ -153,6 +155,7 @@ internal sealed class NativePreviewWindow : IDisposable
     private nint _handle;
     private bool _attached;
     private bool _isFullScreen;
+    private double _sizeFraction = 0.82;
     private bool _disposed;
     private bool _closeQueued;
     private bool _isTopMost;
@@ -224,6 +227,20 @@ internal sealed class NativePreviewWindow : IDisposable
         _fullScreenItem = new MenuItem { Style = itemStyle };
         _fullScreenItem.Click += (_, _) => ToggleFullScreen();
         _windowMenuItem = new MenuItem { Style = submenuStyle };
+        _windowSizeItem = new MenuItem { Style = submenuStyle };
+        foreach (var fraction in new[] { 0.40, 0.55, 0.70, 0.85, 0.95 })
+        {
+            var preset = new MenuItem
+            {
+                Header = $"{fraction:P0}",
+                Style = itemStyle,
+                IsCheckable = true,
+            };
+            var selectedFraction = fraction;
+            preset.Click += (_, _) => SetIndependentWindowSize(selectedFraction);
+            _sizePresets.Add((fraction, preset));
+            _windowSizeItem.Items.Add(preset);
+        }
         _topMostItem = new MenuItem { Style = itemStyle };
         _topMostItem.Click += (_, _) => ToggleTopMost();
         _fixedItem = new MenuItem { Style = itemStyle };
@@ -249,6 +266,7 @@ internal sealed class NativePreviewWindow : IDisposable
         }
         _windowMenuItem.Items.Add(_topMostItem);
         _windowMenuItem.Items.Add(_fixedItem);
+        _windowMenuItem.Items.Add(_windowSizeItem);
         _displayMenuItem = new MenuItem { Style = submenuStyle };
         _muteMenuItem = new MenuItem { Style = submenuStyle };
         _muteThisItem = new MenuItem { Style = itemStyle };
@@ -769,6 +787,16 @@ internal sealed class NativePreviewWindow : IDisposable
                 if (_capturedMouseButtons == 0) _ = ReleaseCapture();
                 handled = true;
                 return 0;
+            case WmMouseWheel when !_isFullScreen && !_isFixed &&
+                ((wParam.ToInt64() & 0x0008) != 0 || GetKeyState(VkControl) < 0):
+                // CTRL+wheel is a Windows window-size gesture, not an iOS
+                // scroll event. Handle it even while USB/BLE input is enabled.
+                var ticks = unchecked((short)(wParam.ToInt64() >> 16));
+                if (ticks != 0)
+                    SetIndependentWindowSize(Math.Clamp(_sizeFraction +
+                        Math.Sign(ticks) * 0.05, 0.35, 0.95));
+                handled = true;
+                return 0;
             case WmMouseWheel when IsPointerInputActive:
                 DispatchPointer(PreviewPointerKind.Wheel, ScreenPointToClientLParam(lParam), 0,
                     unchecked((short)(wParam.ToInt64() >> 16)));
@@ -919,6 +947,17 @@ internal sealed class NativePreviewWindow : IDisposable
         }
     }
 
+    private void SetIndependentWindowSize(double fraction)
+    {
+        if (_disposed || _isFullScreen || _isFixed || _handle == 0) return;
+        fraction = Math.Round(Math.Clamp(fraction, 0.35, 0.95), 2);
+        if (!_aspectController.ResizeToWorkAreaFraction(fraction)) return;
+        _sizeFraction = fraction;
+        UpdateContextMenuLabels();
+        Log("independent_window_size_changed",
+            ("mode", WindowMode), ("fraction", fraction));
+    }
+
     private void ShowContextMenu()
     {
         if (_disposed) return;
@@ -935,6 +974,10 @@ internal sealed class NativePreviewWindow : IDisposable
             _isFullScreen ? "IndependentWindowExitFullScreen" :
                 "IndependentWindowEnterFullScreen");
         _windowMenuItem.Header = LocalizationService.Get("IndependentWindowWindowMenu");
+        _windowSizeItem.Header = LocalizationService.Get("IndependentWindowSize");
+        _windowSizeItem.IsEnabled = !_isFullScreen && !_isFixed;
+        foreach (var (fraction, item) in _sizePresets)
+            item.IsChecked = Math.Abs(fraction - _sizeFraction) < 0.001;
         _displayMenuItem.Header = LocalizationService.Get("IndependentWindowDisplayMenu");
         _topMostItem.Header = LocalizationService.Get(
             _isTopMost ? "IndependentWindowUnpin" : "IndependentWindowPin");

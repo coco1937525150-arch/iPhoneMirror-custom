@@ -1787,7 +1787,22 @@ struct D3D11PreviewRenderer::Impl {
                 const bool force_refresh = refresh_requested.exchange(false,
                     std::memory_order_acq_rel);
                 auto frame = provider ? provider() : nullptr;
-                if ((!frame || frame->timestamp_100ns == 0) && force_refresh)
+                // A capture backend publishes nullptr after USB disconnect,
+                // trust revocation, or a security-related session reset.
+                // Do not reuse the retained iPhone frame when resizing or
+                // force-refreshing: it would expose pixels from a device
+                // that is no longer connected. Clear once, then wait for
+                // a new authenticated decoded frame.
+                if (!frame && last_frame) {
+                    last_frame.reset();
+                    last_timestamp = 0;
+                    publish_diagnostic_field(diagnostic_output_snapshot,
+                        DiagnosticSourceHdrMask, 0);
+                    present_black();
+                    logging::write("d3d_preview source unavailable: cleared retained frame");
+                    continue;
+                }
+                if (frame && frame->timestamp_100ns == 0 && force_refresh)
                     frame = last_frame;
                 if (!frame || frame->timestamp_100ns == 0) {
                     if (target_resized) present_black();

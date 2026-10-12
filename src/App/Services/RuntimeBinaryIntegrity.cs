@@ -80,9 +80,12 @@ internal static class RuntimeBinaryIntegrity
             if (root.ValueKind != JsonValueKind.Object ||
                 !root.TryGetProperty("schema", out var schema) ||
                 schema.ValueKind != JsonValueKind.Number || !schema.TryGetInt32(out var schemaVersion) ||
-                schemaVersion != 1 ||
+                schemaVersion is not (1 or 2) ||
                 !root.TryGetProperty("files", out var files) ||
-                files.ValueKind != JsonValueKind.Array)
+                files.ValueKind != JsonValueKind.Array ||
+                (schemaVersion == 2 && (!root.TryGetProperty("backend", out var backend) ||
+                    backend.ValueKind != JsonValueKind.String ||
+                    backend.GetString() != "idevice")))
             {
                 failure = "bridge runtime manifest has an unsupported schema";
                 return false;
@@ -121,11 +124,20 @@ internal static class RuntimeBinaryIntegrity
                 if (normalized.StartsWith("_internal\\", StringComparison.OrdinalIgnoreCase))
                     hasInternalRuntime = true;
 
+                if (schemaVersion == 2 &&
+                    !string.Equals(normalized, "iUsbBridge.exe",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    failure = "Rust bridge manifest must contain only iUsbBridge.exe";
+                    return false;
+                }
                 if (!VerifyFile(filePath, expectedHash!, out failure))
                     return false;
             }
 
-            if (count == 0 || !hasExecutable || !hasInternalRuntime)
+            if (count == 0 || !hasExecutable ||
+                (schemaVersion == 1 && !hasInternalRuntime) ||
+                (schemaVersion == 2 && count != 1))
             {
                 failure = "bridge runtime manifest does not describe a complete payload";
                 return false;

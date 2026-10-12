@@ -5288,44 +5288,22 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             return (true, 0, CaptureFailureKind.None, WirelessStatus);
         }
 
-        // Wireless devices return above and never enter the USB driver path.
-        // Keep the UI preflight in registry/SCM territory. The native capture
-        // start performs the one authoritative exact-device open after this
-        // check; doing it here as well would enumerate the legacy filter twice
-        // and could touch an already-streaming device in a multi-device setup.
-        var driverStatus = await Task.Run(() => _filterDriver.Inspect(device.Udid));
+        // The old filter-driver readiness policy applies only to the removed
+        // in-process QuickTime backend. Keep its registry-only observation for
+        // UI diagnostics, but never use it to block Maitou's independent
+        // read-only DeviceSetup preflight or auto-launch a driver installer.
+        // CaptureHost itself rejects unapproved drivers before touching USB.
+        var legacyDriver = await Task.Run(() => _filterDriver.Inspect(device.Udid));
         if (DeviceViewModel.UdidEquals(SelectedDevice?.Udid, device.Udid))
         {
-            _filterDriverStatus = driverStatus;
+            _filterDriverStatus = legacyDriver;
             ApplySelectedDriverState();
         }
-        if (driverStatus.CanStartCapture)
-        {
-            if (driverStatus.State == IPhoneFilterDriverState.UnsafeStack)
-                AddUiLog($"driver safety warning: {driverStatus.Diagnostic}");
-            return (true, 0, CaptureFailureKind.None, string.Empty);
-        }
-        var failure = LocalizationService.Get(driverStatus.State switch
-        {
-            IPhoneFilterDriverState.NoDevice => "DriverReconnectPhone",
-            IPhoneFilterDriverState.PendingRestart => "DriverReplugRequired",
-            IPhoneFilterDriverState.Missing => "DriverExternalRequired",
-            IPhoneFilterDriverState.InvalidStack => "DriverInvalidAppleStack",
-            IPhoneFilterDriverState.UnsafeStack => "DriverUnsafeAppleStack",
-            _ => "DriverFilterStateError",
-        });
-        if (DeviceViewModel.UdidEquals(SelectedDevice?.Udid, device.Udid))
-            CaptureStatus = failure;
-        AddUiLog($"driver preflight: {driverStatus.Diagnostic}");
-        if (driverStatus.State is IPhoneFilterDriverState.PendingRestart or
-            IPhoneFilterDriverState.Missing or IPhoneFilterDriverState.InvalidStack or
-            IPhoneFilterDriverState.Error)
-            OpenDriverManager(automatic: true);
-        var errorCode = (int)NativeResult.CaptureBackendUnavailable;
-        var failureKind = driverStatus.State == IPhoneFilterDriverState.NoDevice
-            ? CaptureFailureKind.UsbConnection
-            : CaptureFailureKind.Driver;
-        return (false, errorCode, failureKind, failure);
+        AddDiagnosticLog(AppLog.Event("maitou_usb_preflight_delegated",
+            ("device", AppLog.Device(device.Udid)),
+            ("legacy_driver_state", legacyDriver.State),
+            ("backend", "maitou_usb_capturehost_v3")));
+        return (true, 0, CaptureFailureKind.None, string.Empty);
     }
 
     private bool OpenDriverManager(bool automatic = false)
