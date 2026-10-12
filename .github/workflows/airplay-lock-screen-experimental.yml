@@ -1,0 +1,121 @@
+name: Experimental AirPlay lock-screen transport
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/airplay-idle-rotation-smooth-zoom]
+    paths:
+      - 'third_party/airplay-server/patches/Apply-AirPlayMirrorRecoveryPatch.ps1'
+      - 'scripts/build_airplay_receiver.ps1'
+      - '.github/workflows/airplay-lock-screen-experimental.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  experimental-receiver:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Set up Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Set up MSYS2 UCRT64 for UxPlay
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-libav
+            mingw-w64-ucrt-x86_64-libplist
+            mingw-w64-ucrt-x86_64-openssl
+
+      - name: Restore pinned original runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $upstreamCommit = '0e26a3f6b5079001d8920e552c329b2e6c97013e'
+          $airPlayRoot = Join-Path $PWD 'third_party\airplay-server\bin\x64'
+          New-Item -ItemType Directory -Force -Path $airPlayRoot | Out-Null
+          foreach ($name in @('airplay2dll.dll', 'avcodec-58.dll', 'avutil-56.dll',
+              'dnssd.dll', 'swresample-3.dll', 'swscale-5.dll')) {
+            $url = "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/$upstreamCommit/third_party/airplay-server/bin/x64/$name"
+            $target = Join-Path $airPlayRoot $name
+            & curl.exe -L --fail --retry 3 --retry-delay 2 --output $target $url
+            if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $target -PathType Leaf)) {
+              throw "Failed restoring $name"
+            }
+          }
+          foreach ($line in Get-Content 'third_party\airplay-server\SHA256SUMS.txt') {
+            if ($line -notmatch '^([0-9a-fA-F]{64})\s{2}bin/x64/(.+)$') {
+              throw "Malformed pinned AirPlay manifest entry: $line"
+            }
+            $hash = $Matches[1].ToLowerInvariant()
+            $name = $Matches[2]
+            $actual = (Get-FileHash (Join-Path $airPlayRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $hash) { throw "Pinned receiver hash mismatch for $name" }
+          }
+          $libUsbRoot = Join-Path $PWD 'third_party\libusb\bin\x64'
+          New-Item -ItemType Directory -Force -Path $libUsbRoot | Out-Null
+          $libUsbPath = Join-Path $libUsbRoot 'libusb-1.0.dll'
+          & curl.exe -L --fail --retry 3 --retry-delay 2 --output $libUsbPath "https://raw.githubusercontent.com/RayrenSX/iPhoneMirror/$upstreamCommit/third_party/libusb/bin/x64/libusb-1.0.dll"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $libUsbPath)) {
+            throw 'Could not restore pinned libusb runtime'
+          }
+
+      - name: Rebuild and install experimental AirPlayServer DLL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/build_airplay_receiver.ps1 -Install
+          if ($LASTEXITCODE -ne 0) { throw "AirPlay receiver source rebuild failed: $LASTEXITCODE" }
+          $path = Join-Path $PWD 'third_party\airplay-server\bin\x64\airplay2dll.dll'
+          $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          $integritySourcePath = Join-Path $PWD 'src\App\Services\RuntimeBinaryIntegrity.cs'
+          $source = [IO.File]::ReadAllText($integritySourcePath)
+          $pattern = '(?s)(\["airplay2dll\.dll"\]\s*=\s*")([0-9a-fA-F]{64})(")'
+          if ([regex]::Matches($source, $pattern).Count -ne 1) {
+            throw 'RuntimeBinaryIntegrity airplay2dll.dll pin not found exactly once'
+          }
+          $source = [regex]::Replace($source, $pattern, {
+            param($match)
+            $match.Groups[1].Value + $hash + $match.Groups[3].Value
+          })
+          [IO.File]::WriteAllText($integritySourcePath, $source,
+            [Text.UTF8Encoding]::new($false))
+          Write-Host "Experiment receiver SHA256: $hash"
+          Write-Host "Receiver binary, SHA256SUMS and app integrity pin now agree."
+
+      - name: Build and test experimental portable package
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release
+
+      - name: Upload experimental portable build (single extraction)
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL
+          path: outputs/iPhoneMirror/
+          if-no-files-found: error
+          retention-days: 14

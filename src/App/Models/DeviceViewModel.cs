@@ -17,6 +17,7 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
     private string _connectionType;
     private string _status;
     private ConnectionState _state;
+    private bool _wirelessOffline;
 
     private DeviceViewModel(string udid, string name, string productType,
         string osVersion, string connectionType, string status, ConnectionState state)
@@ -38,6 +39,9 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
     public string Status => _status;
     internal ConnectionState State => _state;
     public bool IsWireless => IsWirelessUdid(Udid);
+    // A disconnected device is only a recent-device placeholder, not an
+    // active AirPlay source. The native discovery list never contains these.
+    public bool IsWirelessOffline => IsWireless && _wirelessOffline;
     public bool IsMediaCast => IsMediaCastUdid(Udid);
     public string AutomationId => IsMediaCast ? "MediaCastDeviceCard" : "DeviceCard";
 
@@ -58,10 +62,13 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
             : $"iOS {OsVersion}";
     public string ShortUdid => IsMediaCast ? "AirPlay / DLNA" : IsWireless ? "AirPlay" :
         Udid.Length <= 18 ? Udid : $"{Udid[..8]}...{Udid[^6..]}";
-    public bool Ready => State is ConnectionState.Ready;
+    public bool Ready => !_wirelessOffline && State is ConnectionState.Ready;
     public string StatusDisplay => IsMediaCast
         ? LocalizationService.Get("MediaCastDeviceActive")
-        : IsWireless ? LocalizationService.Get("WirelessConnected") : LocalizationService.Get(State switch
+        : IsWireless
+            ? LocalizationService.Get(IsWirelessOffline
+                ? "WirelessDisconnectedWaiting" : "WirelessConnected")
+            : LocalizationService.Get(State switch
         {
             ConnectionState.Disconnected => "ConnectionDisconnected",
             ConnectionState.UsbPresentNoMux => "ConnectionUsbNoMux",
@@ -84,6 +91,8 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
         changed |= Set(ref _connectionType, source.ConnectionType, nameof(ConnectionType));
         changed |= Set(ref _status, source.Status, nameof(Status));
         changed |= Set(ref _state, source.State, nameof(State), nameof(Ready), nameof(StatusDisplay));
+        changed |= Set(ref _wirelessOffline, source._wirelessOffline, nameof(IsWirelessOffline),
+            nameof(Ready), nameof(StatusDisplay));
         return changed;
     }
 
@@ -140,6 +149,19 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
         info.ConnectionType ?? "USB",
         info.Status ?? string.Empty,
         info.State);
+
+    internal DeviceViewModel AsWirelessOffline()
+    {
+        if (!IsWireless) throw new InvalidOperationException(
+            "Only AirPlay devices can be retained as disconnected placeholders.");
+        var disconnected = new DeviceViewModel(
+            Udid, Name, ProductType, OsVersion, ConnectionType, Status,
+            ConnectionState.Disconnected)
+        {
+            _wirelessOffline = true,
+        };
+        return disconnected;
+    }
 
     internal DeviceViewModel AsUsbPresentNoMux() => new(
         Udid, Name, ProductType, OsVersion, ConnectionType, Status,

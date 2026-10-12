@@ -3,7 +3,7 @@ name: Build custom Windows x64 artifact
 on:
   workflow_dispatch:
   push:
-    branches: [main, feature/rust-usb-hid-bridge]
+    branches: [main, feature/rust-usb-hid-bridge, feature/airplay-idle-rotation-smooth-zoom]
 
 permissions:
   contents: read

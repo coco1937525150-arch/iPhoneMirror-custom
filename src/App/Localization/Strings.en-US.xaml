@@ -639,6 +639,7 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="WirelessOriginalQualityWarningBody">Original quality may freeze on some devices or network conditions. 1080p is recommended. If you still need original quality, use a stable local network and connect from iPhone Control Center → Screen Mirroring.</system:String>
     <system:String x:Key="WirelessServiceAlwaysOn">Always on</system:String>
     <system:String x:Key="WirelessConnected">AirPlay connected</system:String>
+    <system:String x:Key="WirelessDisconnectedWaiting">AirPlay disconnected · Waiting to reconnect</system:String>
     <system:String x:Key="WirelessLocalNetwork">Local network</system:String>
     <system:String x:Key="WirelessReady">AirPlay receiver ready</system:String>
     <system:String x:Key="WirelessStarting">Starting the AirPlay receiver...</system:String>

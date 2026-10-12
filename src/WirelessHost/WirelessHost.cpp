@@ -810,6 +810,29 @@ public:
             muted.value_or(false), sent);
     }
 
+    // Emit a small, allowlisted transport reason without leaking the raw
+    // upstream log. AirPlayServer messages may contain local IPs and socket
+    // identifiers, so never forward the original string to app diagnostics.
+    static std::string_view transport_reason(std::string_view text) noexcept {
+        if (text.find("Mirror TCP read timed out") != text.npos)
+            return "mirror_partial_packet_timeout";
+        if (text.find("Mirror TCP socket closed") != text.npos)
+            return "mirror_socket_closed";
+        if (text.find("Mirror TCP receive failed") != text.npos)
+            return "mirror_receive_failed";
+        if (text.find("Mirror TCP select failed") != text.npos)
+            return "mirror_select_failed";
+        if (text.find("Connection closed for socket") != text.npos)
+            return "control_socket_closed";
+        if (text.find("Error receiving data on socket") != text.npos)
+            return "control_socket_receive_failed";
+        if (text.find("TCP socket closed") != text.npos)
+            return "mirror_socket_closed_legacy";
+        if (text.find("Error in recv") != text.npos)
+            return "mirror_receive_failed_legacy";
+        return {};
+    }
+
     void log(int level, const char* message) override {
         const auto text = safe_text(message);
         if (const auto metadata = parse_device_metadata(text)) {
@@ -822,6 +845,9 @@ public:
             return;
         }
         const auto log_index = log_callbacks_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (const auto reason = transport_reason(text); !reason.empty()) {
+            diagnosticf("airplay_transport_event reason={} level={}", reason, level);
+        }
         // AirPlayServer uses syslog levels (INFO=6, DEBUG=7). Keep the opening
         // handshake in full, then retain errors only so a long stream cannot
         // flood the media pipe or the application log.

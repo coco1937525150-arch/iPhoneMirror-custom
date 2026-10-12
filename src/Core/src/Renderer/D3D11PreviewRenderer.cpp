@@ -1787,7 +1787,11 @@ struct D3D11PreviewRenderer::Impl {
                 const bool force_refresh = refresh_requested.exchange(false,
                     std::memory_order_acq_rel);
                 auto frame = provider ? provider() : nullptr;
-                if ((!frame || frame->timestamp_100ns == 0) && force_refresh)
+                // A still iPhone screen may not produce fresh decoded frames.
+                // Rotate/resize the retained frame instead of briefly painting
+                // a black swap chain while waiting for the sender to move.
+                if ((!frame || frame->timestamp_100ns == 0) &&
+                    (force_refresh || target_resized))
                     frame = last_frame;
                 if (!frame || frame->timestamp_100ns == 0) {
                     if (target_resized) present_black();

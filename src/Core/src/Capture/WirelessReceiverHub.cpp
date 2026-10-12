@@ -318,6 +318,21 @@ bool WirelessClientStream::connected() const {
     return connected_;
 }
 
+WirelessDisconnectTelemetry WirelessClientStream::disconnect_telemetry() const noexcept {
+    std::scoped_lock lock(mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_ms = last_video_at_ == std::chrono::steady_clock::time_point{}
+        ? std::int64_t{-1}
+        : std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_video_at_).count();
+    return {
+        .was_connected = connected_,
+        .video_frames_total = snapshot_.video_frames,
+        .audio_packets_total = snapshot_.audio_packets,
+        .last_video_age_ms = age_ms,
+    };
+}
+
 void WirelessClientStream::attach(CapturePreferences preferences) {
     bool reset_video{};
     {
@@ -486,6 +501,7 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
             header.width, header.height));
     }
     latest_frame_ = frame;
+    last_video_at_ = received_at;
     render_queue_.push_back(frame);
     const auto queue_limit = attachments_ == 0 ? 1U : 2U;
     while (render_queue_.size() > queue_limit) render_queue_.pop_front();
@@ -910,11 +926,17 @@ void WirelessReceiverHub::handle_message(const wireless::MessageHeader& header,
     case wireless::MessageType::Disconnected: {
         const auto stream = get_or_create(header, false);
         if (stream) {
-            auto device = stream->device();
+            const auto device = stream->device();
+            // Capture telemetry BEFORE set_identity() clears the media frame.
+            const auto telemetry = stream->disconnect_telemetry();
             const auto name = header_text(header.device_name);
             stream->set_identity(name.empty() ? device.name : name, false);
-            logging::write(std::format("wireless_hub disconnected id_fp={}",
-                anonymous_label(device.id)));
+            logging::write(std::format(
+                "wireless_hub disconnected id_fp={} was_connected={} "
+                "video_frames_total={} audio_packets_total={} last_video_age_ms={}",
+                anonymous_label(device.id), telemetry.was_connected,
+                telemetry.video_frames_total, telemetry.audio_packets_total,
+                telemetry.last_video_age_ms));
         }
         break;
     }

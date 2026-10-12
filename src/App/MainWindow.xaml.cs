@@ -5075,7 +5075,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (sender is not MenuItem item ||
             ItemsControl.ItemsControlFromItemContainer(item) is not ContextMenu menu ||
             menu.PlacementTarget is not FrameworkElement { DataContext: Models.DeviceViewModel device } ||
-            device.IsMediaCast) return;
+            (device.IsMediaCast || device.IsWirelessOffline)) return;
         try
         {
             if (_viewModel.IsBluetoothControlEnabled)
@@ -5099,7 +5099,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         while (current is not null && current is not ListBoxItem)
             current = VisualTreeHelper.GetParent(current);
         if (current is not ListBoxItem item || item.ContextMenu is null) return;
-        if (item.DataContext is DeviceViewModel { IsMediaCast: true })
+        if (item.DataContext is DeviceViewModel device &&
+            (device.IsMediaCast || device.IsWirelessOffline))
         {
             e.Handled = true;
             return;
