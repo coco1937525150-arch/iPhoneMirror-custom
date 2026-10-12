@@ -2961,6 +2961,30 @@ var reversed = BluetoothMouseOrientationMapper.Map(3, -4, 1206, 2622, 0,
 Equal((-3d, 4d), reversed,
     "Bluetooth axis reversal applies after direction mapping");
 
+// Wi-Fi touch sends *absolute* normalized coordinates, not relative BLE
+// pointer travel. Every preview rotation must map a Windows click to the
+// corresponding iPhone touch point, independently from HID direction settings.
+foreach (var (rotation, expected) in new (int Rotation, (double X, double Y) Position)[]
+{
+    (0, (0.2, 0.4)),
+    (1, (0.6, 0.2)),
+    (2, (0.8, 0.6)),
+    (3, (0.4, 0.8)),
+})
+{
+    var actual = BluetoothMouseOrientationMapper.MapNormalized(
+        0.2, 0.4, 1206, 2622, rotation,
+        BluetoothMouseDirection.Up, BluetoothMouseDirection.Up,
+        false, false);
+    Equal(expected, actual,
+        $"Wi-Fi absolute touch coordinates obey {rotation * 90}-degree window rotation");
+}
+Equal((0.8, 0.6), BluetoothMouseOrientationMapper.MapNormalized(
+    0.2, 0.4, 1206, 2622, 0,
+    BluetoothMouseDirection.Up, BluetoothMouseDirection.Up,
+    true, true),
+    "Wi-Fi touch axes invert correctly for user-configured screen mapping");
+
 var updateNetworkRoot = Path.Combine(Path.GetTempPath(),
     $"iphone-mirror-update-network-{Guid.NewGuid():N}");
 try
