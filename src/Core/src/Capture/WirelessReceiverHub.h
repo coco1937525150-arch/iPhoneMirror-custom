@@ -42,6 +42,15 @@ struct WirelessDeviceSnapshot {
     std::wstring os_version;
 };
 
+// Per-device transport telemetry used only at a real AirPlay disconnect.
+// Negative last_video_age_ms means no valid video frame has been received.
+struct WirelessDisconnectTelemetry {
+    bool was_connected{};
+    std::uint64_t video_frames_total{};
+    std::uint64_t audio_packets_total{};
+    std::int64_t last_video_age_ms{-1};
+};
+
 enum class MediaCastCommandType : std::uint32_t {
     None, Play, Stop, Pause, Resume, Seek, Volume,
 };
@@ -87,6 +96,7 @@ public:
     void set_metadata(std::wstring product_type, std::wstring os_version);
     [[nodiscard]] WirelessDeviceSnapshot device() const;
     [[nodiscard]] bool connected() const;
+    [[nodiscard]] WirelessDisconnectTelemetry disconnect_telemetry() const noexcept;
     void attach(CapturePreferences preferences);
     void detach() noexcept;
     [[nodiscard]] Snapshot snapshot() const;
@@ -132,6 +142,7 @@ private:
     std::chrono::steady_clock::time_point started_at_{std::chrono::steady_clock::now()};
     std::chrono::steady_clock::time_point fps_sample_time_{started_at_};
     std::uint64_t fps_sample_frames_{};
+    std::chrono::steady_clock::time_point last_video_at_{};
     std::uint64_t rejected_video_messages_{};
     std::uint64_t rejected_audio_messages_{};
 
