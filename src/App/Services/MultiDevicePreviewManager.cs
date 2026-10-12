@@ -255,10 +255,27 @@ internal sealed class MultiDevicePreviewManager : IDisposable
             return;
         }
 
-        if (handle != 0 && _wirelessReconnectPending.Remove(udid) &&
-            window.RebindSession(handle))
+        if (handle != 0 && _wirelessReconnectPending.Contains(udid))
         {
-            window.SetWaitingForWirelessReconnect(false);
+            if (window.RebindSession(handle))
+            {
+                _wirelessReconnectPending.Remove(udid);
+                window.SetWaitingForWirelessReconnect(false);
+                viewModel.AddDiagnosticLog(AppLog.Event(
+                    "independent_preview_wireless_reconnected",
+                    ("device", AppLog.Device(udid)),
+                    ("handle", AppLog.Handle(handle))));
+            }
+            else
+            {
+                // A transient attach failure must not discard the preserved
+                // geometry. The next real handle update can retry, or the
+                // user can explicitly open a fresh preview as a fallback.
+                viewModel.AddDiagnosticLog(AppLog.Event(
+                    "independent_preview_wireless_rebind_deferred",
+                    ("device", AppLog.Device(udid)),
+                    ("handle", AppLog.Handle(handle))));
+            }
             return;
         }
 
