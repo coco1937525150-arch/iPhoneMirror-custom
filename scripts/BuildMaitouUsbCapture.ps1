@@ -108,4 +108,8 @@ $smoke = & (Join-Path $destination 'Maitou.CaptureHost.exe') '--lifecycle-self-t
 if ($LASTEXITCODE -ne 0 -or -not ($smoke -match '"passed":true')) {
     throw 'Maitou CaptureHost lifecycle smoke test failed.'
 }
+# The user can run this entirely read-only probe before attempting USB mirroring.
+# No driver installers are called and no USB configuration is switched.
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'USB-ReadOnly-Diagnostics.cmd') `
+    -Destination (Join-Path $destination 'USB-ReadOnly-Diagnostics.cmd') -Force
 Write-Host "Maitou USB video host bundled from pinned source: $pinned"

@@ -464,6 +464,7 @@ try {
             'CHANGELOG.md',
             'DRIVER_DEPENDENCIES.md',
             'tools\MaitouUsbCapture\Maitou.CaptureHost.exe',
+            'tools\MaitouUsbCapture\USB-ReadOnly-Diagnostics.cmd',
             'tools\MaitouUsbCapture\Maitou.DeviceSetup.exe',
             'tools\MaitouUsbCapture\libusb0.dll',
             'tools\MaitouUsbCapture\avcodec-62.dll',
