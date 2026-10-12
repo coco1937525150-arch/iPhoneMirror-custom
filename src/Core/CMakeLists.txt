@@ -12,6 +12,7 @@ set(IPHONEMIRROR_CORE_SOURCES
     src/Device/AppleUsbDiscovery.cpp
     src/Device/DeviceManager.cpp
     src/Capture/CaptureSession.cpp
+    src/Capture/MaitouUsbCaptureSession.cpp
     src/Capture/WirelessReceiverHub.cpp
     src/Capture/WirelessCaptureSession.cpp
     src/Media/H264.cpp

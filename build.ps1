@@ -46,6 +46,8 @@ $VersionProperty = if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+$MaitouVideoBuild = Join-Path $Root 'scripts\BuildMaitouUsbCapture.ps1'
+$MaitouVideoOutput = Join-Path $Root 'dist\MaitouUsbCapture'
 $RustBridgeBuild = Join-Path $Root 'scripts\BuildRustUsbBridge.ps1'
 $UsbTouchBridgeOutput = Join-Path $Root 'dist\iUsbBridge.exe'
 $UsbTouchBridgeRuntimeManifest = Join-Path $Root 'dist\iUsbBridge.runtime.json'
@@ -192,6 +194,15 @@ if (-not (Test-Path $CTest)) {
 Push-Location $Root
 try {
     Build-UsbTouchBridge
+    & $MaitouVideoBuild -OutputDirectory $MaitouVideoOutput
+    if ($LASTEXITCODE -ne 0) { throw "Maitou USB video capture build failed: $LASTEXITCODE" }
+    foreach ($required in @('Maitou.CaptureHost.exe', 'Maitou.DeviceSetup.exe',
+        'libusb0.dll', 'avcodec-62.dll', 'avutil-60.dll', 'usb-compatibility.json',
+        'LICENSE-Maitou.txt')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $MaitouVideoOutput $required) -PathType Leaf)) {
+            throw "Maitou USB capture output missing: $required"
+        }
+    }
 
     Assert-SafeWorkspaceDirectory $WirelessRoot
     if (-not (Test-Path -LiteralPath $WirelessManifest)) {
@@ -452,6 +463,17 @@ try {
             'THIRD_PARTY_NOTICES.md',
             'CHANGELOG.md',
             'DRIVER_DEPENDENCIES.md',
+            'tools\MaitouUsbCapture\Maitou.CaptureHost.exe',
+            'tools\MaitouUsbCapture\Maitou.DeviceSetup.exe',
+            'tools\MaitouUsbCapture\libusb0.dll',
+            'tools\MaitouUsbCapture\avcodec-62.dll',
+            'tools\MaitouUsbCapture\avutil-60.dll',
+            'tools\MaitouUsbCapture\usb-compatibility.json',
+            'tools\MaitouUsbCapture\LICENSE-Maitou.txt',
+            'tools\MaitouUsbCapture\LICENSE-QuickTime.txt',
+            'tools\MaitouUsbCapture\LICENSE-QuickTime-danielpaulus.txt',
+            'tools\MaitouUsbCapture\LICENSE-FFmpeg-LGPL.txt',
+            'tools\MaitouUsbCapture\LICENSE-libusb-LGPL.txt',
             'tools\iUsbBridge.exe',
             'tools\iUsbBridge-LICENSE.txt',
             'tools\updater\Apply-ZipUpdate.ps1',
