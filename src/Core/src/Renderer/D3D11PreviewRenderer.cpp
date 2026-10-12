@@ -1637,10 +1637,18 @@ struct D3D11PreviewRenderer::Impl {
                 if (framed) draw_device_frame(frame_profile);
                 else draw_black_background(rounded);
             }
+            // Video corners are premultiplied: blend them ONTO the physical
+            // frame instead of replacing the bezel with transparent corners.
+            constexpr float frame_blend[] = {0, 0, 0, 0};
+            if (framed)
+                context->OMSetBlendState(premultiplied_blend_state.Get(),
+                    frame_blend, 0xffffffffU);
             draw_nv12(viewport,
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
                 rounded, turns);
+            if (framed)
+                context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             // No synthetic island or notch over the real iOS video.
         } else {
             ensure_render_texture(limited_width, limited_height);
@@ -1671,7 +1679,13 @@ struct D3D11PreviewRenderer::Impl {
                 rounded, 0, nullptr, viewport.TopLeftX, viewport.TopLeftY, &frame_profile);
             ID3D11ShaderResourceView* copy_view = render_view.Get();
             context->PSSetShaderResources(2, 1, &copy_view);
+            constexpr float frame_blend[] = {0, 0, 0, 0};
+            if (framed)
+                context->OMSetBlendState(premultiplied_blend_state.Get(),
+                    frame_blend, 0xffffffffU);
             context->Draw(3, 0);
+            if (framed)
+                context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             context->PSSetShaderResources(0, 3, empty);
             // Likewise leave the limited-render path's original pixels unobscured.
         }
