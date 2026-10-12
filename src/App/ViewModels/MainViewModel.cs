@@ -125,6 +125,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     private readonly DeviceIdentityResolver _identityResolver;
     private UsbTouchBridgeHost? _usbTouchBridge;
     private UsbTouchBridgeHost? _wirelessTouchBridge;
+    // AirPlay video and Wi-Fi touch are independent. Recover a transient
+    // Wi-Fi touch tunnel without tearing down a healthy AirPlay video stream.
+    private readonly SingleFlightOperation _wirelessTouchRecovery = new();
     private bool _wirelessControlEnabled;
     private bool _wirelessControlConnected;
     private string? _wirelessControlDeviceUdid;
@@ -2082,24 +2085,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         var bridge = new UsbTouchBridgeHost();
         _wirelessTouchBridge = bridge;
         bridge.StatusChanged += (_, bridgeEvent) =>
-        {
-            if (!ReferenceEquals(_wirelessTouchBridge, bridge)) return;
-            if (bridgeEvent.EventName == "clipboard_text")
-            {
-                HandleClipboardTextFromDevice(bridgeEvent.Text);
-                return;
-            }
-            LogBridgeEvent("wireless", bridgeEvent);
-            UpdateReverseControlStartupStatus(LocalizationService.Get("ReverseControlTransportWireless"), ControlStatusMode.Wireless, bridgeEvent);
-            if (bridgeEvent.EventName is not ("error" or "status") ||
-                (bridgeEvent.EventName == "status" && bridgeEvent.Code != "terminated")) return;
-            _wirelessControlConnected = false;
-            ControlStatus.Report(ControlStatusMode.Wireless, ControlStage.Recovering, device.Name, "检测到控制通道暂时中断，正在尝试重新连接…");
-            _usbControlStatus = LocalizationService.Get("ReverseControlWirelessDisconnected");
-            ShowReverseControlError(LocalizationService.Get("ReverseControlTransportWireless"), FormatReverseControlBridgeError(bridgeEvent));
-            if (Application.Current?.Dispatcher is { } dispatcher)
-                dispatcher.BeginInvoke(async () => await DisableWirelessControlAsync());
-        };
+            HandleWirelessBridgeEvent(bridge, bridgeEvent, device.Name);
         var lockdownGateHeld = false;
         try
         {
@@ -2146,12 +2132,164 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    private void HandleWirelessBridgeEvent(UsbTouchBridgeHost bridge,
+        BridgeStatusEventArgs bridgeEvent, string deviceName)
+    {
+        if (!ReferenceEquals(_wirelessTouchBridge, bridge)) return;
+        if (bridgeEvent.EventName == "clipboard_text")
+        {
+            HandleClipboardTextFromDevice(bridgeEvent.Text);
+            return;
+        }
+        LogBridgeEvent("wireless", bridgeEvent);
+        UpdateReverseControlStartupStatus(
+            LocalizationService.Get("ReverseControlTransportWireless"),
+            ControlStatusMode.Wireless, bridgeEvent);
+        if (bridgeEvent.EventName is not ("error" or "status") ||
+            (bridgeEvent.EventName == "status" && bridgeEvent.Code != "terminated"))
+            return;
+
+        _wirelessControlConnected = false;
+        _usbControlStatus = LocalizationService.Get("ReverseControlWirelessDisconnected");
+        ControlStatus.Report(ControlStatusMode.Wireless, ControlStage.Recovering,
+            deviceName, "无线触控通道中断，正在有限次数内自动重连…");
+        DiagnosticLogger.ReverseControl("wireless", "transport_lost",
+            ("bridge_code", bridgeEvent.Code));
+        if (!_wirelessControlEnabled || _usbControlStopping || _disposed) return;
+        if (Application.Current?.Dispatcher is { } dispatcher)
+            dispatcher.BeginInvoke(async () =>
+            {
+                if (_wirelessControlEnabled && !_usbControlStopping && !_disposed)
+                    await _wirelessTouchRecovery.RunAsync(
+                        RecoverWirelessTouchCoreAsync, _shutdownCancellation.Token);
+            });
+    }
+
+    private async Task RecoverWirelessTouchCoreAsync(CancellationToken cancellationToken)
+    {
+        if (_disposed || !_wirelessControlEnabled || _usbControlStopping) return;
+        var mirrorUdid = _wirelessControlDeviceUdid;
+        if (string.IsNullOrWhiteSpace(mirrorUdid)) return;
+        var device = Devices.FirstOrDefault(candidate =>
+            DeviceViewModel.UdidEquals(candidate.Udid, mirrorUdid));
+        var appleUdid = device is null ? null : _identityResolver.Resolve(device).AppleUdid;
+        if (device is null || string.IsNullOrWhiteSpace(appleUdid))
+        {
+            AddDiagnosticLog(AppLog.Event("wireless_touch_recovery_binding_missing",
+                ("device", AppLog.Device(mirrorUdid))));
+            return;
+        }
+        var previous = _wirelessTouchBridge;
+        _wirelessTouchBridge = null;
+        _wirelessControlConnected = false;
+        _reverseInputRouter.Stop();
+        try { if (previous is not null) await previous.DisposeAsync(); }
+        catch (Exception error)
+        {
+            AddDiagnosticLog(AppLog.Event("wireless_touch_old_bridge_dispose_failed",
+                ("error", AppLog.Error(error))));
+        }
+
+        for (var attempt = 1; attempt <= 3; ++attempt)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_wirelessControlEnabled || _usbControlStopping ||
+                !DeviceViewModel.UdidEquals(_wirelessControlDeviceUdid, mirrorUdid))
+                return;
+            ControlStatus.Report(ControlStatusMode.Wireless, ControlStage.Recovering,
+                device.Name, $"正在重连无线触控（第 {attempt}/3 次）…");
+            DiagnosticLogger.ReverseControl("wireless", "recovery_begin",
+                ("device", AppLog.Device(mirrorUdid)), ("attempt", attempt));
+            await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+            var next = new UsbTouchBridgeHost();
+            var gateHeld = false;
+            try
+            {
+                await _lockdownHandshakeGate.WaitAsync(cancellationToken);
+                gateHeld = true;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!_wirelessControlEnabled || _usbControlStopping ||
+                    !DeviceViewModel.UdidEquals(_wirelessControlDeviceUdid, mirrorUdid))
+                {
+                    await next.DisposeAsync();
+                    return;
+                }
+                _wirelessTouchBridge = next;
+                next.StatusChanged += (_, bridgeEvent) =>
+                    HandleWirelessBridgeEvent(next, bridgeEvent, device.Name);
+                await next.StartAsync(UsbTouchTransport.Wireless, appleUdid,
+                    Path.Combine(AppContext.BaseDirectory, "tools", "iUsbBridge.exe"),
+                    cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!_wirelessControlEnabled || _usbControlStopping ||
+                    !DeviceViewModel.UdidEquals(_wirelessControlDeviceUdid, mirrorUdid))
+                {
+                    _wirelessTouchBridge = null;
+                    await next.DisposeAsync();
+                    return;
+                }
+                _wirelessControlConnected = true;
+                _reverseInputRouter.Begin(appleUdid, ReverseControlMode.Wireless);
+                _usbControlStatus = next.AuthMode == "direct"
+                    ? LocalizationService.Get("ReverseControlWirelessEnabledDirect")
+                    : next.GateOpen
+                    ? LocalizationService.Get("ReverseControlWirelessEnabled")
+                    : LocalizationService.Get("ReverseControlWirelessConnected");
+                ControlStatus.Ready(ControlStatusMode.Wireless, device.Name);
+                DiagnosticLogger.ReverseControl("wireless", "recovery_complete",
+                    ("device", AppLog.Device(mirrorUdid)), ("attempt", attempt),
+                    ("gate_open", next.GateOpen));
+                NotifyUsbControlStateChanged();
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                if (ReferenceEquals(_wirelessTouchBridge, next))
+                    _wirelessTouchBridge = null;
+                await next.DisposeAsync();
+                return;
+            }
+            catch (Exception error)
+            {
+                if (ReferenceEquals(_wirelessTouchBridge, next))
+                    _wirelessTouchBridge = null;
+                try { await next.DisposeAsync(); }
+                catch { /* Best-effort cleanup after a failed Wi-Fi tunnel. */ }
+                DiagnosticLogger.ReverseControlError("wireless", "recovery_failed",
+                    ("device", AppLog.Device(mirrorUdid)),
+                    ("attempt", attempt), ("error", AppLog.Error(error)));
+                if (attempt == 3)
+                {
+                    _wirelessControlEnabled = false;
+                    _wirelessControlConnected = false;
+                    _wirelessControlDeviceUdid = null;
+                    _reverseInputRouter.Stop();
+                    _usbControlStatus = LocalizationService.Format(
+                        "ReverseControlWirelessFailedFormat", error.Message);
+                    ControlStatus.Failed(ControlStatusMode.Wireless, device.Name,
+                        "无线触控自动重连失败", error.Message);
+                    ShowReverseControlError(
+                        LocalizationService.Get("ReverseControlTransportWireless"),
+                        error.Message);
+                }
+            }
+            finally
+            {
+                if (gateHeld) _lockdownHandshakeGate.Release();
+                NotifyUsbControlStateChanged();
+            }
+        }
+    }
+
     private async Task DisableWirelessControlAsync()
     {
         if (_usbControlStopping) return;
         if (!_wirelessControlEnabled && _wirelessTouchBridge is null) return;
         _usbControlStopping = true;
+        // Prevent new recovery requests before cancelling the in-flight one.
+        _wirelessControlEnabled = false;
         NotifyUsbControlStateChanged();
+        await _wirelessTouchRecovery.CancelAsync();
         var bridge = _wirelessTouchBridge;
         _wirelessTouchBridge = null;
         _wirelessControlEnabled = _wirelessControlConnected = false;
