@@ -5243,10 +5243,26 @@ Equal(WirelessStallRecoveryAction.RefreshPreview,
     noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
         stallStart.AddSeconds(5)),
     "streaming with zero frames refreshes the black preview");
-Equal(WirelessStallRecoveryAction.RestartSession,
+Equal(WirelessStallRecoveryAction.None,
     noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
         stallStart.AddSeconds(11)),
-    "persistent initial black preview triggers one bounded restart");
+    "no first video frame never forces a potentially infinite restart loop");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(2)),
+    "prolonged initial black preview remains non-destructive");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(100, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(3)),
+    "replacement session begins a new first-frame wait");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    noFrameTracker.Observe(100, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(3).AddSeconds(5)),
+    "replacement without frames also gets only a soft preview refresh");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(100, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(4)),
+    "even across new handles the watchdog cannot restart a session");
 Equal(WirelessStallRecoveryAction.None,
     noFrameTracker.Observe(99, StreamingStatus(498, 1080, 1), 123,
         stallStart.AddSeconds(12)),
