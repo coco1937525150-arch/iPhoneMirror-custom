@@ -1675,11 +1675,29 @@ Equal(true,
 Equal(true,
     nativePreviewWindowCode.Contains("private bool _isTopMost;",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("SetWindowPos(_handle, HwndNoTopMost",
+    nativePreviewWindowCode.Contains("app.UpdateSettings.IndependentWindowAlwaysOnTop",
         StringComparison.Ordinal) &&
-    !nativePreviewWindowCode.Contains("_isTopMost = SetWindowPos(_handle, HwndTopMost",
+    nativePreviewWindowCode.Contains("var zOrder = preferredTopMost ? HwndTopMost : HwndNoTopMost;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_topMostItem.IsChecked = _isTopMost;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("if (!SetWindowPos(_handle, desiredTopMost ? HwndTopMost : HwndNoTopMost,",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_ = app.SaveUpdateSettings();",
         StringComparison.Ordinal),
-    "independent previews start non-topmost while retaining the manual pin command");
+    "independent previews expose checkable persistent native always-on-top without forcing focus");
+var corePreviewApiCode = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "CoreApi.cpp"));
+Equal(true,
+    corePreviewApiCode.Contains("found->second->set_rotation(normalized);",
+        StringComparison.Ordinal) &&
+    !corePreviewApiCode.Contains("set_rotation(normalized == 2 ? 2 : 0)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("var targetRotation = ((_rotation + delta) % 4 + 4) % 4;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("!NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, targetRotation)",
+        StringComparison.Ordinal),
+    "all quarter turns rotate the native video with its window shell; failed turns do not move the shell");
 Equal(true,
     mainViewModelSource.Contains("private bool _bluetoothControlStopping;",
         StringComparison.Ordinal) &&
