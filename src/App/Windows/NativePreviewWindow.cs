@@ -244,7 +244,7 @@ internal sealed class NativePreviewWindow : IDisposable
             _sizePresets.Add((fraction, preset));
             _windowSizeItem.Items.Add(preset);
         }
-        _topMostItem = new MenuItem { Style = itemStyle };
+        _topMostItem = new MenuItem { Style = itemStyle, IsCheckable = true };
         _topMostItem.Click += (_, _) => ToggleTopMost();
         _fixedItem = new MenuItem { Style = itemStyle };
         _fixedItem.Click += (_, _) => ToggleFixedWindow();
@@ -583,17 +583,20 @@ internal sealed class NativePreviewWindow : IDisposable
     private void ShowInitially()
     {
         var boundsApplied = _aspectController.ApplyInitialBounds();
-        _isTopMost = false;
-        if (!SetWindowPos(_handle, HwndNoTopMost, 0, 0, 0, 0,
-                SwpNoSize | SwpNoMove | SwpNoActivate | SwpShowWindow))
+        var preferredTopMost = Application.Current is App app &&
+            app.UpdateSettings.IndependentWindowAlwaysOnTop;
+        var zOrder = preferredTopMost ? HwndTopMost : HwndNoTopMost;
+        var positionApplied = SetWindowPos(_handle, zOrder, 0, 0, 0, 0,
+            SwpNoSize | SwpNoMove | SwpNoActivate | SwpShowWindow);
+        if (!positionApplied)
         {
-            // Keep the window usable if the combined show/z-order operation is
-            // rejected by the shell. Its final bounds were already applied
-            // while hidden, so this fallback still cannot expose a move.
+            // Keep a usable independent window if shell positioning fails.
             _ = ShowWindow(_handle, SwShow);
-            _ = SetWindowPos(_handle, HwndNoTopMost, 0, 0, 0, 0,
+            positionApplied = SetWindowPos(_handle, zOrder, 0, 0, 0, 0,
                 SwpNoSize | SwpNoMove | SwpNoActivate);
         }
+        _isTopMost = preferredTopMost && positionApplied;
+        UpdateContextMenuLabels();
         Log("independent_window_initial_layout",
             ("mode", WindowMode), ("bounds_applied", boundsApplied),
             ("top_most", _isTopMost));
@@ -1043,6 +1046,7 @@ internal sealed class NativePreviewWindow : IDisposable
         _displayMenuItem.Header = LocalizationService.Get("IndependentWindowDisplayMenu");
         _topMostItem.Header = LocalizationService.Get(
             _isTopMost ? "IndependentWindowUnpin" : "IndependentWindowPin");
+        _topMostItem.IsChecked = _isTopMost;
         _fixedItem.Header = LocalizationService.Get(
             _isFixed ? "IndependentWindowUnfix" : "IndependentWindowFix");
         _fixedItem.IsEnabled = !_isFullScreen;
@@ -1130,9 +1134,24 @@ internal sealed class NativePreviewWindow : IDisposable
     private void ToggleTopMost()
     {
         if (_disposed || _handle == 0) return;
-        _isTopMost = !_isTopMost;
-        _ = SetWindowPos(_handle, _isTopMost ? HwndTopMost : HwndNoTopMost,
-            0, 0, 0, 0, SwpNoSize | SwpNoMove | SwpNoActivate);
+        var desiredTopMost = !_isTopMost;
+        if (!SetWindowPos(_handle, desiredTopMost ? HwndTopMost : HwndNoTopMost,
+                0, 0, 0, 0, SwpNoSize | SwpNoMove | SwpNoActivate))
+        {
+            Log("independent_window_topmost_failed",
+                ("mode", WindowMode), ("requested", desiredTopMost),
+                ("win32_error", Marshal.GetLastWin32Error()));
+            UpdateContextMenuLabels();
+            return;
+        }
+        _isTopMost = desiredTopMost;
+        if (Application.Current is App app)
+        {
+            // Each open window retains its own state; persist the selected
+            // default for the next independent window or application launch.
+            app.UpdateSettings.IndependentWindowAlwaysOnTop = _isTopMost;
+            _ = app.SaveUpdateSettings();
+        }
         UpdateContextMenuLabels();
         Log("independent_window_topmost",
             ("mode", WindowMode), ("enabled", _isTopMost));
