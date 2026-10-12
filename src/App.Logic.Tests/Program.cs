@@ -591,16 +591,33 @@ Equal(true, mainViewModelSource.Contains(
         "IPhoneFilterDriverState.UnsafeStack => LocalizationService.Get(\"DriverUnsafeAppleStack\")",
         StringComparison.Ordinal),
     "unsafe Apple USB filter stacks have a dedicated visible driver state");
+// The external Maitou USB CaptureHost is authoritative for driver compatibility.
+// Never require legacy iPhoneMirror filter readiness or auto-install an unrelated
+// filter before launching the independently verified native capture process.
+var usbPreflightBegin = mainViewModelSource.IndexOf(
+    "private async Task<(bool Success, int ErrorCode,", StringComparison.Ordinal);
+var usbPreflightEnd = usbPreflightBegin >= 0
+    ? mainViewModelSource.IndexOf("private bool OpenDriverManager(",
+        usbPreflightBegin, StringComparison.Ordinal)
+    : -1;
+var usbPreflightBody = usbPreflightBegin >= 0 && usbPreflightEnd > usbPreflightBegin
+    ? mainViewModelSource[usbPreflightBegin..usbPreflightEnd]
+    : string.Empty;
+Equal(true, usbPreflightBody.Contains("maitou_usb_preflight_delegated",
+        StringComparison.Ordinal) &&
+    usbPreflightBody.Contains("_filterDriver.Inspect(device.Udid)",
+        StringComparison.Ordinal) &&
+    usbPreflightBody.Contains("CaptureFailureKind.None",
+        StringComparison.Ordinal) &&
+    !usbPreflightBody.Contains("OpenDriverManager(", StringComparison.Ordinal) &&
+    !usbPreflightBody.Contains("driverStatus.CanStartCapture",
+        StringComparison.Ordinal),
+    "wired USB preflight only records legacy filter diagnostics and delegates compatibility to Maitou");
 Equal(true, mainViewModelSource.Contains(
-        "driver safety warning: {driverStatus.Diagnostic}", StringComparison.Ordinal) &&
-    mainViewModelSource.Contains(
         "CaptureErrorGuidance.StartFailureMessage(\n                            preflight.ErrorCode",
-        StringComparison.Ordinal),
-    "wired preflight records the filter warning while preserving start error propagation");
-Equal(true, mainViewModelSource.Contains(
-        "? CaptureFailureKind.UsbConnection\n            : CaptureFailureKind.Driver",
-        StringComparison.Ordinal),
-    "managed USB preflight distinguishes a missing device from a driver failure");
+        StringComparison.Ordinal) &&
+    mainViewModelSource.Contains("capture_start_preflight", StringComparison.Ordinal),
+    "capture start still reports startup errors while using the independent USB backend");
 var stopMethodIndex = mainViewModelSource.IndexOf(
     "private async Task StopAsync()", StringComparison.Ordinal);
 var restoreWarningCatchIndex = stopMethodIndex >= 0
