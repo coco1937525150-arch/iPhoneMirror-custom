@@ -156,6 +156,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private bool _attached;
     private bool _isFullScreen;
     private double _sizeFraction = 0.82;
+    private double _wheelZoomTargetFraction = 0.82;
+    private readonly DispatcherTimer _wheelZoomTimer;
     private bool _disposed;
     private bool _closeQueued;
     private bool _isTopMost;
@@ -332,6 +334,13 @@ internal sealed class NativePreviewWindow : IDisposable
         _handle = _source.Handle;
         if (_handle == 0) throw new InvalidOperationException(
             "Could not create the native preview window.");
+        _wheelZoomTimer = new DispatcherTimer(DispatcherPriority.Render, _source.Dispatcher)
+        {
+            // Coalesce high-resolution trackpad and wheel events; keep native
+            // HWND/D3D11 resize traffic lower than the desktop refresh rate.
+            Interval = TimeSpan.FromMilliseconds(24),
+        };
+        _wheelZoomTimer.Tick += OnWheelZoomTick;
 
         if (managedContent is not null)
         {
@@ -792,9 +801,7 @@ internal sealed class NativePreviewWindow : IDisposable
                 // CTRL+wheel is a Windows window-size gesture, not an iOS
                 // scroll event. Handle it even while USB/BLE input is enabled.
                 var ticks = unchecked((short)(wParam.ToInt64() >> 16));
-                if (ticks != 0)
-                    SetIndependentWindowSize(Math.Clamp(_sizeFraction +
-                        Math.Sign(ticks) * 0.05, 0.35, 0.95));
+                if (ticks != 0) QueueSmoothWheelZoom(ticks);
                 handled = true;
                 return 0;
             case WmMouseWheel when IsPointerInputActive:
@@ -950,12 +957,52 @@ internal sealed class NativePreviewWindow : IDisposable
     private void SetIndependentWindowSize(double fraction)
     {
         if (_disposed || _isFullScreen || _isFixed || _handle == 0) return;
+        _wheelZoomTimer.Stop();
         fraction = Math.Round(Math.Clamp(fraction, 0.35, 0.95), 2);
         if (!_aspectController.ResizeToWorkAreaFraction(fraction)) return;
         _sizeFraction = fraction;
+        _wheelZoomTargetFraction = fraction;
         UpdateContextMenuLabels();
         Log("independent_window_size_changed",
             ("mode", WindowMode), ("fraction", fraction));
+    }
+
+    private void QueueSmoothWheelZoom(int wheelDelta)
+    {
+        if (_disposed || _isFullScreen || _isFixed || _handle == 0) return;
+        // Preserve precision for touchpads which send sub-120 wheel deltas.
+        // Subsequent input updates one target instead of immediately running
+        // SetWindowPos once for every raw wheel event.
+        _wheelZoomTargetFraction = Math.Clamp(
+            _wheelZoomTargetFraction + wheelDelta / 120.0 * 0.035,
+            0.35, 0.95);
+        if (!_wheelZoomTimer.IsEnabled) _wheelZoomTimer.Start();
+    }
+
+    private void OnWheelZoomTick(object? sender, EventArgs e)
+    {
+        if (_disposed || _isFullScreen || _isFixed || _handle == 0)
+        {
+            _wheelZoomTimer.Stop();
+            return;
+        }
+        var remaining = _wheelZoomTargetFraction - _sizeFraction;
+        var finished = Math.Abs(remaining) < 0.001;
+        var next = finished
+            ? _wheelZoomTargetFraction
+            : _sizeFraction + remaining * 0.38;
+        if (!_aspectController.ResizeToWorkAreaFraction(next))
+        {
+            _wheelZoomTimer.Stop();
+            _wheelZoomTargetFraction = _sizeFraction;
+            return;
+        }
+        _sizeFraction = next;
+        if (!finished) return;
+        _wheelZoomTimer.Stop();
+        UpdateContextMenuLabels();
+        Log("independent_window_size_changed",
+            ("mode", WindowMode), ("fraction", Math.Round(next, 3)));
     }
 
     private void ShowContextMenu()
@@ -1272,6 +1319,8 @@ internal sealed class NativePreviewWindow : IDisposable
             ("mode", WindowMode), ("attached", _attached),
             ("full_screen", _isFullScreen));
         _disposed = true;
+        _wheelZoomTimer.Stop();
+        _wheelZoomTimer.Tick -= OnWheelZoomTick;
         OpenWindows.Remove(this);
         _protectedOverlay?.Close();
         _protectedOverlay = null;
