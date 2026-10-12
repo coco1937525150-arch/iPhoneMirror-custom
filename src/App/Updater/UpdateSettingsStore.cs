@@ -27,6 +27,9 @@ internal sealed class UpdateSettings
     public AppTheme Theme { get; set; } = AppTheme.System;
     public ApplicationDisplayMode ApplicationDisplayMode { get; set; } =
         ApplicationDisplayMode.Complete;
+    // Default for newly opened independent preview windows; each window can
+    // change its own topmost state without changing other open windows.
+    public bool IndependentWindowAlwaysOnTop { get; set; }
     public WirelessReceiverBackend WirelessReceiverBackend { get; set; } =
         WirelessReceiverBackend.Original;
     public string WirelessDisplayProfileId { get; set; } = "1080p";
@@ -105,6 +108,7 @@ internal sealed class UpdateSettings
         NotifyPrereleaseReleases = NotifyPrereleaseReleases,
         Theme = Theme,
         ApplicationDisplayMode = ApplicationDisplayMode,
+        IndependentWindowAlwaysOnTop = IndependentWindowAlwaysOnTop,
         WirelessReceiverBackend = WirelessReceiverBackend,
         WirelessDisplayProfileId = WirelessDisplayProfileId,
         WirelessReceiverName = WirelessReceiverName,
