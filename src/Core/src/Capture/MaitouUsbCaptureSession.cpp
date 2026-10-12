@@ -479,8 +479,10 @@ void MaitouUsbCaptureSession::read_loop(std::stop_token stop) noexcept {
                     fail(FailureKind::UsbConnection, FailureStage::UsbActivation,
                         L"Maitou USB error: " + extract_json_string(status_reply, "errorCode"));
                     break;
-                } else if (!latest_frame())
+                } else if (!source_unavailable && !latest_frame()) {
+                    // Preserve the actionable disconnected/trust guidance.
                     set_status(State::WaitingForDevice, L"Maitou USB: waiting for first video frame");
+                }
             }
             // Do not consume a stale shared GPU frame while the publisher
             // reports a disconnected or untrusted phone.
