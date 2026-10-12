@@ -20,6 +20,11 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _sessionRecoveries =
         new(StringComparer.OrdinalIgnoreCase);
+    // An iPhone may end its AirPlay session when locked. Keep the native
+    // window geometry and user-selected rotation until the user closes it,
+    // and reattach it if iOS advertises a new session after unlocking.
+    private readonly HashSet<string> _wirelessReconnectPending =
+        new(StringComparer.OrdinalIgnoreCase);
     private bool _disposing;
     private bool _disposed;
 
@@ -96,6 +101,13 @@ internal sealed class MultiDevicePreviewManager : IDisposable
                     ("handle", AppLog.Handle(currentHandle))));
                 return Task.FromResult((true, string.Empty));
             }
+            if (device.IsWireless && currentHandle == 0 &&
+                _wirelessReconnectPending.Contains(device.Udid))
+            {
+                existing.Activate();
+                return Task.FromResult((true, string.Empty));
+            }
+            _wirelessReconnectPending.Remove(device.Udid);
             _windows.Remove(device.Udid);
             existing.Dispose();
         }
@@ -193,6 +205,7 @@ internal sealed class MultiDevicePreviewManager : IDisposable
             if (!_windows.TryGetValue(device.Udid, out var tracked) ||
                 !ReferenceEquals(tracked, window)) return;
             _windows.Remove(device.Udid);
+            _wirelessReconnectPending.Remove(device.Udid);
             PreviewClosed?.Invoke(device.Udid);
             var closingHandle = window.SessionHandle;
             viewModel.AddDiagnosticLog(AppLog.Event("independent_preview_closed",
@@ -227,6 +240,27 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         _protectionStates.Remove(udid);
         if (!_windows.TryGetValue(udid, out var window))
             return;
+
+        if (handle == 0 && DeviceViewModel.IsWirelessUdid(udid))
+        {
+            // Locking iOS can terminate mirroring entirely. Closing this
+            // window on handle=0 loses its size, position and rotation even
+            // if a new AirPlay session appears a moment later.
+            _wirelessReconnectPending.Add(udid);
+            window.SetWaitingForWirelessReconnect(true);
+            viewModel.AddDiagnosticLog(AppLog.Event(
+                "independent_preview_wireless_reconnect_pending",
+                ("device", AppLog.Device(udid)),
+                ("old_handle", AppLog.Handle(window.SessionHandle))));
+            return;
+        }
+
+        if (handle != 0 && _wirelessReconnectPending.Remove(udid) &&
+            window.RebindSession(handle))
+        {
+            window.SetWaitingForWirelessReconnect(false);
+            return;
+        }
 
         if (handle == 0 && _sessionRecoveries.Contains(udid))
         {
@@ -275,7 +309,8 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         }
 
         _sessionRecoveries.Remove(udid);
-        if (viewModel.GetDeviceSessionHandle(udid) != 0 ||
+        if (_wirelessReconnectPending.Contains(udid) ||
+            viewModel.GetDeviceSessionHandle(udid) != 0 ||
             !_windows.TryGetValue(udid, out var window)) return;
 
         _windows.Remove(udid);
@@ -404,6 +439,7 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         }
         _windows.Clear();
         _sessionRecoveries.Clear();
+        _wirelessReconnectPending.Clear();
         _protectionStates.Clear();
     }
 }
