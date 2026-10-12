@@ -3074,7 +3074,12 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             var currentSelectionUdid = SelectedDevice?.Udid;
             ReconcileDevices(devices, currentSelectionUdid, captureActive,
                 newlyConnectedWirelessUdid);
-            if (!IsMediaCastSelected)
+            if (SelectedDevice?.IsWirelessOffline == true)
+            {
+                CaptureStatus = SelectedDevice.StatusDisplay;
+                ResetPreviewState();
+            }
+            else if (!IsMediaCastSelected)
             {
                 var capture = await Task.Run(GetSelectedCaptureStatus);
                 if (!IsMediaCastSelected) ApplyCaptureStatus(capture);
@@ -3493,6 +3498,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             DeviceViewModel.UdidEquals(device.Udid, nextUdid));
         SetSelectedDevice(nextSelection, updateDriverStatus: false);
         NotifySelectedDeviceProperties();
+        // Offline->online may update the existing bound item in-place, without
+        // triggering SetSelectedDevice. Re-evaluate the start button explicitly.
+        StartCommand.NotifyCanExecuteChanged();
 
         // Never invoke the legacy libusb0 enumeration API while a capture
         // handle is live. The selected device's driver state is refreshed as
@@ -3536,7 +3544,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private bool CanQueueSessionLifecycleOperation(DeviceViewModel? device) =>
-        device is not null && !IsSessionLifecycleOperationInProgress(device.Udid) &&
+        device is { IsWirelessOffline: false } &&
+        !IsSessionLifecycleOperationInProgress(device.Udid) &&
         (!IsBusy || HasSessionLifecycleOperationInProgress);
 
     // Stopping a live mirror must stay available while unrelated work is
@@ -3861,7 +3870,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task StartAsync()
     {
-        if (_disposed || SelectedDevice is null || HasCaptureSession) return;
+        if (_disposed || SelectedDevice is null || SelectedDevice.IsWirelessOffline ||
+            HasCaptureSession) return;
         var requestedDevice = SelectedDevice;
         var requestedState = GetOrCreateDeviceState(requestedDevice);
         var queuedBehindAnotherOperation = IsBusy || HasSessionLifecycleOperationInProgress;
