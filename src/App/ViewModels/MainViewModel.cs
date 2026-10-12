@@ -2151,6 +2151,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
         _wirelessControlConnected = false;
         _usbControlStatus = LocalizationService.Get("ReverseControlWirelessDisconnected");
+        NotifyUsbControlStateChanged();
         ControlStatus.Report(ControlStatusMode.Wireless, ControlStage.Recovering,
             deviceName, "无线触控通道中断，正在有限次数内自动重连…");
         DiagnosticLogger.ReverseControl("wireless", "transport_lost",
@@ -2177,6 +2178,19 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         {
             AddDiagnosticLog(AppLog.Event("wireless_touch_recovery_binding_missing",
                 ("device", AppLog.Device(mirrorUdid))));
+            _wirelessControlConnected = false;
+            _wirelessControlEnabled = false;
+            _wirelessControlDeviceUdid = null;
+            _reverseInputRouter.Stop();
+            var abandonedBridge = _wirelessTouchBridge;
+            _wirelessTouchBridge = null;
+            try { if (abandonedBridge is not null) await abandonedBridge.DisposeAsync(); }
+            catch { /* A missing binding must never leave the route enabled. */ }
+            _usbControlStatus = LocalizationService.Get("ReverseControlWirelessDisconnected");
+            ControlStatus.Failed(ControlStatusMode.Wireless,
+                device?.Name ?? "iPhone", "无线触控设备绑定已失效",
+                "请重新选择并绑定目标 iPhone。");
+            NotifyUsbControlStateChanged();
             return;
         }
         var previous = _wirelessTouchBridge;
