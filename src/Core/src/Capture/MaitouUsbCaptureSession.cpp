@@ -143,8 +143,26 @@ public:
         std::uint64_t& sequence) {
         if (!mapped_ || mapped_->magic != PreviewMagic ||
             mapped_->version != PreviewVersion ||
-            mapped_->structure_size != sizeof(PreviewState) ||
-            mapped_->running == 0) return {};
+            mapped_->structure_size != sizeof(PreviewState)) return {};
+        if (mapped_->running == 0) {
+            // Maitou closes and recreates the state mapping during a USB
+            // unplug/reconnect. Drop our mapping and shared GPU handles now;
+            // otherwise we could read an orphaned, permanently black view.
+            release_gpu();
+            UnmapViewOfFile(mapped_);
+            mapped_ = nullptr;
+            CloseHandle(mapping_);
+            mapping_ = nullptr;
+            generation_ = 0;
+            sequence = 0;
+            return {};
+        }
+        const auto generation = static_cast<std::uint32_t>(mapped_->generation);
+        if (generation != generation_) {
+            generation_ = generation;
+            sequence = 0;
+            release_gpu();
+        }
         const auto width = mapped_->width;
         const auto height = mapped_->height;
         if (width < 2 || height < 2 || width > static_cast<LONG>(TextureExtent) ||
@@ -165,6 +183,10 @@ public:
         result->height = static_cast<std::uint32_t>(height);
         result->stride = width;
         result->pixel_format = media::PixelFormat::Nv12;
+        result->color.primaries = coremedia::ColorPrimaries::Bt709;
+        result->color.transfer = coremedia::TransferFunction::Bt709;
+        result->color.matrix = coremedia::MatrixCoefficients::Bt709;
+        result->color.range = coremedia::ColorRange::Limited;
         result->timestamp_100ns = mapped_->presentation_time_100ns;
         result->received_at = std::chrono::steady_clock::now();
         const auto w = static_cast<std::size_t>(width);
@@ -256,6 +278,7 @@ private:
 
     HANDLE mapping_{};
     const PreviewState* mapped_{};
+    std::uint32_t generation_{};
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
     ComPtr<ID3D11Texture2D> source_;
