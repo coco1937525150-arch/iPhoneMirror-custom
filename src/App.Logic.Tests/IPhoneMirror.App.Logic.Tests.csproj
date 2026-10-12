@@ -22,6 +22,7 @@
     <Compile Include="..\App\Services\CaptureShutdownCoordinator.cs" Link="CaptureShutdownCoordinator.cs" />
     <Compile Include="..\App\Services\DeviceSessionManager.cs" Link="DeviceSessionManager.cs" />
     <Compile Include="..\App\Services\SingleInstanceCoordinator.cs" Link="SingleInstanceCoordinator.cs" />
+    <Compile Include="..\App\Models\DeviceViewModel.cs" Link="DeviceViewModel.cs" />
     <Compile Include="..\App\Models\DeviceCornerProfile.cs" Link="DeviceCornerProfile.cs" />
     <Compile Include="..\App\Models\DeviceFrameProfile.cs" Link="DeviceFrameProfile.cs" />
     <Compile Include="..\App\Models\DeviceCaptureState.cs" Link="DeviceCaptureState.cs" />
