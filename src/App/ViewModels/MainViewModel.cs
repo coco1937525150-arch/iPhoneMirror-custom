@@ -257,6 +257,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     private readonly Dictionary<string, int> _wirelessMissingRefreshes =
         new(StringComparer.OrdinalIgnoreCase);
     private const int WirelessDiscoveryGraceRefreshes = 3;
+    private static readonly TimeSpan WirelessOfflineRetention = TimeSpan.FromMinutes(10);
+    private readonly Dictionary<string, DateTimeOffset> _wirelessOfflineSince =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _visibleLogLines = new();
     private readonly Stopwatch _lifetime = Stopwatch.StartNew();
     private Func<uint, uint, Nv12VideoFrame?>? _mediaCastNv12FrameProvider;
@@ -727,7 +730,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         }
     }
     private bool IsSettingsInteractionBlocked => IsBusy || _isSettingsDialogOpen;
-    public string DeviceCount => LocalizationService.Format("DeviceCountFormat", Devices.Count);
+    public string DeviceCount => LocalizationService.Format("DeviceCountFormat",
+        Devices.Count(device => !device.IsWirelessOffline));
     public string SelectedName => SelectedDevice?.DisplayName ?? LocalizationService.Get("NoDeviceSelected");
     public string SelectedModel => SelectedDevice?.ModelDisplay ?? "—";
     public string SelectedOs => SelectedDevice?.OsDisplay ?? "—";
@@ -1175,7 +1179,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
                 Environment.GetEnvironmentVariable("IPHONE_MIRROR_LOG_FILE")))));
         _selectedResolutionPreset = ResolutionPresets[0];
         StartCommand = new RelayCommand(() => _ = StartAsync(),
-            () => SelectedDevice is not null && !HasCaptureSession &&
+            () => SelectedDevice is { IsWirelessOffline: false } && !HasCaptureSession &&
                 !IsCapturing && !IsMediaCasting &&
                 CanQueueSessionLifecycleOperation(SelectedDevice));
         StopCommand = new RelayCommand(() => _ = StopAsync(),
@@ -2985,6 +2989,12 @@ internal sealed class MainViewModel : INotifyPropertyChanged
                 .GroupBy(device => device.Udid, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
                 .ToList();
+            // Keep a recently disconnected AirPlay device visible as an
+            // OFFLINE card without pretending it is a live source. Native
+            // sessions are reconciled against *connected* devices only;
+            // otherwise a retained card would start a failing capture loop.
+            var offlineWirelessCards = new List<DeviceViewModel>();
+            var inventoryNow = DateTimeOffset.UtcNow;
             foreach (var known in Devices.Where(device => device.IsWireless).ToArray())
             {
                 var present = devices.Any(device => DeviceViewModel.UdidEquals(
@@ -2992,19 +3002,39 @@ internal sealed class MainViewModel : INotifyPropertyChanged
                 if (present)
                 {
                     _wirelessMissingRefreshes.Remove(known.Udid);
+                    _wirelessOfflineSince.Remove(known.Udid);
                     continue;
                 }
                 var misses = _wirelessMissingRefreshes.TryGetValue(known.Udid,
                     out var count) ? count + 1 : 1;
-                if (misses > WirelessDiscoveryGraceRefreshes)
+                if (misses <= WirelessDiscoveryGraceRefreshes &&
+                    !known.IsWirelessOffline &&
+                    !_wirelessOfflineSince.ContainsKey(known.Udid))
                 {
-                    _wirelessMissingRefreshes.Remove(known.Udid);
+                    _wirelessMissingRefreshes[known.Udid] = misses;
+                    devices.Add(known);
+                    AddDiagnosticLog(AppLog.Event("wireless_device_discovery_grace",
+                        ("device", AppLog.Device(known.Udid)), ("misses", misses)));
                     continue;
                 }
-                _wirelessMissingRefreshes[known.Udid] = misses;
-                devices.Add(known);
-                AddDiagnosticLog(AppLog.Event("wireless_device_discovery_grace",
-                    ("device", AppLog.Device(known.Udid)), ("misses", misses)));
+                if (!_wirelessOfflineSince.TryGetValue(known.Udid, out var offlineSince))
+                {
+                    offlineSince = inventoryNow;
+                    _wirelessOfflineSince[known.Udid] = offlineSince;
+                    AddDiagnosticLog(AppLog.Event("wireless_device_offline_retained",
+                        ("device", AppLog.Device(known.Udid)),
+                        ("retention_seconds", WirelessOfflineRetention.TotalSeconds)));
+                }
+                if (inventoryNow - offlineSince < WirelessOfflineRetention)
+                {
+                    _wirelessMissingRefreshes[known.Udid] = misses;
+                    offlineWirelessCards.Add(known.AsWirelessOffline());
+                }
+                else
+                {
+                    _wirelessMissingRefreshes.Remove(known.Udid);
+                    _wirelessOfflineSince.Remove(known.Udid);
+                }
             }
             var wiredDevices = devices.Where(device => !device.IsWireless &&
                 !device.IsMediaCast).ToList();
@@ -3031,6 +3061,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
                 _knownWirelessDeviceIds, currentWirelessDeviceIds);
             RefreshWirelessStatus();
             await SyncWirelessSessionsLockedAsync(devices.Where(device => device.IsWireless));
+            // Offline placeholders must not reach SyncWirelessSessionsLockedAsync:
+            // no AirPlay sender exists from which to create a capture session.
+            devices.AddRange(offlineWirelessCards);
             _knownWirelessDeviceIds.Clear();
             _knownWirelessDeviceIds.UnionWith(currentWirelessDeviceIds);
             var captureActive = _sessions.AnySession;
@@ -3049,10 +3082,12 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             await PollBackgroundSessionErrorsAsync();
 
             var wiredCount = devices.Count(device => !device.IsWireless);
-            var wirelessCount = devices.Count - wiredCount;
+            var wirelessCount = devices.Count(device =>
+                device.IsWireless && !device.IsWirelessOffline);
             var inventorySignature = string.Join('|',
                 devices.OrderBy(device => device.Udid, StringComparer.OrdinalIgnoreCase)
-                    .Select(device => AppLog.Device(device.Udid)));
+                    .Select(device => AppLog.Device(device.Udid) +
+                        (device.IsWirelessOffline ? ":offline" : ":online")));
             var inventoryChanged = !string.Equals(_lastInventorySignature,
                 inventorySignature, StringComparison.Ordinal);
             _lastInventorySignature = inventorySignature;
@@ -3416,6 +3451,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             .ToDictionary(group => group.Key, group => group.First(),
                 StringComparer.OrdinalIgnoreCase);
         var previousCount = Devices.Count;
+        var previousOnlineCount = Devices.Count(device => !device.IsWirelessOffline);
         var hadWiredUsbControlDevice = HasWiredUsbControlDevice;
 
         // Preserve the order and identity of every existing card. usbmux does
@@ -3437,7 +3473,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         {
             if (!desiredByUdid.ContainsKey(Devices[index].Udid)) Devices.RemoveAt(index);
         }
-        if (previousCount != Devices.Count) OnPropertyChanged(nameof(DeviceCount));
+        if (previousCount != Devices.Count ||
+            previousOnlineCount != Devices.Count(device => !device.IsWirelessOffline))
+            OnPropertyChanged(nameof(DeviceCount));
         if (hadWiredUsbControlDevice != HasWiredUsbControlDevice)
         {
             OnPropertyChanged(nameof(UsbControlStatus));
@@ -4734,6 +4772,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     internal async Task<(bool Success, ulong Handle, bool Created, string Message)> StartBackgroundSessionAsync(
         DeviceViewModel device)
     {
+        if (device.IsWirelessOffline)
+            return (false, 0, false, LocalizationService.Get("WirelessDisconnectedWaiting"));
         if (_disposed)
             return (false, 0, false, LocalizationService.Get("CaptureStopped"));
 
