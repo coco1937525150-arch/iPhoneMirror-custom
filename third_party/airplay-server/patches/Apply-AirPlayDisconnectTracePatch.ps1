@@ -79,11 +79,13 @@ if (-not $mirror.Contains('IPHONE_MIRROR_MIRROR_DISCONNECT_TRACE')) {
             }
 '@ -replace '\r?\n', $Lf
     $mirror = Replace-Once $mirror $needle $replacement 'mirror header socket close'
-    $needle = '    raop_rtp_mirror_stop(raop_rtp_mirror);'
-    $mirror = Replace-Once $mirror $needle (
+    $needle = '    raop_rtp_mirror_t* raop_rtp_mirror = arg;' + $Lf +
+        '    raop_rtp_mirror_stop(raop_rtp_mirror);'
+    $replacement = '    raop_rtp_mirror_t* raop_rtp_mirror = arg;' + $Lf +
         '    logger_log(raop_rtp_mirror->logger, LOGGER_INFO,' + $Lf +
         '        "IPHONE_MIRROR_MIRROR_TRACE cause=worker_exception_stop");' + $Lf +
-        $needle) 'mirror exception exit'
+        '    raop_rtp_mirror_stop(raop_rtp_mirror);'
+    $mirror = Replace-Once $mirror $needle $replacement 'mirror exception-thread exit'
     $needle = '    logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "Stopping raop rtp mirror");'
     $mirror = Replace-Once $mirror $needle (
         '    logger_log(raop_rtp_mirror->logger, LOGGER_INFO,' + $Lf +
