@@ -31,6 +31,22 @@ if ($LASTEXITCODE -ne 0 -or $actualRevision -ne $pinned) {
 if ($LASTEXITCODE -ne 0) { throw 'Maitou CaptureHost native compilation failed.' }
 $native = Join-Path $source 'artifacts\native\Release'
 $deviceSetup = Join-Path $source 'native\Maitou.DeviceSetup\Maitou.DeviceSetup.csproj'
+# The upstream global.json pins a particular .NET 10 feature band, while
+# GitHub runners can have a newer .NET 10 SDK. Only override the copied
+# toolchain selector if the pinned SDK is absent. Source code stays pinned.
+$installedSdks = @(& dotnet --list-sdks | ForEach-Object {
+    if ($_ -match '^(10\.0\.\d+)\s') { [Version]$Matches[1] }
+} | Sort-Object -Descending)
+if ($installedSdks.Count -eq 0) { throw '.NET 10 SDK is unavailable for DeviceSetup.' }
+$globalPath = Join-Path $source 'global.json'
+$upstreamGlobal = Get-Content -LiteralPath $globalPath -Raw | ConvertFrom-Json
+$requestedSdk = [Version]([string]$upstreamGlobal.sdk.version)
+if ($requestedSdk -notin $installedSdks) {
+    $selectedSdk = [string]$installedSdks[0]
+    @{ sdk = @{ version = $selectedSdk; rollForward = 'disable' } } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $globalPath -Encoding utf8
+    Write-Host "Maitou DeviceSetup SDK override: $requestedSdk -> $selectedSdk"
+}
 
 if (Test-Path -LiteralPath $destination) {
     $dir = Get-Item -LiteralPath $destination -Force
@@ -44,7 +60,9 @@ New-Item -ItemType Directory -Force -Path $destination | Out-Null
 # UNCONFIGURED signer and install-mode flags make this a read-only inspector.
 $publishArgs = @(
     'publish', $deviceSetup, '--configuration', 'Release',
-    '--runtime', 'win-x64', '-p:Platform=x64', '-p:RestoreLockedMode=true',
+    '--runtime', 'win-x64', '-p:Platform=x64', '-p:RestoreLockedMode=false',
+    # ILLink.Tasks is an SDK-internal package whose lockfile version follows
+    # the installed .NET 10 SDK patch. Refresh only in the temporary clone.
     '-p:MaitouDriverManifestSha256=UNCONFIGURED',
     '-p:MaitouLocalDriverMode=false',
     '-p:MaitouPrivateUseDriverMode=false', '-o', $destination
