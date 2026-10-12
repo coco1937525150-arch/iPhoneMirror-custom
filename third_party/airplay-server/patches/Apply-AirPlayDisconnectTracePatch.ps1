@@ -103,7 +103,7 @@ if (-not $httpd.Contains('IPHONE_MIRROR_CONTROL_DISCONNECT_TRACE')) {
                 logger_log(httpd->logger, LOGGER_INFO,
                     "IPHONE_MIRROR_CONTROL_TRACE cause=peer_eof_observed");
 '@ -replace '\r?\n', $Lf
-    $httpd = Replace-Once $httpd $needle ($replacement + $needle) 'control socket EOF'
+    $httpd = Replace-Once $httpd $needle ($replacement + $Lf + $needle) 'control socket EOF'
     $needle = 'logger_log(httpd->logger, LOGGER_INFO, "Error receiving data on socket %d", connection->socket_fd);'
     $replacement = @'
 #ifdef WIN32
@@ -114,7 +114,7 @@ if (-not $httpd.Contains('IPHONE_MIRROR_CONTROL_DISCONNECT_TRACE')) {
                     "IPHONE_MIRROR_CONTROL_TRACE cause=recv_error error=%d", errno);
 #endif
 '@ -replace '\r?\n', $Lf
-    $httpd = Replace-Once $httpd $needle ($replacement + $needle) 'control socket error'
+    $httpd = Replace-Once $httpd $needle ($replacement + $Lf + $needle) 'control socket error'
     Write-Source $httpdPath $httpd
 }
 
