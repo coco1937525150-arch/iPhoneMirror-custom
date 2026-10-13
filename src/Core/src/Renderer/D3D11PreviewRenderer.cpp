@@ -635,6 +635,9 @@ struct D3D11PreviewRenderer::Impl {
     std::chrono::steady_clock::time_point next_resize_allowed{};
     std::uint32_t scheduled_fps{};
     std::chrono::steady_clock::time_point next_present_due{};
+    std::uint32_t monitor_refresh_hz{120};
+    std::chrono::steady_clock::time_point next_refresh_probe{};
+    std::uint64_t skipped_present_frames{};
 
     Impl(HWND value, FrameProvider frame_provider)
         : window(value), provider(std::move(frame_provider)) {
@@ -1872,8 +1875,15 @@ struct D3D11PreviewRenderer::Impl {
         if (present_result != DXGI_ERROR_WAS_STILL_DRAWING)
             check(present_result, "Present");
         release_shared_gpu_frame();
-        ++rendered_frames;
-        if (rendered_frames == 1) first_presented_at = std::chrono::steady_clock::now();
+        // DXGI_ERROR_WAS_STILL_DRAWING means no new frame was submitted.
+        // Count it as a drop, never inflate the displayed/encoded FPS.
+        if (present_result == DXGI_ERROR_WAS_STILL_DRAWING) {
+            ++skipped_present_frames;
+        } else {
+            ++rendered_frames;
+            if (rendered_frames == 1)
+                first_presented_at = std::chrono::steady_clock::now();
+        }
         DXGI_FRAME_STATISTICS frame_statistics{};
         const auto statistics_result = swap_chain->GetFrameStatistics(&frame_statistics);
         if (SUCCEEDED(statistics_result) && frame_statistics.SyncRefreshCount != 0) {
@@ -1904,14 +1914,33 @@ struct D3D11PreviewRenderer::Impl {
             const std::string display_fps_text = display_statistics_valid
                 ? std::format("{:.2f}", display_fps) : "unavailable";
             logging::write(std::format(
-                "d3d_preview render={} timestamp={} submit_fps={:.2f} display_fps={} "
-                "fps_cap={} render={}x{} stats_hr=0x{:08X}",
-                rendered_frames, frame.timestamp_100ns, present_fps,
+                "d3d_preview accepted={} skipped={} timestamp={} submit_fps={:.2f} "
+                "vblank_hz={} requested_cap={} monitor_cap={} render={}x{} stats_hr=0x{:08X}",
+                rendered_frames, skipped_present_frames, frame.timestamp_100ns, present_fps,
                 display_fps_text,
-                max_fps.load(std::memory_order_relaxed),
+                max_fps.load(std::memory_order_relaxed), monitor_refresh_hz,
                 local_render_width, local_render_height,
                 static_cast<unsigned>(statistics_result)));
         }
+    }
+
+    // A requested cap of zero means Auto: follow the monitor hosting this
+    // detached/main preview window, never a guessed fixed 60/120 Hz. Polling
+    // every two seconds also handles a window dragged between monitors.
+    std::uint32_t detect_monitor_refresh_hz() const noexcept {
+        const auto monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFOEXW info{};
+        info.cbSize = sizeof(info);
+        if (monitor && GetMonitorInfoW(monitor, &info)) {
+            DEVMODEW mode{};
+            mode.dmSize = sizeof(mode);
+            if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
+                mode.dmDisplayFrequency >= 24 && mode.dmDisplayFrequency <= 480)
+                return std::clamp<std::uint32_t>(mode.dmDisplayFrequency, 24, 120);
+        }
+        // If Windows won't report the monitor refresh, do not falsely claim
+        // that the display is 120Hz. This is a conservative render ceiling.
+        return 60;
     }
 
     void run(std::stop_token token) noexcept {
@@ -1938,8 +1967,24 @@ struct D3D11PreviewRenderer::Impl {
                     continue;
                 }
                 const auto requested_fps = max_fps.load(std::memory_order_relaxed);
-                const auto effective_fps = std::clamp<std::uint32_t>(requested_fps, 1, 120);
-                if (requested_fps != 0) {
+                const auto probe_now = std::chrono::steady_clock::now();
+                if (next_refresh_probe.time_since_epoch().count() == 0 ||
+                    probe_now >= next_refresh_probe) {
+                    const auto sampled_hz = detect_monitor_refresh_hz();
+                    if (sampled_hz != monitor_refresh_hz) {
+                        monitor_refresh_hz = sampled_hz;
+                        logging::write(std::format(
+                            "d3d_preview monitor_refresh_hz={}", sampled_hz));
+                    }
+                    next_refresh_probe = probe_now + std::chrono::seconds(2);
+                }
+                const auto effective_fps = requested_fps == 0
+                    ? monitor_refresh_hz
+                    : std::min<std::uint32_t>(
+                        std::clamp<std::uint32_t>(requested_fps, 1, 120),
+                        monitor_refresh_hz);
+                // Auto is monitor-limited, not unbounded busy-loop rendering.
+                {
                     const auto now = std::chrono::steady_clock::now();
                     if (scheduled_fps != effective_fps ||
                         next_present_due.time_since_epoch().count() == 0) {
@@ -1955,9 +2000,6 @@ struct D3D11PreviewRenderer::Impl {
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         continue;
                     }
-                } else {
-                    scheduled_fps = 0;
-                    next_present_due = {};
                 }
                 const bool force_refresh = refresh_requested.exchange(false,
                     std::memory_order_acq_rel);
@@ -1991,7 +2033,7 @@ struct D3D11PreviewRenderer::Impl {
                     std::chrono::steady_clock::now() - render_started).count();
                 last_timestamp = frame->timestamp_100ns;
                 last_frame = frame;
-                if (requested_fps != 0) {
+                {
                     const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double>(1.0 / static_cast<double>(effective_fps)));
                     const auto now = std::chrono::steady_clock::now();
