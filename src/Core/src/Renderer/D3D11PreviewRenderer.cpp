@@ -369,14 +369,54 @@ float4 frameMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARG
     if (frameEnabled < 0.5) return float4(0.0, 0.0, 0.0, 0.0);
     float alpha = roundedRectCoverage(position.xy,
         float4(0.0, 0.0, outputSize.x, outputSize.y), frameOuterRadius);
-    // Use a transparent-front-frame look: thin graphite bezel and no camera
-    // artwork or duplicated Dynamic Island. Video is drawn in the inner rect.
+    // iPhone 16 Pro Max-inspired glossy black hardware with slim metallic
+    // rails and clearly visible physical side buttons. Keep all drawing
+    // within the established window/screen rectangle: the precisely fitted
+    // source viewport and remote touch coordinates must not change.
+    // No synthetic Dynamic Island (it is already inside the source video).
     float screenCoverage = roundedRectCoverage(position.xy, screenRect,
         max(cornerRadius, min(screenRect.z, screenRect.w) * 0.035));
-    float2 normalized = saturate(position.xy / max(outputSize, float2(1.0, 1.0)));
-    float edgeLight = 0.007 * (1.0 - abs(normalized.x * 2.0 - 1.0));
-    float3 graphite = float3(0.016 + edgeLight, 0.017 + edgeLight, 0.019 + edgeLight);
-    float3 body = graphite * (1.0 - screenCoverage);
+    float2 portraitPixel = position.xy;
+    float2 portraitSize = outputSize;
+    if (outputSize.x > outputSize.y) {
+        // Rotate the button layout together with the complete phone body,
+        // instead of leaving portrait buttons on the landscape shell.
+        portraitPixel = float2(position.y, outputSize.x - position.x);
+        portraitSize = float2(outputSize.y, outputSize.x);
+    }
+    float2 uvBody = saturate(portraitPixel / max(portraitSize, float2(1.0, 1.0)));
+    float edgeDistance = min(uvBody.x, 1.0 - uvBody.x);
+    float rim = 1.0 - smoothstep(0.001, 0.017, edgeDistance);
+    float rimLight = (1.0 - smoothstep(0.003, 0.025, edgeDistance)) *
+        (0.10 + 0.06 * (1.0 - abs(uvBody.y * 2.0 - 1.0)));
+    float glossyStripe = 0.024 * (1.0 - abs(uvBody.x * 2.0 - 1.0));
+    float3 graphite = float3(0.014, 0.018, 0.021) +
+        glossyStripe + float3(rimLight, rimLight * 1.02, rimLight * 1.06);
+    graphite = lerp(graphite, float3(0.035, 0.044, 0.049), rim * 0.32);
+    const float buttonWidth = 0.014;
+    float edgePad = portraitSize.x * 0.001;
+    float buttonRadius = max(portraitSize.x * 0.005, 1.0);
+    float leftTop = roundedRectCoverage(portraitPixel,
+        float4(edgePad, portraitSize.y * 0.19,
+            portraitSize.x * buttonWidth, portraitSize.y * 0.043), buttonRadius);
+    float leftMiddle = roundedRectCoverage(portraitPixel,
+        float4(edgePad, portraitSize.y * 0.29,
+            portraitSize.x * buttonWidth, portraitSize.y * 0.065), buttonRadius);
+    float leftBottom = roundedRectCoverage(portraitPixel,
+        float4(edgePad, portraitSize.y * 0.38,
+            portraitSize.x * buttonWidth, portraitSize.y * 0.065), buttonRadius);
+    float rightSide = roundedRectCoverage(portraitPixel,
+        float4(portraitSize.x * (1.0 - buttonWidth) - edgePad,
+            portraitSize.y * 0.29, portraitSize.x * buttonWidth,
+            portraitSize.y * 0.115), buttonRadius);
+    float buttons = max(max(leftTop, leftMiddle), max(leftBottom, rightSide));
+    // The button's center is dark chrome; two narrow highlights make its
+    // silhouette visible even on a black theme and at reduced window sizes.
+    float buttonHighlight = 0.07 + 0.12 * rim;
+    float3 buttonMetal = float3(buttonHighlight,
+        buttonHighlight * 1.03, buttonHighlight * 1.05);
+    float3 body = lerp(graphite, buttonMetal, buttons) *
+        (1.0 - screenCoverage);
     return float4(body * alpha, alpha);
 }
 
