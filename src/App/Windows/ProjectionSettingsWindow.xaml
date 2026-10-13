@@ -146,8 +146,10 @@
                                 <TextBlock Text="{DynamicResource TargetFrameRate}"
                                            Style="{StaticResource DetailLabel}"/>
                                 <ComboBox ItemsSource="{Binding FrameRates}"
+                                          DisplayMemberPath="Label"
+                                          SelectedValuePath="Value"
                                           IsEnabled="{Binding CanChangeVideoPipeline}"
-                                          SelectedItem="{Binding SelectedFrameRate, Mode=TwoWay}"/>
+                                          SelectedValue="{Binding SelectedFrameRate, Mode=TwoWay}"/>
                             </StackPanel>
                             <TextBlock Text="{DynamicResource DecoderPreferenceLabel}"
                                        Style="{StaticResource DetailLabel}"/>
