@@ -226,8 +226,10 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     private void OnEditRecordingLayoutClick(object sender, RoutedEventArgs e)
     {
         SaveShellPreferences();
-        var editor = new RecordingLayoutEditorWindow(BackgroundImageBox.Text.Trim())
-            { Owner = this };
+        var landscape = uint.TryParse(RecordWidthBox.Text, out var width) &&
+            uint.TryParse(RecordHeightBox.Text, out var height) && width > height;
+        var editor = new RecordingLayoutEditorWindow(
+            BackgroundImageBox.Text.Trim(), landscape) { Owner = this };
         if (editor.ShowDialog() == true) SaveShellPreferences();
     }
 
