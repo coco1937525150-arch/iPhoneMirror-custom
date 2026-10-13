@@ -38,7 +38,16 @@
             </ItemsControl>
             </Border>
             <Expander Grid.Row="4" Header="查看详细信息" IsExpanded="{Binding IsDetailsExpanded}" Foreground="{DynamicResource MutedTextBrush}" Background="{DynamicResource ControlFillBrush}" Padding="14,8" Margin="1,0">
-                <ListBox ItemsSource="{Binding Diagnostics}" MaxHeight="150" BorderThickness="0" Background="Transparent" Foreground="{DynamicResource MutedTextBrush}" FontFamily="Consolas" FontSize="10" Margin="0,8,0,0"/>
+                <StackPanel>
+                    <TextBox Text="{Binding DiagnosticsText, Mode=OneWay}" IsReadOnly="True"
+                             TextWrapping="Wrap" AcceptsReturn="True"
+                             MinHeight="90" MaxHeight="180"
+                             VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                             Background="Transparent" Foreground="{DynamicResource TextBrush}"
+                             FontFamily="Consolas" FontSize="11" Margin="0,8,0,0"/>
+                    <Button Content="复制诊断详情" Click="OnCopyDiagnosticClick"
+                            HorizontalAlignment="Right" Margin="0,8,0,0"/>
+                </StackPanel>
             </Expander>
             <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,9,0">
                 <Button Content="取消" Click="OnCancelClick" Visibility="{Binding CancelVisibility}" MinWidth="108" Height="52" FontSize="16"/>

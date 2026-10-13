@@ -29,8 +29,13 @@ internal static class PhoneShellMediaComposer
     {
         if (backgroundFile is { Length: > 0 } && !File.Exists(backgroundFile))
             throw new FileNotFoundException("The chosen recording background no longer exists.", backgroundFile);
-        if (shellImageFile is { Length: > 0 } && !File.Exists(shellImageFile))
-            throw new FileNotFoundException("The chosen phone-shell image no longer exists.", shellImageFile);
+        // Use the bundled, transparent iPhone 16 Pro Max reference shell.
+        // The old user-selected shell path is intentionally ignored.
+        var bundledShell = Path.Combine(AppContext.BaseDirectory,
+            "Assets", "iphone16_pro_max_shell.png");
+        if (!File.Exists(bundledShell))
+            throw new FileNotFoundException("The built-in phone-shell image is missing.",
+                bundledShell);
         if (width is < 160 or > 3840 || height is < 160 or > 2160)
             throw new ArgumentOutOfRangeException(nameof(width));
         // Match the already tuned iPhone 16 Pro Max viewport geometry.
@@ -68,17 +73,7 @@ internal static class PhoneShellMediaComposer
                             outer.Y + (outer.Height - outer.Width) / 2,
                             outer.Height, outer.Width);
                     }
-                    if (!string.IsNullOrWhiteSpace(shellImageFile))
-                        DrawImportedShell(context, shellImageFile, portraitOuter);
-                    else
-                    {
-                        var portraitScreen = profile.GetScreenRect(
-                            (int)portraitOuter.Width, (int)portraitOuter.Height);
-                        DrawDefaultShell(context, portraitOuter, new Rect(
-                            portraitOuter.X + portraitScreen.X,
-                            portraitOuter.Y + portraitScreen.Y,
-                            portraitScreen.Width, portraitScreen.Height));
-                    }
+                    DrawImportedShell(context, bundledShell, portraitOuter);
                     if (landscape) context.Pop();
                 }
                 var bitmap = new RenderTargetBitmap((int)width, (int)height,
@@ -137,35 +132,15 @@ internal static class PhoneShellMediaComposer
 
     private static void DrawImportedShell(DrawingContext context, string imageFile, Rect outer)
     {
-        // User-provided white-background iPhone 16 Pro Max template. Only the
-        // physical shell and buttons survive: white areas remain transparent.
+        // The embedded PNG is already alpha-masked and tightly cropped.
+        // Do not white-key or crop it again: doing so removes side buttons
+        // and shifts the bezel relative to the live video.
         var source = new BitmapImage();
         source.BeginInit();
         source.CacheOption = BitmapCacheOption.OnLoad;
         source.UriSource = new Uri(Path.GetFullPath(imageFile), UriKind.Absolute);
         source.EndInit();
         source.Freeze();
-        var stride = checked(source.PixelWidth * 4);
-        var pixels = new byte[checked(stride * source.PixelHeight)];
-        var converter = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
-        converter.CopyPixels(pixels, stride, 0);
-        for (var i = 0; i < pixels.Length; i += 4)
-        {
-            var luma = (pixels[i] * 11 + pixels[i + 1] * 59 +
-                        pixels[i + 2] * 30) / 100;
-            // Smooth white removal also avoids a giant opaque white rectangle
-            // hiding the incoming iPhone video.
-            pixels[i + 3] = (byte)Math.Min(pixels[i + 3],
-                Math.Clamp((238 - luma) * 255 / 22, 0, 255));
-        }
-        var writable = BitmapSource.Create(source.PixelWidth, source.PixelHeight,
-            96, 96, PixelFormats.Bgra32, null, pixels, stride);
-        var cropX = (int)(source.PixelWidth * .09);
-        var cropY = (int)(source.PixelHeight * .02);
-        var cropW = (int)(source.PixelWidth * .81);
-        var cropH = (int)(source.PixelHeight * .945);
-        var cropped = new CroppedBitmap(writable,
-            new Int32Rect(cropX, cropY, cropW, cropH));
-        context.DrawImage(cropped, outer);
+        context.DrawImage(source, outer);
     }
 }
