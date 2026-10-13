@@ -68,9 +68,9 @@ $SourceRoot = (Resolve-Path -LiteralPath $BuildSourceRoot).Path
     -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AirPlayDisconnectTracePatch.ps1') `
     -SourceRoot $SourceRoot
-& (Join-Path $ReceiverRoot 'patches\Apply-AirPlayGracefulTeardownCPatch.ps1') `
-    -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AirPlayOrientationAccessUnitPatch.ps1') `
+    -SourceRoot $SourceRoot
+& (Join-Path $ReceiverRoot 'patches\Apply-AirPlayGracefulTeardownCPatch.ps1') `
     -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AudioCodecPatch.ps1') `
     -SourceRoot $SourceRoot
