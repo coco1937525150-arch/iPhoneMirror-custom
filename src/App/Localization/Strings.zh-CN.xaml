@@ -72,6 +72,8 @@
     <system:String x:Key="WiredControlDisable">关闭有线控制</system:String>
     <system:String x:Key="WirelessControlEnable">开启无线控制</system:String>
     <system:String x:Key="WirelessControlDisable">关闭无线控制</system:String>
+    <system:String x:Key="WirelessControlUnavailableHint">无线控制需要先绑定可信 Apple 设备。AirPlay 投屏已连接不代表控制通道已就绪。</system:String>
+    <system:String x:Key="WiredControlUnavailableHint">有线控制需要 USB 数据连接、设备信任及 Apple 设备身份绑定。</system:String>
     <system:String x:Key="UsbControlPrerequisite">请通过 USB 连接并在设备上信任一台 iPhone 或 iPad 后，再启用 USB 控制</system:String>
     <system:String x:Key="UsbControlOff">USB 控制未启用</system:String>
     <system:String x:Key="UsbControlStarting">正在连接反向控制</system:String>
