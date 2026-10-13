@@ -46,19 +46,42 @@ $VersionProperty = if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$RustBridgeBuild = Join-Path $Root 'scripts\BuildRustUsbBridge.ps1'
+
+# Upstream 1.8.5 Python CoreDevice/Universal HID bridge. This intentionally
+# does not replace the native video and AirPlay transport.
+$UsbControlRoot = Join-Path $Root 'scripts\usb-bridge-recipe'
+$UsbControlBuild = Join-Path $UsbControlRoot 'build.ps1'
+$UsbControlSource = Join-Path $Root 'tools\usb_touch_bridge.py'
 $UsbTouchBridgeOutput = Join-Path $Root 'dist\iUsbBridge.exe'
 $UsbTouchBridgeRuntimeManifest = Join-Path $Root 'dist\iUsbBridge.runtime.json'
 $UsbTouchBridgeRuntimeTools = Join-Path $Root 'scripts\UsbTouchBridgeRuntime.ps1'
+$UsbControlEnvironment = Join-Path $Root 'work\usb-touch-bridge-python'
 if (-not (Test-Path -LiteralPath $UsbTouchBridgeRuntimeTools -PathType Leaf)) {
     throw "USB touch bridge runtime validator missing: $UsbTouchBridgeRuntimeTools"
 }
 . $UsbTouchBridgeRuntimeTools
+. (Join-Path $Root 'scripts\UsbBridgeBuildSource.ps1')
 
 function Build-UsbTouchBridge {
-    & $RustBridgeBuild -SkipTests:$SkipTests
-    if ($LASTEXITCODE -ne 0) { throw "Rust iUsbBridge build failed: $LASTEXITCODE" }
-    Assert-UsbTouchBridgeRuntime -Directory (Join-Path $Root 'dist') -Label 'Built Rust iUsbBridge'
+    foreach ($required in @($UsbControlBuild, $UsbControlSource)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "Upstream USB bridge build input missing: $required"
+        }
+    }
+    $stageRoot = Join-Path $Root 'work\usb-bridge-build'
+    $stage = New-UsbBridgeBuildSource -RecipeRoot $UsbControlRoot -SourceRoot (Join-Path $Root 'tools') -WorkRoot $stageRoot
+    try {
+        & (Join-Path $stage 'build.ps1') -BridgeOnly -BridgeOutputPath $UsbTouchBridgeOutput -EnvironmentPath $UsbControlEnvironment
+        if ($LASTEXITCODE -ne 0) {
+            throw "Upstream USB iUsbBridge build failed: $LASTEXITCODE"
+        }
+    }
+    finally { Remove-UsbBridgeBuildSource -Stage $stage -WorkRoot $stageRoot }
+    if (-not (Test-Path -LiteralPath $UsbTouchBridgeOutput -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $UsbTouchBridgeRuntimeManifest -PathType Leaf)) {
+        throw 'USB bridge executable or runtime manifest is missing.'
+    }
+    Assert-UsbTouchBridgeRuntime -Directory (Join-Path $Root 'dist') -Label 'Built upstream USB touch bridge'
 }
 
 function Resolve-CMakeTool([string]$Name) {
