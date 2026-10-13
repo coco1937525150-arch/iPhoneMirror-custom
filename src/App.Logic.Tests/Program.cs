@@ -4252,6 +4252,66 @@ var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
 Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal),
     "output settings no longer require picking an external phone shell");
 
+// The editor must follow every selected background's native size, not a
+// fixed 1448x1440 preview. Test boundary placement after pixel rounding.
+foreach (var (canvasW, canvasH) in new[]
+    { (1000, 2000), (1448, 1440), (1920, 1080), (1080, 1920) })
+{
+    foreach (var (locationX, locationY, zoom) in new[]
+        { (-8.0, 7.0, 4.0), (0.5, 0.5, 1.0), (2.0, -2.0, 3.0) })
+    {
+        var fitted = PhoneShellMediaComposer.FitInsideCanvas(
+            canvasW, canvasH, .46, locationX, locationY, zoom);
+        Equal(true, fitted.Bounds.X >= 5 && fitted.Bounds.Y >= 5 &&
+            fitted.Bounds.Right <= canvasW - 5 &&
+            fitted.Bounds.Bottom <= canvasH - 5,
+            $"phone shell stays within actual {canvasW}x{canvasH} backdrop");
+        Equal(true, fitted.Bounds.Width > 0 && fitted.Bounds.Height > 0,
+            "clamped shell retains a positive size");
+    }
+}
+
+// Imported phone image may have a solid-black display. Verify that the
+// imported asset gains a truly transparent aperture without modifying the
+// user's active shell file under LocalAppData.
+var maskFixtureDirectory = Path.Combine(Path.GetTempPath(),
+    "iphone-mirror-mask-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(maskFixtureDirectory);
+try
+{
+    const int shellTestWidth = 640, shellTestHeight = 1360;
+    var opaqueBlack = new byte[shellTestWidth * shellTestHeight * 4];
+    for (var index = 3; index < opaqueBlack.Length; index += 4)
+        opaqueBlack[index] = 255;
+    var opaqueBitmap = BitmapSource.Create(shellTestWidth, shellTestHeight,
+        96, 96, PixelFormats.Bgra32, null, opaqueBlack, shellTestWidth * 4);
+    var sourceFile = Path.Combine(maskFixtureDirectory, "source.png");
+    var installedFile = Path.Combine(maskFixtureDirectory, "installed.png");
+    var sourcePng = new PngBitmapEncoder();
+    sourcePng.Frames.Add(BitmapFrame.Create(opaqueBitmap));
+    using (var stream = File.Create(sourceFile)) sourcePng.Save(stream);
+    PhoneShellAssetStore.Install(sourceFile, installedFile);
+    var imported = new BitmapImage();
+    imported.BeginInit();
+    imported.CacheOption = BitmapCacheOption.OnLoad;
+    imported.UriSource = new Uri(installedFile, UriKind.Absolute);
+    imported.EndInit();
+    var converted = new FormatConvertedBitmap(imported,
+        PixelFormats.Bgra32, null, 0);
+    var importedPixels = new byte[opaqueBlack.Length];
+    converted.CopyPixels(importedPixels, shellTestWidth * 4, 0);
+    Equal((byte)0, importedPixels[
+        ((shellTestHeight / 2) * shellTestWidth + shellTestWidth / 2) * 4 + 3],
+        "imported phone shell removes the opaque-black display");
+    Equal((byte)255, importedPixels[
+        ((shellTestHeight / 2) * shellTestWidth) * 4 + 3],
+        "imported phone shell preserves opaque side-frame pixels");
+}
+finally
+{
+    Directory.Delete(maskFixtureDirectory, recursive: true);
+}
+
 // Layout bounds are identical in the editor and the MP4 compositor, and
 // old out-of-range preferences must not be able to crop the phone shell.
 var boundedShell = PhoneShellMediaComposer.FitInsideCanvas(
