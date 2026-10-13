@@ -4871,10 +4871,22 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
             width, height, width,
             1_000_000,
             new byte[checked((int)((ulong)width * height * 3U / 2U))]),
-        (_, afterSequence) => afterSequence == 0
-            ? new IPhoneMirror.App.Interop.AudioPacket(
-                1, 48000, 2, 16, new byte[3840])
-            : null);
+        (_, afterSequence) => afterSequence switch
+        {
+            0 => new IPhoneMirror.App.Interop.AudioPacket(
+                1, 48000, 2, 16, new byte[3840]),
+            // Out-of-spec PCM from a briefly interrupted transport should
+            // be skipped without closing an otherwise healthy recording.
+            1 => new IPhoneMirror.App.Interop.AudioPacket(
+                2, 1000, 2, 16, new byte[3840]),
+            2 => new IPhoneMirror.App.Interop.AudioPacket(
+                3, 48000, 2, 16, new byte[3840]),
+            // Stale replay is deliberately never consumed; it must not
+            // prevent the wall-clock-aligned silence compensation.
+            3 => new IPhoneMirror.App.Interop.AudioPacket(
+                3, 48000, 2, 16, new byte[3840]),
+            _ => null,
+        });
     try
     {
         using var startupTimeout =
@@ -4885,7 +4897,7 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
             installedFfmpegCapabilities, startupTimeout.Token);
         await Task.Delay(TimeSpan.FromSeconds(5.5));
         Equal(true, interruptedAudioOutput.IsRunning,
-            "a PCM interruption and static frame longer than five seconds do not stop video output");
+            "malformed, repeated and interrupted PCM do not stop video recording");
         await interruptedAudioOutput.StopAsync();
         var interruptedMp4 = File.ReadAllBytes(interruptedAudioPath);
         Equal(true, interruptedMp4.AsSpan().IndexOf("moov"u8) >= 0,
