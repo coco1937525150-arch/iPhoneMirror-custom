@@ -586,9 +586,33 @@ internal sealed class MediaOutputService : IAsyncDisposable
             readerCts.Token), CancellationToken.None);
         try
         {
-            using var timer = new PeriodicTimer(frameInterval);
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            // The encoder must not depend on a 15.6ms Windows timer
+            // quantum when producing 120fps rawvideo. Keep the legacy
+            // low-overhead PeriodicTimer for 10–60fps recordings.
+            using var timer = request.FrameRate > 100
+                ? null : new PeriodicTimer(frameInterval);
+            var nextHighRateDeadline = frameInterval;
+            while (!cancellationToken.IsCancellationRequested)
             {
+                if (timer is not null)
+                {
+                    if (!await timer.WaitForNextTickAsync(cancellationToken))
+                        break;
+                }
+                else
+                {
+                    while (outputClock.Elapsed < nextHighRateDeadline)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var remaining = nextHighRateDeadline - outputClock.Elapsed;
+                        if (remaining > TimeSpan.FromMilliseconds(2))
+                            Thread.Sleep(0);
+                        else if (remaining > TimeSpan.Zero)
+                            Thread.SpinWait(128);
+                    }
+                    do { nextHighRateDeadline += frameInterval; }
+                    while (nextHighRateDeadline <= outputClock.Elapsed);
+                }
                 if (process.HasExited)
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(_lastError)
                         ? $"FFmpeg exited with code {process.ExitCode}." : _lastError);
