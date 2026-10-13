@@ -377,10 +377,10 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         _wirelessControlEnabled ? "WirelessControlDisable" : "WirelessControlEnable");
     public string WirelessControlAvailabilityText => CanToggleWirelessControl
         ? WirelessControlActionText
-        : "无线控制需要先绑定可信 Apple 设备。AirPlay 显示已连接不等于控制通道已就绪。";
+        : LocalizationService.Get("WirelessControlUnavailableHint");
     public string WiredControlAvailabilityText => CanToggleWiredControl
         ? WiredControlActionText
-        : "有线控制需要 USB 数据连接、设备信任及 Apple 设备身份绑定。";
+        : LocalizationService.Get("WiredControlUnavailableHint");
     public string UsbControlActionText => _usbControlStarting ? LocalizationService.Get("UsbControlStarting") :
         _usbControlStopping ? LocalizationService.Get("UsbControlStopping") :
         !HasWiredUsbControlDevice && !_usbControlEnabled ? LocalizationService.Get("UsbControlNeedsConnection") :
