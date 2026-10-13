@@ -141,6 +141,9 @@ $DynamicResponse = @'
 	}
 	plist_t capability_root = NULL;
 	plist_from_bin(info, sizeof(info), &capability_root);
+	/* IPHONE_MIRROR_LOCKSCREEN_B_KEEPALIVE_LOWPOWER: isolated /info-only diagnostic change. */
+	if (capability_root)
+		plist_dict_set_item(capability_root, "keepAliveLowPower", plist_new_uint(0));
 	plist_t displays = capability_root ?
 		plist_dict_get_item(capability_root, "displays") : NULL;
 	plist_t display = displays ? plist_array_get_item(displays, 0) : NULL;
