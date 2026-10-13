@@ -64,6 +64,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
         TimeSpan.FromMinutes(2);
     private static readonly TimeSpan StreamShutdownTimeout =
         TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan PumpTaskShutdownTimeout =
+        TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan UserStopTimeout =
+        TimeSpan.FromSeconds(20);
     private static readonly TimeSpan AudioSilenceGrace =
         TimeSpan.FromMilliseconds(100);
     private const uint DefaultAudioSampleRate = 48000;
@@ -312,17 +316,29 @@ internal sealed class MediaOutputService : IAsyncDisposable
     internal async Task StopAsync()
     {
         Task? task;
+        Process? process;
         await _lifecycleGate.WaitAsync();
         try
         {
             _runCancellation?.Cancel();
             task = _runTask;
+            process = _process;
         }
         finally { _lifecycleGate.Release(); }
-        if (task is not null)
+        if (task is null) return;
+        DiagnosticLogger.Info("media_output", "stop_requested",
+            ("session_handle", SessionHandle));
+        try { await task.WaitAsync(UserStopTimeout); }
+        catch (OperationCanceledException) { }
+        catch (TimeoutException error)
         {
-            try { await task; }
-            catch (OperationCanceledException) { }
+            DiagnosticLogger.Exception("media_output", "stop_wait_timeout", error);
+            if (process is not null) await KillProcessAsync(process);
+            // Do not block the UI forever when a native GPU readback cannot
+            // observe cancellation. Preserve the diagnostic for the next run.
+            throw new TimeoutException(
+                "Media output did not finish stopping within 20 seconds; FFmpeg was terminated.",
+                error);
         }
     }
 
@@ -372,10 +388,19 @@ internal sealed class MediaOutputService : IAsyncDisposable
             }
             try
             {
-                await Task.WhenAll(videoTask ?? Task.CompletedTask,
+                var pumps = Task.WhenAll(videoTask ?? Task.CompletedTask,
                     audioTask ?? Task.CompletedTask);
+                await pumps.WaitAsync(PumpTaskShutdownTimeout);
             }
             catch (OperationCanceledException) { }
+            catch (TimeoutException error)
+            {
+                failure ??= new TimeoutException(
+                    "A media input task did not stop within 8 seconds.", error);
+                DiagnosticLogger.Exception("media_output", "pump_shutdown_timeout", error,
+                    ("kind", request.Kind));
+                await KillProcessAsync(process);
+            }
             catch (Exception error) { failure ??= error; }
             var shutdownTimeout = request.Kind == MediaOutputKind.Recording
                 ? RecordingFinalizationTimeout : StreamShutdownTimeout;
@@ -488,7 +513,17 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 else if (lastFrame.IsEmpty)
                 {
                     if (firstFrameWait.Elapsed > TimeSpan.FromSeconds(5))
-                        throw new TimeoutException("No projection frame was received for 5 seconds.");
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        DiagnosticLogger.Error("media_output", "first_frame_timeout",
+                            ("handle", AppLog.Handle(sessionHandle)),
+                            ("width", request.Width), ("height", request.Height),
+                            ("reason", latch.LastFailure));
+                        throw new TimeoutException(
+                            "No projection frame was received for 5 seconds." +
+                            (string.IsNullOrWhiteSpace(latch.LastFailure) ? string.Empty :
+                                " Last read error: " + latch.LastFailure));
+                    }
                     continue;
                 }
                 var schedule = CalculateVideoWritePlan(outputClock.Elapsed,
@@ -505,9 +540,20 @@ internal sealed class MediaOutputService : IAsyncDisposable
         finally
         {
             readerCts.Cancel();
-            try { await readerTask.ConfigureAwait(false); }
+            try
+            {
+                await readerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) { }
-            catch { /* Reader teardown failure does not affect the recording. */ }
+            catch (TimeoutException error)
+            {
+                DiagnosticLogger.Exception("media_output", "frame_reader_stop_timeout",
+                    error, ("handle", AppLog.Handle(sessionHandle)));
+            }
+            catch (Exception error)
+            {
+                DiagnosticLogger.Exception("media_output", "frame_reader_stop_error", error);
+            }
         }
     }
 
@@ -516,6 +562,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(interval);
+        var loggedReadErrors = 0;
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
             try
@@ -523,8 +570,21 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var frame = _frameProvider(sessionHandle, width, height);
                 if (frame is not null)
                     latch.Publish(GetNv12FramePayload(frame, width, height));
+                else
+                    latch.NoteFailure("Frame provider returned no NV12 data.");
             }
-            catch { /* Transient frame read failure; best-effort. */ }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception error)
+            {
+                latch.NoteFailure(error.GetType().Name + ": " + error.Message);
+                if (++loggedReadErrors <= 3)
+                    DiagnosticLogger.Exception("media_output", "nv12_frame_read_failed",
+                        error, ("handle", AppLog.Handle(sessionHandle)),
+                        ("width", width), ("height", height));
+            }
         }
     }
 
@@ -1335,6 +1395,13 @@ internal sealed class MediaOutputService : IAsyncDisposable
     internal sealed class FrameLatch
     {
         private ReadOnlyMemory<byte> _frame;
+        private string? _lastFailure;
+        internal string? LastFailure { get { lock (this) return _lastFailure; } }
+
+        internal void NoteFailure(string reason)
+        {
+            lock (this) { _lastFailure = reason; }
+        }
 
         internal void Publish(ReadOnlyMemory<byte> frame)
         {
@@ -1342,7 +1409,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             // a pipe write when the next frame arrives, so publish an owned,
             // immutable snapshot rather than a view of the producer's buffer.
             var snapshot = frame.ToArray();
-            lock (this) { _frame = snapshot; }
+            lock (this) { _frame = snapshot; _lastFailure = null; }
         }
 
         internal ReadOnlyMemory<byte> Get()
