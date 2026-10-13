@@ -4335,6 +4335,22 @@ Equal(true, expanded.X <= opening.X - 3 &&
 Equal(true, (expanded.Width & 1) == 0 && (expanded.Height & 1) == 0,
     "expanded phone video uses chroma-safe even intermediate dimensions");
 
+// 120fps MP4 must be based on distinct source frames, not on the
+// requested FFmpeg -framerate or on a 120Hz monitor alone.
+Equal(120.0, MediaOutputService.CalculateVerifiedSourceFps(
+    120, TimeSpan.FromSeconds(1), 9_916_667),
+    "120Hz source probe measures true unique 120fps timestamps",
+    tolerance: 0.05);
+Equal(true, MediaOutputService.CalculateVerifiedSourceFps(
+    60, TimeSpan.FromSeconds(1), 9_833_333) < 70,
+    "a real 60fps source cannot pass 120fps capture gate");
+Equal(0.0, MediaOutputService.CalculateVerifiedSourceFps(
+    120, TimeSpan.FromSeconds(1), 0),
+    "repeated source timestamps cannot forge 120fps");
+Equal(true, MediaOutputService.CalculateVerifiedSourceFps(
+    240, TimeSpan.FromSeconds(2), 10_000_000) <= 120,
+    "measured FPS is bounded by wall clock and source timestamps");
+
 // Layout bounds are identical in the editor and the MP4 compositor, and
 // old out-of-range preferences must not be able to crop the phone shell.
 var boundedShell = PhoneShellMediaComposer.FitInsideCanvas(
