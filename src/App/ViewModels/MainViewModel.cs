@@ -296,11 +296,11 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     // monitor's real refresh frequency. Never synthesize phone frames.
     public IReadOnlyList<FrameRateOption> FrameRates { get; } =
     [
-        new(0, "自动 / Auto"),
-        new(30, "30 fps"),
-        new(60, "60 fps"),
-        new(120, "120 fps · 实验性"),
-        new(24, "24 fps"),
+        new(0, "自动 / Auto · 随显示器刷新率"),
+        new(30, "省电 / Power-save · 30 fps"),
+        new(60, "流畅 / Smooth · 60 fps"),
+        new(120, "极致 / Extreme · 120 fps（实验性）"),
+        new(24, "兼容 / Compatible · 24 fps"),
     ];
     public IReadOnlyList<WirelessDisplayProfile> WirelessDisplayProfiles { get; } =
         WirelessReceiverConfiguration.DisplayProfiles;
