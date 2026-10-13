@@ -71,6 +71,20 @@ internal static class PhoneShellMediaComposer
             centerX, centerY, scale);
     }
 
+    // A small overscan keeps the encoded iOS frame behind the antialiased
+    // bezel after WPF layout rounding and FFmpeg chroma alignment. The shell
+    // PNG masks the surplus pixels, so the background cannot show as a hairline
+    // at the top, bottom, or sides of the screen opening.
+    internal static DeviceScreenRect ExpandVideoUnderBezel(
+        DeviceScreenRect visibleScreen)
+    {
+        const int bleed = 3;
+        return new DeviceScreenRect(
+            visibleScreen.X - bleed, visibleScreen.Y - bleed,
+            (visibleScreen.Width + bleed * 2 + 1) & ~1,
+            (visibleScreen.Height + bleed * 2 + 1) & ~1);
+    }
+
     internal static PhoneShellComposition Prepare(uint width, uint height,
         string? backgroundFile, string? shellImageFile)
     {
@@ -119,8 +133,12 @@ internal static class PhoneShellMediaComposer
         var outer = FitInsideCanvas(canvasWidth, canvasHeight, aspect,
             centerX, centerY, layoutScale).Bounds;
         var inner = profile.GetScreenRect((int)outer.Width, (int)outer.Height);
-        var screenX = (int)outer.X + inner.X;
-        var screenY = (int)outer.Y + inner.Y;
+        // An exact rectangle can expose a 1–2 pixel background seam under
+        // the antialiased shell edge. Expand only the VIDEO; keep the PNG
+        // shell and background at their unchanged original canvas positions.
+        var coveredScreen = ExpandVideoUnderBezel(inner);
+        var screenX = (int)outer.X + coveredScreen.X;
+        var screenY = (int)outer.Y + coveredScreen.Y;
         var filename = Path.Combine(Path.GetTempPath(),
             "iphoneMirror-shell-" + Guid.NewGuid().ToString("N") + ".png");
         try
@@ -158,7 +176,8 @@ internal static class PhoneShellMediaComposer
             if (dispatcher.CheckAccess()) Render();
             else dispatcher.Invoke(Render);
             return new(filename, backgroundFile, screenX, screenY,
-                inner.Width, inner.Height, canvasWidth, canvasHeight);
+                coveredScreen.Width, coveredScreen.Height,
+                canvasWidth, canvasHeight);
         }
         catch
         {
