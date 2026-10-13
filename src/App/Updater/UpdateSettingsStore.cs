@@ -30,7 +30,7 @@ internal sealed class UpdateSettings
     // Default for newly opened independent preview windows; each window can
     // change its own topmost state without changing other open windows.
     public bool IndependentWindowAlwaysOnTop { get; set; }
-    public bool MediaOutputIncludePhoneShell { get; set; }
+    public bool MediaOutputIncludePhoneShell { get; set; } = true;
     public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
     public string MediaOutputPhoneShellImagePath { get; set; } = string.Empty;
     public WirelessReceiverBackend WirelessReceiverBackend { get; set; } =
