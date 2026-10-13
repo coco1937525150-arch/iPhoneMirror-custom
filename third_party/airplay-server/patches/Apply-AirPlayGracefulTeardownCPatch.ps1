@@ -19,7 +19,7 @@ $Marker = 'IPHONE_MIRROR_TEARDOWN_C_GRACEFUL_CLOSE'
 function Replace-ExactlyOnce([string]$Needle, [string]$Replacement, [string]$Description) {
     $Matches = [regex]::Matches($script:Text, [regex]::Escape($Needle)).Count
     if ($Matches -ne 1) {
-        throw "$Description: expected one match, found $Matches."
+        throw "${Description}: expected one match, found $Matches."
     }
     $script:Text = $script:Text.Replace($Needle, $Replacement)
 }
