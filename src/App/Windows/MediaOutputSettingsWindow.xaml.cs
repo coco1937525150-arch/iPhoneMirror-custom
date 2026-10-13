@@ -31,6 +31,13 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     {
         ApplyPreviewOutputDefaults(force: true);
         RestoreShellPreferences();
+        PhoneShellLayoutSettingsProvider.Current = () =>
+        {
+            if (Application.Current is not App app) return null;
+            var p = app.UpdateSettings;
+            return new PhoneShellLayoutSettings(p.MediaOutputShellCenterX,
+                p.MediaOutputShellCenterY, p.MediaOutputShellScale);
+        };
         RecordFpsBox.Text = StreamFpsBox.Text = "60";
         if (Application.Current is App settingsApp)
             RecordingDirectoryBox.Text = settingsApp.UpdateSettings.MediaOutputRecordingDirectory;
