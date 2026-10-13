@@ -444,7 +444,14 @@ internal sealed class MediaOutputService : IAsyncDisposable
                             error);
                     }
                 }
-                if (failure is not null) TryDeleteFile(recordingStagingPath);
+                if (failure is not null)
+                {
+                    // Keep the partial file for manual recovery instead of
+                    // silently deleting possibly salvageable encoded video.
+                    DiagnosticLogger.Warning("media_output", "partial_recording_preserved",
+                        ("file", Path.GetFileName(recordingStagingPath)),
+                        ("error", failure.Message));
+                }
             }
             process.Dispose();
             composition?.Cleanup();
