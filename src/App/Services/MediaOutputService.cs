@@ -547,11 +547,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
         if (framesToWrite <= maximumCatchUpFrames)
             return (framesToWrite, framesWritten);
 
-        // Raw video has no timestamps. Drop the oldest backlog and advance the
-        // logical schedule so the next tick follows current wall time instead
-        // of repeatedly trying to drain an unbounded historical queue.
-        return (maximumCatchUpFrames,
-            checked(framesWritten + framesToWrite - maximumCatchUpFrames));
+        // Upstream v1.8.5-pre2 fix: FFmpeg timestamps rawvideo by the number
+        // of frame payloads *actually written*. Advancing the baseline without
+        // sending frames silently shortens video while audio keeps progressing.
+        // Limit each burst but retain the remaining debt for subsequent ticks.
+        return (maximumCatchUpFrames, framesWritten);
     }
 
     private async Task PumpAudioAsync(Process process, Stream output,
