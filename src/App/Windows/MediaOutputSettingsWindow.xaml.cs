@@ -145,7 +145,6 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         var settings = app.UpdateSettings;
         IncludePhoneShellBox.IsChecked = settings.MediaOutputIncludePhoneShell;
         BackgroundImageBox.Text = settings.MediaOutputBackgroundImagePath;
-        ShellImageBox.Text = settings.MediaOutputPhoneShellImagePath;
         ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
     }
 
@@ -156,8 +155,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             IncludePhoneShellBox.IsChecked == true;
         app.UpdateSettings.MediaOutputBackgroundImagePath =
             BackgroundImageBox.Text.Trim();
-        app.UpdateSettings.MediaOutputPhoneShellImagePath =
-            ShellImageBox.Text.Trim();
+        app.UpdateSettings.MediaOutputPhoneShellImagePath = string.Empty;
         _ = app.SaveUpdateSettings();
     }
 
@@ -169,9 +167,6 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void OnChooseBackgroundClick(object sender, RoutedEventArgs e) =>
         PickImage(BackgroundImageBox);
-
-    private void OnChooseShellClick(object sender, RoutedEventArgs e) =>
-        PickImage(ShellImageBox);
 
     private void PickImage(TextBox target)
     {
@@ -233,7 +228,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         SaveShellPreferences();
         var result = await _viewModel.StartRecordingAsync(
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
-            BackgroundImageBox.Text.Trim(), ShellImageBox.Text.Trim());
+            BackgroundImageBox.Text.Trim(), string.Empty);
         FeedbackText.Text = result.Message;
     }
 
@@ -252,7 +247,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         var result = await _viewModel.StartStreamingAsync(kind,
             StreamDestinationBox.Text.Trim(), StreamAuthorizationBox.Text.Trim(),
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
-            BackgroundImageBox.Text.Trim(), ShellImageBox.Text.Trim());
+            BackgroundImageBox.Text.Trim(), string.Empty);
         FeedbackText.Text = result.Message;
     }
 
