@@ -375,6 +375,12 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         _usbControlEnabled ? "WiredControlDisable" : "WiredControlEnable");
     public string WirelessControlActionText => LocalizationService.Get(
         _wirelessControlEnabled ? "WirelessControlDisable" : "WirelessControlEnable");
+    public string WirelessControlAvailabilityText => CanToggleWirelessControl
+        ? WirelessControlActionText
+        : "无线控制需要先绑定可信 Apple 设备。AirPlay 显示已连接不等于控制通道已就绪。";
+    public string WiredControlAvailabilityText => CanToggleWiredControl
+        ? WiredControlActionText
+        : "有线控制需要 USB 数据连接、设备信任及 Apple 设备身份绑定。";
     public string UsbControlActionText => _usbControlStarting ? LocalizationService.Get("UsbControlStarting") :
         _usbControlStopping ? LocalizationService.Get("UsbControlStopping") :
         !HasWiredUsbControlDevice && !_usbControlEnabled ? LocalizationService.Get("UsbControlNeedsConnection") :
@@ -2877,6 +2883,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CanToggleWirelessControl));
         OnPropertyChanged(nameof(WiredControlActionText));
         OnPropertyChanged(nameof(WirelessControlActionText));
+        OnPropertyChanged(nameof(WiredControlAvailabilityText));
+        OnPropertyChanged(nameof(WirelessControlAvailabilityText));
         OnPropertyChanged(nameof(UsbControlTargetUdid));
         OnPropertyChanged(nameof(CanStartBluetoothControl));
         OnPropertyChanged(nameof(CanStopBluetoothControl));
@@ -6365,6 +6373,15 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         await _mediaOutputGate.WaitAsync();
         SetMediaOutputTransitioning(true);
         try { await StopMediaOutputLockedAsync(); }
+        catch (Exception error)
+        {
+            DiagnosticLogger.Exception("media_output", "stop_failed", error);
+            SetMediaOutputStatus(LocalizationService.Format(
+                "MediaOutputFailedFormat", error.Message), "Failed");
+            AddDiagnosticLog(AppLog.Event("media_output_stop_failed",
+                ("error", AppLog.Error(error))));
+            NotifyMediaOutputStateChanged();
+        }
         finally
         {
             SetMediaOutputTransitioning(false);
