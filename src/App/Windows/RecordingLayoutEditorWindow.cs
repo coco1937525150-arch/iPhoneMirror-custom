@@ -27,9 +27,14 @@ internal sealed class RecordingLayoutEditorWindow : Window
     private bool _dragging;
     private Point _dragOffset;
 
-    internal RecordingLayoutEditorWindow(string backgroundPath, bool landscape = false)
+    internal RecordingLayoutEditorWindow(string backgroundPath, bool landscape = false,
+        uint sourceWidth = 1280, uint sourceHeight = 720)
     {
         _landscape = landscape;
+        // With no custom background, the recording canvas is the capture
+        // resolution selected in the settings window, never a fixed 1280x720.
+        _backgroundWidth = Math.Max(160U, sourceWidth);
+        _backgroundHeight = Math.Max(160U, sourceHeight);
         Title = "编辑录制布局 — 拖动手机壳 / 鼠标滚轮缩放";
         Width = 1040;
         Height = 740;
