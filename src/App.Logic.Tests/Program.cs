@@ -4306,11 +4306,34 @@ try
     Equal((byte)255, importedPixels[
         ((shellTestHeight / 2) * shellTestWidth) * 4 + 3],
         "imported phone shell preserves opaque side-frame pixels");
+    var installedAgain = Path.Combine(maskFixtureDirectory, "installed-again.png");
+    PhoneShellAssetStore.Install(installedFile, installedAgain);
+    var importedAgain = new BitmapImage();
+    importedAgain.BeginInit();
+    importedAgain.CacheOption = BitmapCacheOption.OnLoad;
+    importedAgain.UriSource = new Uri(installedAgain, UriKind.Absolute);
+    importedAgain.EndInit();
+    var convertedAgain = new FormatConvertedBitmap(importedAgain,
+        PixelFormats.Bgra32, null, 0);
+    var pixelsAgain = new byte[importedPixels.Length];
+    convertedAgain.CopyPixels(pixelsAgain, shellTestWidth * 4, 0);
+    Equal(true, importedPixels.AsSpan().SequenceEqual(pixelsAgain),
+        "re-import preserves an existing transparent phone-shell aperture");
 }
 finally
 {
     Directory.Delete(maskFixtureDirectory, recursive: true);
 }
+
+var opening = new DeviceScreenRect(18, 22, 934, 1901);
+var expanded = PhoneShellMediaComposer.ExpandVideoUnderBezel(opening);
+Equal(true, expanded.X <= opening.X - 3 &&
+    expanded.Y <= opening.Y - 3 &&
+    expanded.X + expanded.Width >= opening.X + opening.Width + 3 &&
+    expanded.Y + expanded.Height >= opening.Y + opening.Height + 3,
+    "phone video extends beneath the alpha-aliased shell edges on every side");
+Equal(true, (expanded.Width & 1) == 0 && (expanded.Height & 1) == 0,
+    "expanded phone video uses chroma-safe even intermediate dimensions");
 
 // Layout bounds are identical in the editor and the MP4 compositor, and
 // old out-of-range preferences must not be able to crop the phone shell.
