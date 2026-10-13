@@ -998,10 +998,13 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 // Never center-crop a user-selected background: the MP4 canvas
                 // has already been chosen from its intrinsic pixel dimensions.
                 $"[{bgIndex}:v]setsar=1[phone_bg];" +
+                // Cover the entire shell viewport. 'decrease' + black pad
+                // exposed the background through the top/bottom of the bezel.
+                // Crop ONLY the phone video; the background stays untouched.
                 $"[{videoIndex}:v]scale={composition.ScreenWidth}:{composition.ScreenHeight}:" +
-                "force_original_aspect_ratio=decrease," +
-                $"pad={composition.ScreenWidth}:{composition.ScreenHeight}:(ow-iw)/2:(oh-ih)/2:black," +
-                "setsar=1[phone_video];" +
+                "force_original_aspect_ratio=increase," +
+                $"crop={composition.ScreenWidth}:{composition.ScreenHeight}:" +
+                "(iw-ow)/2:(ih-oh)/2,setsar=1[phone_video];" +
                 // A user may deliberately move the shell partially outside the
                 // background. Crop the moving screen via overlay, never crop
                 // the background canvas or stretch it to the phone dimensions.
