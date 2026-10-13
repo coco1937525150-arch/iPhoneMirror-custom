@@ -275,13 +275,14 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var activeProcess = process;
                 var activeAudioPipe = audioPipe;
                 var activeRecordingStagingPath = recordingStagingPath;
+                var activeComposition = composition;
                 _process = activeProcess;
                 SessionHandle = sessionHandle;
                 _runCancellation = runCancellation;
                 _runTask = Task.Run(() => PumpAsync(activeProcess,
                     activeAudioPipe, sessionHandle, request, firstAudio,
                     audioSampleRate, audioChannels, activeRecordingStagingPath,
-                    composition, runCancellation.Token),
+                    activeComposition, runCancellation.Token),
                     CancellationToken.None);
                 process = null;
                 audioPipe = null;
