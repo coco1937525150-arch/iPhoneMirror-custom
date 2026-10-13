@@ -35,7 +35,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
         MinHeight = 490;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-        var asset = Path.Combine(AppContext.BaseDirectory, "Assets", "iphone16_pro_max_shell.png");
+        var asset = PhoneShellAssetStore.ActivePath;
         if (!File.Exists(asset))
             throw new FileNotFoundException("内置手机壳资源缺失，无法打开布局编辑器。", asset);
         _shell = LoadImage(asset);
@@ -144,7 +144,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
     {
         // Compute in original image pixels, not WPF preview units; the same
         // routine is used when generating the actual MP4 shell overlay.
-        var reference = DeviceFrameProfileResolver.IPhoneDynamicIsland
+        var reference = DeviceFrameProfileResolver.ActiveIPhoneShell
             .GetOuterDimensions(1320, 2868);
         var aspect = reference.Width / (double)reference.Height;
         var fit = PhoneShellMediaComposer.FitInsideCanvas(
