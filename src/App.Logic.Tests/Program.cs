@@ -4302,8 +4302,12 @@ var boundedVideoSchedule = MediaOutputService.CalculateVideoWritePlan(
     TimeSpan.FromSeconds(10), 30, 0);
 Equal(60L, boundedVideoSchedule.FramesToWrite,
     "video output bounds catch-up to two seconds of repeated frames");
-Equal(240L, boundedVideoSchedule.FramesWrittenBaseline,
-    "video output discards the oldest backlog before resuming current output");
+Equal(0L, boundedVideoSchedule.FramesWrittenBaseline,
+    "pre2 recording fix preserves the real number of frames written");
+Equal(240L, MediaOutputService.CalculateDueVideoFrames(
+        TimeSpan.FromSeconds(10), 30,
+        boundedVideoSchedule.FramesWrittenBaseline + boundedVideoSchedule.FramesToWrite),
+    "pre2 recording fix retains missing video duration so audio does not drift");
 Throws<ArgumentOutOfRangeException>(() =>
         MediaOutputService.CalculateDueVideoFrames(
             TimeSpan.FromSeconds(1), 0, 0),
