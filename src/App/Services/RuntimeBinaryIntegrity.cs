@@ -136,7 +136,9 @@ internal static class RuntimeBinaryIntegrity
             }
 
             if (count == 0 || !hasExecutable ||
-                (schemaVersion == 1 && !hasInternalRuntime) ||
+                (schemaVersion == 1 && (!hasInternalRuntime ||
+                    !seen.Contains("_internal\\libusb0.dll") ||
+                    !seen.Contains("_internal\\libusb-1.0.dll"))) ||
                 (schemaVersion == 2 && count != 1))
             {
                 failure = "bridge runtime manifest does not describe a complete payload";

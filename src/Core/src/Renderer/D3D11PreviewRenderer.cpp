@@ -9,6 +9,7 @@
 #include <dcomp.h>
 #include <dxgi1_3.h>
 #include <dxgi1_6.h>
+#include <wincodec.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -17,6 +18,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <vector>
 #include <format>
 #include <mutex>
 #include <stdexcept>
@@ -209,6 +212,7 @@ constexpr const char* PreviewPixelShaders = R"(
 Texture2D<float> yPlane : register(t0);
 Texture2D<float2> uvPlane : register(t1);
 Texture2D<float4> image : register(t2);
+Texture2D<float4> referenceShell : register(t3);
 SamplerState linearSampler : register(s0);
 
 cbuffer ShapeConstants : register(b0) {
@@ -462,6 +466,13 @@ float4 copyMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGE
     return premultiplyForCorner(image.Sample(linearSampler, rotateUv(uv)).rgb, position.xy);
 }
 
+float4 referenceShellMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
+    if (frameEnabled < 0.5) return float4(0, 0, 0, 0);
+    float2 shellUv = outputSize.x > outputSize.y ?
+        float2(uv.y, 1.0 - uv.x) : uv;
+    return referenceShell.Sample(linearSampler, shellUv);
+}
+
 float4 maskMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     return premultiplyForCorner(float3(0.0, 0.0, 0.0), position.xy);
 }
@@ -554,6 +565,9 @@ struct D3D11PreviewRenderer::Impl {
     ComPtr<ID3D11PixelShader> copy_pixel_shader;
     ComPtr<ID3D11PixelShader> mask_pixel_shader;
     ComPtr<ID3D11PixelShader> frame_pixel_shader;
+    ComPtr<ID3D11PixelShader> reference_shell_shader;
+    ComPtr<ID3D11Texture2D> reference_shell_texture;
+    ComPtr<ID3D11ShaderResourceView> reference_shell_view;
     ComPtr<ID3D11PixelShader> cutout_pixel_shader;
     ComPtr<ID3D11BlendState> premultiplied_blend_state;
     ComPtr<ID3D11Buffer> shape_constants;
@@ -749,6 +763,7 @@ struct D3D11PreviewRenderer::Impl {
         const auto mask_pixel_blob = compile_shader(PreviewPixelShaders, "maskMain", "ps_5_0");
         const auto frame_pixel_blob = compile_shader(PreviewPixelShaders, "frameMain", "ps_5_0");
         const auto cutout_pixel_blob = compile_shader(PreviewPixelShaders, "cutoutMain", "ps_5_0");
+        const auto reference_shell_blob = compile_shader(PreviewPixelShaders, "referenceShellMain", "ps_5_0");
         check(device->CreateVertexShader(vertex_blob->GetBufferPointer(), vertex_blob->GetBufferSize(),
             nullptr, &vertex_shader), "CreateVertexShader");
         check(device->CreatePixelShader(pixel_blob->GetBufferPointer(), pixel_blob->GetBufferSize(),
@@ -765,6 +780,9 @@ struct D3D11PreviewRenderer::Impl {
         check(device->CreatePixelShader(cutout_pixel_blob->GetBufferPointer(),
             cutout_pixel_blob->GetBufferSize(), nullptr, &cutout_pixel_shader),
             "Create cutout PixelShader");
+        check(device->CreatePixelShader(reference_shell_blob->GetBufferPointer(),
+            reference_shell_blob->GetBufferSize(), nullptr, &reference_shell_shader),
+            "Create reference shell PixelShader");
 
         D3D11_BLEND_DESC blend_description{};
         blend_description.RenderTarget[0].BlendEnable = TRUE;
@@ -793,6 +811,7 @@ struct D3D11PreviewRenderer::Impl {
         sampler_description.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sampler_description.MaxLOD = D3D11_FLOAT32_MAX;
         check(device->CreateSamplerState(&sampler_description, &sampler), "CreateSamplerState");
+        load_reference_shell();
         recreate_target();
         output_state = {};
         output_state.monitor_generation = monitor_generation;
@@ -837,6 +856,9 @@ struct D3D11PreviewRenderer::Impl {
         sampler.Reset();
         shape_constants.Reset();
         premultiplied_blend_state.Reset();
+        reference_shell_view.Reset();
+        reference_shell_texture.Reset();
+        reference_shell_shader.Reset();
         cutout_pixel_shader.Reset();
         frame_pixel_shader.Reset();
         mask_pixel_shader.Reset();
@@ -1201,8 +1223,106 @@ struct D3D11PreviewRenderer::Impl {
             GetPropW(window, L"iPhoneMirrorFullScreen") == nullptr;
     }
 
+
+    // Windows Imaging Component decodes the exact bundled alpha PNG once per
+    // D3D device lifetime. Missing assets fail open to the legacy frame.
+    void load_reference_shell() {
+        // Frame creation can also happen on a renderer worker after device
+        // loss; initialize COM on whichever thread performs WIC decoding.
+        struct ScopedCom {
+            HRESULT result{CoInitializeEx(nullptr, COINIT_MULTITHREADED)};
+            ~ScopedCom() { if (SUCCEEDED(result)) CoUninitialize(); }
+        } apartment;
+        if (FAILED(apartment.result) &&
+            apartment.result != RPC_E_CHANGED_MODE) return;
+        wchar_t module_path[32768]{};
+        const auto length = GetModuleFileNameW(nullptr, module_path,
+            static_cast<DWORD>(std::size(module_path)));
+        if (length == 0 || length >= std::size(module_path)) return;
+        const auto path = std::filesystem::path(module_path).parent_path() /
+            L"Assets" / L"iphone16_pro_max_shell.png";
+        if (!std::filesystem::exists(path)) {
+            logging::write("d3d_preview reference_shell_missing");
+            return;
+        }
+        ComPtr<IWICImagingFactory> imaging;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+            CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&imaging)))) return;
+        ComPtr<IWICBitmapDecoder> decoder;
+        if (FAILED(imaging->CreateDecoderFromFilename(path.c_str(), nullptr,
+            GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder))) return;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (FAILED(decoder->GetFrame(0, &frame))) return;
+        ComPtr<IWICFormatConverter> converter;
+        if (FAILED(imaging->CreateFormatConverter(&converter)) ||
+            FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone, nullptr, 0.0,
+                WICBitmapPaletteTypeCustom))) return;
+        UINT width{}, height{};
+        if (FAILED(converter->GetSize(&width, &height)) || !width || !height ||
+            width > 2048 || height > 4096) return;
+        const auto pitch = width * 4U;
+        std::vector<BYTE> pixels(static_cast<std::size_t>(pitch) * height);
+        if (FAILED(converter->CopyPixels(nullptr, pitch,
+            static_cast<UINT>(pixels.size()), pixels.data()))) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA initial{};
+        initial.pSysMem = pixels.data();
+        initial.SysMemPitch = pitch;
+        if (FAILED(device->CreateTexture2D(&desc, &initial,
+                &reference_shell_texture)) ||
+            FAILED(device->CreateShaderResourceView(reference_shell_texture.Get(),
+                nullptr, &reference_shell_view))) {
+            reference_shell_texture.Reset();
+            reference_shell_view.Reset();
+            return;
+        }
+        logging::write(std::format("d3d_preview reference_shell_loaded={}x{}",
+            width, height));
+    }
+
+    bool use_reference_shell(const DeviceFrameProfileData& profile) const noexcept {
+        return profile.enabled && reference_shell_view &&
+            std::abs(profile.side_inset - 0.064F) < 0.002F &&
+            profile.cutout_kind == 0;
+    }
+
+    void draw_reference_shell(const DeviceFrameProfileData& profile) {
+        if (!use_reference_shell(profile)) return;
+        D3D11_VIEWPORT viewport{};
+        viewport.Width = static_cast<float>(target_width);
+        viewport.Height = static_cast<float>(target_height);
+        viewport.MinDepth = 0;
+        viewport.MaxDepth = 1;
+        context->RSSetViewports(1, &viewport);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vertex_shader.Get(), nullptr, 0);
+        context->PSSetShader(reference_shell_shader.Get(), nullptr, 0);
+        update_shape_constants(target_width, target_height, false, 0, nullptr,
+            0.0F, 0.0F, &profile);
+        auto* texture_view = reference_shell_view.Get();
+        context->PSSetShaderResources(3, 1, &texture_view);
+        context->PSSetSamplers(0, 1, sampler.GetAddressOf());
+        constexpr float factor[] = {0, 0, 0, 0};
+        context->OMSetBlendState(premultiplied_blend_state.Get(), factor,
+            0xffffffffU);
+        context->Draw(3, 0);
+        context->OMSetBlendState(nullptr, factor, 0xffffffffU);
+        ID3D11ShaderResourceView* empty = nullptr;
+        context->PSSetShaderResources(3, 1, &empty);
+    }
+
     void draw_device_frame(const DeviceFrameProfileData& profile) {
         if (!device_frame_enabled(profile)) return;
+        if (use_reference_shell(profile)) { draw_reference_shell(profile); return; }
         D3D11_VIEWPORT viewport{};
         viewport.Width = static_cast<float>(target_width);
         viewport.Height = static_cast<float>(target_height);
@@ -1689,6 +1809,7 @@ struct D3D11PreviewRenderer::Impl {
                 rounded, turns);
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
+            if (framed) draw_reference_shell(frame_profile);
             // No synthetic island or notch over the real iOS video.
         } else {
             ensure_render_texture(limited_width, limited_height);
@@ -1727,6 +1848,7 @@ struct D3D11PreviewRenderer::Impl {
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             context->PSSetShaderResources(0, 3, empty);
+            if (framed) draw_reference_shell(frame_profile);
             // Likewise leave the limited-render path's original pixels unobscured.
         }
         // The render loop applies the requested frame-rate cap. A nonblocking

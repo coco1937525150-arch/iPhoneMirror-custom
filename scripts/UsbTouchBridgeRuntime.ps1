@@ -18,17 +18,15 @@ function Get-UsbTouchBridgeRuntimeManifestEntries {
     catch {
         throw "$Label manifest is invalid: $manifestPath"
     }
-    $schema = [int]$manifest.schema
-    $rust = $schema -eq 2 -and [string]$manifest.backend -eq 'idevice'
-    if ($null -eq $manifest.files -or ($schema -ne 1 -and -not $rust)) {
+    if ($null -eq $manifest.schema -or
+        [string]$manifest.schema -ne '1' -or $null -eq $manifest.files) {
         throw "$Label manifest has an unsupported schema."
     }
     $entries = @($manifest.files)
-    if (@($entries | Where-Object { $_.path -eq 'iUsbBridge.exe' }).Count -ne 1 -or
-        ($rust -and $entries.Count -ne 1) -or
-        (-not $rust -and @($entries | Where-Object {
-            $_.path -like '_internal/*' }).Count -eq 0)) {
-        throw "$Label manifest does not describe a complete bridge."
+    if ($entries.Count -eq 0 -or
+        @($entries | Where-Object { $_.path -eq 'iUsbBridge.exe' }).Count -ne 1 -or
+        @($entries | Where-Object { $_.path -like '_internal/*' }).Count -eq 0) {
+        throw "$Label manifest does not describe a complete onedir bridge."
     }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in $entries) {
@@ -43,10 +41,15 @@ function Get-UsbTouchBridgeRuntimeManifestEntries {
                 [string]::IsNullOrWhiteSpace($_) -or $_ -in @('.', '..')
             }).Count -ne 0 -or
             ($relative -ne 'iUsbBridge.exe' -and
-                ($rust -or -not $relative.StartsWith('_internal/', [StringComparison]::Ordinal))) -or
+                -not $relative.StartsWith('_internal/', [StringComparison]::Ordinal)) -or
             $expectedHash -notmatch '^[0-9a-fA-F]{64}$' -or
             -not $seen.Add($relative)) {
             throw "$Label manifest contains an invalid file entry."
+        }
+    }
+    foreach ($required in @('_internal/libusb0.dll', '_internal/libusb-1.0.dll')) {
+        if (-not $seen.Contains($required)) {
+            throw "$Label manifest is missing required USB backend: $required"
         }
     }
     return $entries
@@ -61,26 +64,22 @@ function Assert-UsbTouchBridgeRuntime {
     $Directory = [IO.Path]::GetFullPath($Directory).TrimEnd('\\')
     $entries = @(Get-UsbTouchBridgeRuntimeManifestEntries $Directory $Label)
     $runtimeDirectory = Join-Path $Directory '_internal'
-    $schema = [int]((Get-Content -LiteralPath (Join-Path $Directory 'iUsbBridge.runtime.json') -Raw |
-        ConvertFrom-Json).schema)
-    if ($schema -eq 1) {
-        if (-not (Test-Path -LiteralPath $runtimeDirectory -PathType Container)) {
-            throw "$Label runtime directory is missing: $runtimeDirectory"
-        }
-        $reparse = @(Get-ChildItem -LiteralPath $runtimeDirectory -Recurse -Force |
-            Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
-        if ($reparse.Count -ne 0) {
-            throw "$Label runtime directory contains a reparse point: $($reparse[0].FullName)"
-        }
+    if (-not (Test-Path -LiteralPath $runtimeDirectory -PathType Container)) {
+        throw "$Label runtime directory is missing: $runtimeDirectory"
     }
+    $reparse = @(Get-ChildItem -LiteralPath $runtimeDirectory -Recurse -Force |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+    if ($reparse.Count -ne 0) {
+        throw "$Label runtime directory contains a reparse point: $($reparse[0].FullName)"
+    }
+
     $expected = @($entries | ForEach-Object {
         ([string]$_.path).Replace('/', [IO.Path]::DirectorySeparatorChar)
     })
-    $actual = @('iUsbBridge.exe')
-    if ($schema -eq 1) {
-        $actual += @(Get-ChildItem -LiteralPath $runtimeDirectory -Recurse -File |
-            ForEach-Object { $_.FullName.Substring($Directory.Length + 1) })
-    }
+    $actual = @('iUsbBridge.exe') + @(Get-ChildItem -LiteralPath $runtimeDirectory `
+        -Recurse -File | ForEach-Object {
+            $_.FullName.Substring($Directory.Length + 1)
+        })
     $missing = @($expected | Where-Object { $_ -notin $actual })
     $unexpected = @($actual | Where-Object { $_ -notin $expected })
     if ($missing.Count -ne 0 -or $unexpected.Count -ne 0) {

@@ -427,13 +427,13 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         !_bluetoothControlStarting && !_bluetoothControlStopping &&
         !_usbControlStarting && !_usbControlStopping &&
         device is not null && !device.IsMediaCast &&
-        GetUsbControlBinding(device.Udid) is not null;
+        device.State != ConnectionState.Disconnected;
 
     private bool CanEnableWirelessControlFor(DeviceViewModel? device) =>
         !_wirelessControlEnabled && !_usbControlEnabled && !_usbControlStarting &&
         !_usbControlStopping && !_bluetoothControlStarting &&
-        !_bluetoothControlStopping && device is not null &&
-        _identityResolver.Resolve(device).AppleUdid is not null;
+        !_bluetoothControlStopping && device is not null && !device.IsMediaCast &&
+        device.State != ConnectionState.Disconnected;
 
     // AirPlay supplies the picture, but direct touch always goes through a
     // physically connected and trusted Apple USB device.
