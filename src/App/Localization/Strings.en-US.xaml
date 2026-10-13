@@ -944,4 +944,10 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="DeveloperStartupErrorBody">This is a local preview of the startup error window for checking the summary, log path, and details expander.</system:String>
     <system:String x:Key="DeveloperNativePreviewTitle">iPhoneMirror independent preview</system:String>
     <system:String x:Key="DeveloperNativePreviewBody">Native preview window</system:String>
+    <system:String x:Key="MediaOutputIncludeShell">Include phone shell in recording / stream</system:String>
+    <system:String x:Key="MediaOutputShellHint">Use a white background by default; optionally select an edited image and your iPhone 16 Pro Max shell template.</system:String>
+    <system:String x:Key="MediaOutputChooseBackground">Choose background…</system:String>
+    <system:String x:Key="MediaOutputChooseShell">Choose shell…</system:String>
+    <system:String x:Key="MediaOutputBackgroundHint">Background image (blank = white)</system:String>
+    <system:String x:Key="MediaOutputShellImageHint">Phone shell image (blank = built-in frame)</system:String>
 </ResourceDictionary>

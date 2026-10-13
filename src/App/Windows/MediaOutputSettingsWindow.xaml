@@ -4,7 +4,7 @@
         xmlns:animations="clr-namespace:IPhoneMirror.UI.Animations"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="{DynamicResource MediaOutputTitle}"
-        Width="560" Height="660" MinWidth="500" MinHeight="560"
+        Width="590" Height="780" MinWidth="520" MinHeight="610"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica" WindowCornerPreference="Round"
@@ -38,6 +38,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="16"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -57,7 +58,37 @@
             </Button>
         </Grid>
 
-        <TabControl Grid.Row="2" Style="{StaticResource SubWindowTabControl}">
+        <Border Grid.Row="2" Style="{StaticResource SectionCard}" Margin="0,0,0,8" Padding="12">
+            <StackPanel>
+                <CheckBox x:Name="IncludePhoneShellBox"
+                          Content="{DynamicResource MediaOutputIncludeShell}"
+                          Checked="OnShellModeChanged" Unchecked="OnShellModeChanged"/>
+                <TextBlock Text="{DynamicResource MediaOutputShellHint}" Margin="0,5,0,3"
+                           TextWrapping="Wrap" FontSize="10"
+                           Foreground="{DynamicResource MutedTextBrush}"/>
+                <Grid x:Name="ShellOptionsPanel" IsEnabled="False">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="BackgroundImageBox" Grid.Row="0" Grid.Column="0"
+                             Style="{StaticResource RoundedTextBox}" Height="34"
+                             ToolTip="{DynamicResource MediaOutputBackgroundHint}"/>
+                    <Button Grid.Row="0" Grid.Column="2" Style="{StaticResource ToolButton}"
+                            Content="{DynamicResource MediaOutputChooseBackground}"
+                            Click="OnChooseBackgroundClick"/>
+                    <TextBox x:Name="ShellImageBox" Grid.Row="1" Grid.Column="0" Margin="0,5,0,0"
+                             Style="{StaticResource RoundedTextBox}" Height="34"
+                             ToolTip="{DynamicResource MediaOutputShellImageHint}"/>
+                    <Button Grid.Row="1" Grid.Column="2" Margin="0,5,0,0"
+                            Style="{StaticResource ToolButton}"
+                            Content="{DynamicResource MediaOutputChooseShell}"
+                            Click="OnChooseShellClick"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <TabControl Grid.Row="3" Style="{StaticResource SubWindowTabControl}">
             <TabItem Header="{DynamicResource RecordTab}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <Border Style="{StaticResource SectionCard}">
@@ -219,7 +250,7 @@
             </TabItem>
         </TabControl>
 
-        <Grid Grid.Row="3" Margin="0,14,0,0">
+        <Grid Grid.Row="4" Margin="0,14,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="8"/>

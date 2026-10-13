@@ -6137,13 +6137,17 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     }
 
     internal async Task<(bool Success, string Message)> StartRecordingAsync(
-        uint width, uint height, int frameRate, int bitrateKbps)
+        uint width, uint height, int frameRate, int bitrateKbps,
+        bool includePhoneShell = false, string? backgroundImage = null,
+        string? phoneShellImage = null)
     {
         if (PendingRecordingPath is not null)
             return (false, LocalizationService.Get("RecordingPendingSave"));
         var path = PendingRecordingStore.CreatePath();
         var request = new MediaOutputRequest(MediaOutputKind.Recording, path,
-            NormalizeOutputWidth(width), NormalizeOutputHeight(height), frameRate, bitrateKbps);
+            NormalizeOutputWidth(width), NormalizeOutputHeight(height), frameRate, bitrateKbps,
+            IncludePhoneShell: includePhoneShell, BackgroundImage: backgroundImage,
+            PhoneShellImage: phoneShellImage);
         var result = await StartMediaOutputAsync(request);
         if (result.Success) _pendingRecordingPath = path;
         else
@@ -6187,13 +6191,16 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
     internal async Task<(bool Success, string Message)> StartStreamingAsync(
         MediaOutputKind kind, string destination, string authorization,
-        uint width, uint height, int frameRate, int bitrateKbps)
+        uint width, uint height, int frameRate, int bitrateKbps,
+        bool includePhoneShell = false, string? backgroundImage = null,
+        string? phoneShellImage = null)
     {
         if (kind is MediaOutputKind.Recording)
             return (false, LocalizationService.Get("MediaOutputInvalidProtocol"));
         var request = new MediaOutputRequest(kind, destination,
             NormalizeOutputWidth(width), NormalizeOutputHeight(height),
-            frameRate, bitrateKbps, authorization);
+            frameRate, bitrateKbps, authorization,
+            includePhoneShell, backgroundImage, phoneShellImage);
         return await StartMediaOutputAsync(request);
     }
 

@@ -22,7 +22,10 @@ internal sealed record MediaOutputRequest(
     uint Height,
     int FrameRate,
     int BitrateKbps,
-    string Authorization = "");
+    string Authorization = "",
+    bool IncludePhoneShell = false,
+    string? BackgroundImage = null,
+    string? PhoneShellImage = null);
 
 internal sealed record MediaOutputCapabilities(
     bool FfmpegAvailable,
@@ -221,8 +224,12 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 : null;
             NamedPipeServerStream? audioPipe = null;
             Process? process = null;
+            PhoneShellComposition? composition = null;
             try
             {
+                if (request.IncludePhoneShell)
+                    composition = PhoneShellMediaComposer.Prepare(request.Width,
+                        request.Height, request.BackgroundImage, request.PhoneShellImage);
                 audioPipe = audioPipeName is null ? null : new NamedPipeServerStream(
                     audioPipeName, PipeDirection.Out, 1, PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous, 64 * 1024, 64 * 1024);
@@ -231,7 +238,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         audioPipeName is null ? null : $@"\\.\pipe\{audioPipeName}",
                         audioSampleRate,
                         audioChannels,
-                        includeAudio: includeAudio));
+                        includeAudio: includeAudio, composition: composition));
                 process.ErrorDataReceived += (_, args) =>
                 {
                     if (!string.IsNullOrWhiteSpace(args.Data)) _lastError = args.Data;
@@ -268,17 +275,19 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var activeProcess = process;
                 var activeAudioPipe = audioPipe;
                 var activeRecordingStagingPath = recordingStagingPath;
+                var activeComposition = composition;
                 _process = activeProcess;
                 SessionHandle = sessionHandle;
                 _runCancellation = runCancellation;
                 _runTask = Task.Run(() => PumpAsync(activeProcess,
                     activeAudioPipe, sessionHandle, request, firstAudio,
                     audioSampleRate, audioChannels, activeRecordingStagingPath,
-                    runCancellation.Token),
+                    activeComposition, runCancellation.Token),
                     CancellationToken.None);
                 process = null;
                 audioPipe = null;
                 recordingStagingPath = null;
+                composition = null; // PumpAsync owns the temporary shell image.
                 StatusChanged?.Invoke(request.Kind == MediaOutputKind.Recording
                     ? "Recording" : "Live", false);
             }
@@ -292,6 +301,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             {
                 if (process is not null) await DisposeFailedStartAsync(process);
                 audioPipe?.Dispose();
+                composition?.Cleanup();
                 if (recordingStagingPath is not null)
                     TryDeleteFile(recordingStagingPath);
             }
@@ -319,7 +329,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
     private async Task PumpAsync(Process process, NamedPipeServerStream? audioPipe,
         ulong sessionHandle, MediaOutputRequest request, AudioPacket? firstAudio,
         uint audioSampleRate, ushort audioChannels, string? recordingStagingPath,
-        CancellationToken cancellationToken)
+        PhoneShellComposition? composition, CancellationToken cancellationToken)
     {
         Exception? failure = null;
         Task? videoTask = null;
@@ -412,6 +422,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 if (failure is not null) TryDeleteFile(recordingStagingPath);
             }
             process.Dispose();
+            composition?.Cleanup();
             await _lifecycleGate.WaitAsync();
             try
             {
@@ -791,7 +802,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
         MediaOutputCapabilities capabilities,
         string? audioPipePath = @"\\.\pipe\iphoneMirror-audio-test",
         uint audioSampleRate = 48000, ushort audioChannels = 2,
-        bool includeAudio = true)
+        bool includeAudio = true,
+        PhoneShellComposition? composition = null)
     {
         var args = new List<string>
         {
@@ -816,7 +828,37 @@ internal sealed class MediaOutputService : IAsyncDisposable
             "-color_primaries", "bt709", "-color_trc", "bt709",
             "-i", "pipe:0",
         ]);
-        if (includeAudio)
+        if (composition is not null)
+        {
+            // File paths are ProcessStartInfo.ArgumentList elements, never
+            // interpolated into a filter expression or passed through a shell.
+            if (composition.BackgroundFile is { Length: > 0 } background)
+                args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
+                    "-i", background]);
+            else
+                args.AddRange(["-f", "lavfi", "-i",
+                    $"color=c=white:s={request.Width}x{request.Height}:r={request.FrameRate}"]);
+            args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
+                "-i", composition.ShellFile]);
+            var videoIndex = includeAudio ? 1 : 0;
+            var bgIndex = videoIndex + 1;
+            var shellIndex = videoIndex + 2;
+            args.AddRange(["-filter_complex",
+                $"[{bgIndex}:v]scale={request.Width}:{request.Height}:force_original_aspect_ratio=increase," +
+                $"crop={request.Width}:{request.Height},setsar=1[phone_bg];" +
+                $"[{videoIndex}:v]scale={composition.ScreenWidth}:{composition.ScreenHeight}:" +
+                "force_original_aspect_ratio=decrease," +
+                $"pad={composition.ScreenWidth}:{composition.ScreenHeight}:(ow-iw)/2:(oh-ih)/2:black," +
+                "setsar=1[phone_video];" +
+                $"[phone_bg][phone_video]overlay={composition.ScreenX}:{composition.ScreenY}:" +
+                "shortest=1:eof_action=endall[phone_screen];" +
+                $"[phone_screen][{shellIndex}:v]overlay=0:0:shortest=1," +
+                "format=nv12[composited]"]);
+            args.AddRange(["-map", "[composited]"]);
+            if (includeAudio) args.AddRange(["-map", "0:a:0"]);
+            else args.Add("-an");
+        }
+        else if (includeAudio)
         {
             // FFmpeg opens inputs sequentially. Opening the named audio pipe
             // first lets StartAsync complete its handshake before video data

@@ -1675,11 +1675,29 @@ Equal(true,
 Equal(true,
     nativePreviewWindowCode.Contains("private bool _isTopMost;",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("SetWindowPos(_handle, HwndNoTopMost",
+    nativePreviewWindowCode.Contains("app.UpdateSettings.IndependentWindowAlwaysOnTop",
         StringComparison.Ordinal) &&
-    !nativePreviewWindowCode.Contains("_isTopMost = SetWindowPos(_handle, HwndTopMost",
+    nativePreviewWindowCode.Contains("var zOrder = preferredTopMost ? HwndTopMost : HwndNoTopMost;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_topMostItem.IsChecked = _isTopMost;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("if (!SetWindowPos(_handle, desiredTopMost ? HwndTopMost : HwndNoTopMost,",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_ = app.SaveUpdateSettings();",
         StringComparison.Ordinal),
-    "independent previews start non-topmost while retaining the manual pin command");
+    "independent previews expose checkable persistent native always-on-top without forcing focus");
+var corePreviewApiCode = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "CoreApi.cpp"));
+Equal(true,
+    corePreviewApiCode.Contains("found->second->set_rotation(normalized);",
+        StringComparison.Ordinal) &&
+    !corePreviewApiCode.Contains("set_rotation(normalized == 2 ? 2 : 0)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("var targetRotation = ((_rotation + delta) % 4 + 4) % 4;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("!NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, targetRotation)",
+        StringComparison.Ordinal),
+    "all quarter turns rotate the native video with its window shell; failed turns do not move the shell");
 Equal(true,
     mainViewModelSource.Contains("private bool _bluetoothControlStopping;",
         StringComparison.Ordinal) &&
@@ -4191,6 +4209,32 @@ Sequence(["-hide_banner", "-loglevel", "warning", "-nostdin",
         "-y", "capture.mp4"],
     recordingArguments,
     "recording opens the audio pipe before stdin video and keeps stable mapping");
+
+var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
+    "shell-capture.mp4", 1080, 1920, 30, 6000,
+    IncludePhoneShell: true, BackgroundImage: "custom-background.png",
+    PhoneShellImage: "iphone16promax.png");
+var shellComposition = new PhoneShellComposition(
+    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770);
+var shellArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
+    composition: shellComposition);
+Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
+    shellArgs.Contains("[composited]", StringComparer.Ordinal) &&
+    shellArgs.Contains("custom-background.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("transparent-shell.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("0:a:0", StringComparer.Ordinal),
+    "recording composites custom backdrop, decoded screen, transparent phone frame and audio");
+Equal(true, shellArgs.Any(x => x.Contains(
+        "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)),
+    "phone shell overlays the full-rate video after background composition");
+var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
+    audioPipePath: null, includeAudio: false, composition: shellComposition);
+Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
+    shellSilentArgs.Any(x => x.Contains("[phone_screen][2:v]overlay=0:0",
+        StringComparison.Ordinal)) && shellSilentArgs.Contains("-an", StringComparer.Ordinal),
+    "video-only shell output maintains correct input indices without PCM audio");
+Equal(false, recordingArguments.Contains("-filter_complex", StringComparer.Ordinal),
+    "ordinary recording keeps its original uncomposited encoder pipeline");
 
 var softwareRecordingArguments = MediaOutputService.BuildArguments(
     new MediaOutputRequest(MediaOutputKind.Recording, "software.mp4", 1280, 720,

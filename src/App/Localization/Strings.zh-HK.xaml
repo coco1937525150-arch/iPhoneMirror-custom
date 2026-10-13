@@ -944,4 +944,10 @@
     <system:String x:Key="DeveloperStartupErrorBody">這是啟動錯誤視窗的本機預覽，用於檢查錯誤摘要、記錄路徑和詳細資料。</system:String>
     <system:String x:Key="DeveloperNativePreviewTitle">iPhoneMirror 獨立預覽</system:String>
     <system:String x:Key="DeveloperNativePreviewBody">原生預覽視窗</system:String>
+    <system:String x:Key="MediaOutputIncludeShell">錄製 / 串流時包含手機殼</system:String>
+    <system:String x:Key="MediaOutputShellHint">預設白色背景；可以選擇預先編輯的背景圖片及 iPhone 16 Pro Max 手機殼底圖。</system:String>
+    <system:String x:Key="MediaOutputChooseBackground">選擇背景板…</system:String>
+    <system:String x:Key="MediaOutputChooseShell">選擇手機殼…</system:String>
+    <system:String x:Key="MediaOutputBackgroundHint">背景圖片（留空 = 白色）</system:String>
+    <system:String x:Key="MediaOutputShellImageHint">手機殼圖片（留空 = 內建邊框）</system:String>
 </ResourceDictionary>
