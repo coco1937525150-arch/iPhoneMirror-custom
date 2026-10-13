@@ -62,7 +62,7 @@ internal static class PhoneShellMediaComposer
         var landscape = width > height;
         var aspect = landscape ? reference.Height / (double)reference.Width
             : reference.Width / (double)reference.Height;
-        var settings = (Application.Current as App)?.UpdateSettings;
+        var settings = (Application.Current as global::IPhoneMirror.App.App)?.UpdateSettings;
         var layoutScale = settings?.MediaOutputShellScale ?? 1.0;
         if (!double.IsFinite(layoutScale)) layoutScale = 1;
         layoutScale = Math.Clamp(layoutScale, .1, 4.0);
