@@ -330,7 +330,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             ("session_handle", SessionHandle));
         try { await task.WaitAsync(UserStopTimeout); }
         catch (OperationCanceledException) { }
-        catch (TimeoutException error)
+        catch (TimeoutException error) when (!task.IsCompleted)
         {
             DiagnosticLogger.Exception("media_output", "stop_wait_timeout", error);
             if (process is not null) await KillProcessAsync(process);
@@ -386,14 +386,14 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 DiagnosticLogger.ExceptionOnce("media-audio-pipe-dispose", "media_output",
                     "audio_pipe_dispose_failed", error);
             }
+            var pumps = Task.WhenAll(videoTask ?? Task.CompletedTask,
+                audioTask ?? Task.CompletedTask);
             try
             {
-                var pumps = Task.WhenAll(videoTask ?? Task.CompletedTask,
-                    audioTask ?? Task.CompletedTask);
                 await pumps.WaitAsync(PumpTaskShutdownTimeout);
             }
             catch (OperationCanceledException) { }
-            catch (TimeoutException error)
+            catch (TimeoutException error) when (!pumps.IsCompleted)
             {
                 failure ??= new TimeoutException(
                     "A media input task did not stop within 8 seconds.", error);
