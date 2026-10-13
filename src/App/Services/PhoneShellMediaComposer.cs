@@ -36,7 +36,9 @@ internal static class PhoneShellMediaComposer
         // Match the already tuned iPhone 16 Pro Max viewport geometry.
         var profile = DeviceFrameProfileResolver.IPhoneDynamicIsland;
         var reference = profile.GetOuterDimensions(1320, 2868);
-        var aspect = reference.Width / (double)reference.Height;
+        var landscape = width > height;
+        var aspect = landscape ? reference.Height / (double)reference.Width
+            : reference.Width / (double)reference.Height;
         var outerHeight = Math.Min(height * .94, width * .94 / aspect);
         var outerWidth = outerHeight * aspect;
         var outer = new Rect(
@@ -54,11 +56,30 @@ internal static class PhoneShellMediaComposer
                 var visual = new DrawingVisual();
                 using (var context = visual.RenderOpen())
                 {
+                    // Render the complete shell as one rotated unit. The
+                    // video screen rectangle uses the same profile rotation.
+                    var portraitOuter = outer;
+                    if (landscape)
+                    {
+                        context.PushTransform(new RotateTransform(90,
+                            outer.X + outer.Width / 2, outer.Y + outer.Height / 2));
+                        portraitOuter = new Rect(
+                            outer.X + (outer.Width - outer.Height) / 2,
+                            outer.Y + (outer.Height - outer.Width) / 2,
+                            outer.Height, outer.Width);
+                    }
                     if (!string.IsNullOrWhiteSpace(shellImageFile))
-                        DrawImportedShell(context, shellImageFile, outer);
+                        DrawImportedShell(context, shellImageFile, portraitOuter);
                     else
-                        DrawDefaultShell(context, outer,
-                            new Rect(screenX, screenY, inner.Width, inner.Height));
+                    {
+                        var portraitScreen = profile.GetScreenRect(
+                            (int)portraitOuter.Width, (int)portraitOuter.Height);
+                        DrawDefaultShell(context, portraitOuter, new Rect(
+                            portraitOuter.X + portraitScreen.X,
+                            portraitOuter.Y + portraitScreen.Y,
+                            portraitScreen.Width, portraitScreen.Height));
+                    }
+                    if (landscape) context.Pop();
                 }
                 var bitmap = new RenderTargetBitmap((int)width, (int)height,
                     96, 96, PixelFormats.Pbgra32);
@@ -134,7 +155,7 @@ internal static class PhoneShellMediaComposer
                         pixels[i + 2] * 30) / 100;
             // Smooth white removal also avoids a giant opaque white rectangle
             // hiding the incoming iPhone video.
-            pixels[i + 3] = (byte)Math.Clamp((250 - luma) * 255 / 30, 0, 255);
+            pixels[i + 3] = (byte)Math.Clamp((238 - luma) * 255 / 22, 0, 255);
         }
         var writable = BitmapSource.Create(source.PixelWidth, source.PixelHeight,
             96, 96, PixelFormats.Bgra32, null, pixels, stride);
