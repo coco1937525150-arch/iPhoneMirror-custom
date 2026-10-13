@@ -132,6 +132,7 @@ class MuxConnection:
 
     # ---- called by MuxDevice reader thread
     def _on_segment(self, seg: TcpSegment) -> None:
+        forget = False
         with self._cv:
             self.rx_ack = seg.ack
             self.rx_win = seg.win
@@ -148,26 +149,38 @@ class MuxConnection:
                 self._cv.notify_all()
                 return
             if self.state == "connected":
-                if seg.flags & TH_RST or seg.flags & TH_FIN:
+                if seg.payload and not seg.flags & TH_RST:
+                    self._inbox += seg.payload
+                    self.bytes_rx += len(seg.payload)
+                    self.tx_ack = seg.seq + len(seg.payload)
+                    if not seg.flags & TH_FIN:
+                        self.mux._send_tcp(self, TH_ACK)
+                if seg.flags & (TH_RST | TH_FIN):
+                    if seg.flags & TH_FIN:
+                        self.tx_ack = seg.seq + len(seg.payload) + 1
+                        try:
+                            self.mux._send_tcp(self, TH_ACK)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("acknowledge FIN failed: %s", exc)
                     self.close_reason = "device sent " + ("RST" if seg.flags & TH_RST else "FIN")
                     logger.info("mux conn sport=%d dport=%d closed: %s (rx %d B, tx %d B, inbox %d B)",
                                 self.sport, self.dport, self.close_reason, self.bytes_rx, self.bytes_tx, len(self._inbox))
                     self.state = "dead"
                     self.closed = True
+                    forget = True
                     self._cv.notify_all()
-                    return
-                if seg.payload:
-                    self._inbox += seg.payload
-                    self.bytes_rx += len(seg.payload)
-                    self.tx_ack = seg.seq + len(seg.payload)
-                    self.mux._send_tcp(self, TH_ACK)
-                self._cv.notify_all()
+                else:
+                    self._cv.notify_all()
+        if forget:
+            self.mux._forget(self)
 
     # ---- public API
     def wait_connected(self, timeout: float = 10.0) -> None:
         with self._cv:
             self._cv.wait_for(lambda: self.state != "connecting", timeout)
             if self.state != "connected":
+                if self.close_reason:
+                    raise MuxError(self.close_reason)
                 raise ConnectionRefused(f"connect to device port {self.dport} {'refused' if self.refused else 'failed'}")
 
     def _sendable(self) -> int:
@@ -206,14 +219,21 @@ class MuxConnection:
 
     def close(self) -> None:
         with self._cv:
-            if self.closed:
-                return
+            if not self.closed:
+                self.closed = True
+                if self.state == "connected":
+                    try:
+                        self.mux._send_tcp(self, TH_RST)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("send RST failed: %s", exc)
+                self.state = "dead"
+                self._cv.notify_all()
+        self.mux._forget(self)
+
+    def abort(self, reason: str) -> None:
+        with self._cv:
+            self.close_reason = reason
             self.closed = True
-            if self.state == "connected":
-                try:
-                    self.mux._send_tcp(self, TH_RST)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("send RST failed: %s", exc)
             self.state = "dead"
             self._cv.notify_all()
         self.mux._forget(self)
@@ -234,12 +254,16 @@ class MuxDevice:
         self._lock = threading.RLock()  # 收包处理里会再发 ACK/RST，必须可重入
         self._conns: dict[int, MuxConnection] = {}
         self._next_sport = 1
+        self._failure_reason: Optional[str] = None
+        self._resume_probe_pending = False
         self._assembler = PacketAssembler()
         self.on_control: Optional[Callable[[bytes], None]] = None
 
     # ---- outbound
     def _send_packet(self, proto: int, payload: bytes) -> None:
         with self._lock:
+            if self._failure_reason is not None:
+                raise MuxError(self._failure_reason)
             if self.version >= 2:
                 if proto == PROTO_SETUP:
                     self.tx_seq, self.rx_seq = 0, 0xFFFF
@@ -304,27 +328,45 @@ class MuxDevice:
         if not self.ready.wait(timeout):
             raise MuxError("usbmux version handshake not completed")
         with self._lock:
+            if self._failure_reason is not None:
+                raise MuxError(self._failure_reason)
             while self._next_sport in self._conns or self._next_sport == 0:
                 self._next_sport = (self._next_sport + 1) & 0xFFFF
             sport = self._next_sport
             self._next_sport = (self._next_sport + 1) & 0xFFFF
             conn = MuxConnection(self, sport, dport)
             self._conns[sport] = conn
-        self._send_tcp(conn, TH_SYN)
+            # The first SYN after reopening a reader can go unanswered on an
+            # otherwise live capture mux. Bound just this probe; Lockdown's
+            # existing retry uses a fresh source port and the normal budget.
+            connect_timeout = min(timeout, 0.75) if self._resume_probe_pending else timeout
+            self._resume_probe_pending = False
         try:
-            conn.wait_connected(timeout)
-        except ConnectionRefused:
-            self._forget(conn)
+            self._send_tcp(conn, TH_SYN)
+            conn.wait_connected(connect_timeout)
+        except Exception:
+            conn.close()
             raise
         return conn
 
     def _forget(self, conn: MuxConnection) -> None:
         with self._lock:
-            self._conns.pop(conn.sport, None)
+            if self._conns.get(conn.sport) is conn:
+                self._conns.pop(conn.sport)
 
     def close_all(self) -> None:
-        for c in list(self._conns.values()):
+        with self._lock:
+            connections = list(self._conns.values())
+        for c in connections:
             c.close()
+
+    def abort_all(self, reason: str) -> None:
+        with self._lock:
+            self._failure_reason = reason
+            connections = list(self._conns.values())
+            self.ready.set()
+        for c in connections:
+            c.abort(reason)
 
 
 # --------------------------------------------------------------------------- libusb transport
@@ -333,6 +375,16 @@ class UsbMuxTransport:
 
     SUBCLASS_USBMUX = 0xFE
 
+    @property
+    def failure_reason(self) -> Optional[str]:
+        # A listener socket can remain open after the USB reader is gone.
+        # Its address and VERSION-ready event are not evidence of liveness.
+        if self.mux._failure_reason is not None:
+            return self.mux._failure_reason
+        if self._stop.is_set() or (self._thread is not None and not self._thread.is_alive()):
+            return 'usbmux USB reader stopped'
+        return None
+
     def __init__(self, dev, serial: str, *, timeout_ms: int = 200) -> None:
         import usb.util
 
@@ -340,6 +392,7 @@ class UsbMuxTransport:
         self.serial = serial
         self.timeout_ms = timeout_ms
         cfg = dev.get_active_configuration()
+        self._configuration = int(cfg.bConfigurationValue)
         intf = None
         for i in cfg:
             if i.bInterfaceClass == 0xFF and i.bInterfaceSubClass == self.SUBCLASS_USBMUX:
@@ -348,6 +401,23 @@ class UsbMuxTransport:
         if intf is None:
             raise MuxError("usbmux interface (subclass 0xFE) not found in active configuration")
         usb.util.claim_interface(dev, intf.bInterfaceNumber)
+        try:
+            self._initialize_claimed_interface(intf)
+        except BaseException:
+            # A failed constructor never reaches the caller's mux variable.
+            # Release our claim here so bounded retry/Apple fallback cannot
+            # inherit a half-initialized owner. Preserve the startup failure
+            # if unplugging also makes release fail.
+            try:
+                usb.util.release_interface(dev, intf.bInterfaceNumber)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("release partially initialized usbmux interface: %s", exc)
+            raise
+
+    def _initialize_claimed_interface(self, intf) -> None:
+        import usb.util
+
+        dev = self.dev
         self._intf = intf
         self._ep_in = usb.util.find_descriptor(
             intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
@@ -357,20 +427,81 @@ class UsbMuxTransport:
             raise MuxError("usbmux bulk endpoints not found")
         for ep in (self._ep_in, self._ep_out):
             try:
-                dev.ctrl_transfer(0x02, 0x01, 0, ep.bEndpointAddress, b"", timeout=1000)
+                # Reset the host pipe's DATA toggle as well as the device's.
+                # A raw CLEAR_FEATURE resets only the phone; on reopen Windows
+                # can retain the old toggle and silently drop the next packet.
+                dev.clear_halt(ep.bEndpointAddress)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("clear feature 0x%02x: %s", ep.bEndpointAddress, exc)
-        self.mux = MuxDevice(self._write, wmax_packet=self._ep_out.wMaxPacketSize or 512, serial=serial)
+                logger.debug("clear halt 0x%02x: %s", ep.bEndpointAddress, exc)
+        self.mux = MuxDevice(self._write, wmax_packet=self._ep_out.wMaxPacketSize or 512, serial=self.serial)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.bytes_in = 0
         self.bytes_out = 0
+        self.resumed = False
         logger.info("usbmux interface %d claimed: IN=0x%02x OUT=0x%02x", intf.bInterfaceNumber,
                     self._ep_in.bEndpointAddress, self._ep_out.bEndpointAddress)
 
     def _write(self, data: bytes) -> None:
         self._ep_out.write(data, timeout=2000)
         self.bytes_out += len(data)
+
+    def resume_from(self, previous: "UsbMuxTransport") -> None:
+        """Reopen a failed reader without renegotiating the live device mux.
+
+        The caller verifies the same phone's active capture configuration.
+        VERSION is a one-shot handshake on that configuration. Keep its mux
+        sequence numbers and next source port; discard only dead TCP clients.
+        """
+        if previous._thread is not None and previous._thread.is_alive():
+            raise MuxError('cannot resume while the old USB reader is alive')
+        if previous.mux.version not in (1, 2):
+            raise MuxError('cannot resume an unnegotiated usbmux session')
+        mux = previous.mux
+        mux.abort_all('usbmux reader replaced')
+        with mux._lock:
+            mux._write_raw = self._write
+            mux.wmax = self._ep_out.wMaxPacketSize or 512
+            mux._assembler = PacketAssembler()
+            mux._failure_reason = None
+            mux._resume_probe_pending = True
+        self.mux = mux
+        self.resumed = True
+
+    def export_checkpoint(self) -> dict:
+        """Checkpoint only after the reader and every TCP connection stopped."""
+        if self._thread is not None and self._thread.is_alive():
+            raise MuxError('cannot checkpoint a live USB reader')
+        with self.mux._lock:
+            if self.mux.version not in (1, 2) or self.mux._conns:
+                raise MuxError('cannot checkpoint an unnegotiated or busy mux')
+            return dict(schema=1, serial=self.serial, bus=self.dev.bus,
+                        address=self.dev.address, product=self.dev.idProduct,
+                        configuration=self._configuration,
+                        version=self.mux.version, tx=self.mux.tx_seq,
+                        rx=self.mux.rx_seq, port=self.mux._next_sport)
+
+    def import_checkpoint(self, state: dict) -> bool:
+        # The parent additionally scopes this in-memory value to one native
+        # capture lifetime. Never adopt another device/configuration, and never
+        # restore TCP clients, pressed keys, tunnels or authentication state.
+        expected = dict(schema=1, serial=self.serial, bus=self.dev.bus,
+                        address=self.dev.address, product=self.dev.idProduct,
+                        configuration=self._configuration)
+        if not isinstance(state, dict) or any(state.get(k) != v for k, v in expected.items()):
+            return False
+        if state.get('version') not in (1, 2) or any(
+                type(state.get(k)) is not int or not 0 <= state[k] <= 65535
+                for k in ('tx', 'rx', 'port')):
+            return False
+        with self.mux._lock:
+            self.mux.version = state['version']
+            self.mux.tx_seq, self.mux.rx_seq = state['tx'], state['rx']
+            self.mux._next_sport = state['port']
+            self.mux._resume_probe_pending = True
+            self.mux.ready.set()
+        self.resumed = True
+        return True
 
     def start(self) -> None:
         from iostouch.qt.usb import _is_timeout
@@ -384,6 +515,8 @@ class UsbMuxTransport:
                         continue
                     if not self._stop.is_set():
                         logger.error("usbmux read failed, reader thread exiting; all mux connections are now dead: %s", exc)
+                        self._stop.set()
+                        self.mux.abort_all(f"USB read failed: {exc}")
                     return
                 if chunk:
                     self.bytes_in += len(chunk)
@@ -394,9 +527,15 @@ class UsbMuxTransport:
 
         self._thread = threading.Thread(target=run, name="usbmux-usb-reader", daemon=True)
         self._thread.start()
-        self.mux.start()
+        if self.resumed:
+            logger.info('usbmux reader resumed without VERSION: version=%d tx_seq=%d next_sport=%d',
+                        self.mux.version, self.mux.tx_seq, self.mux._next_sport)
+        else:
+            self.mux.start()
         if not self.mux.ready.wait(5.0):
             raise MuxError("device did not answer usbmux VERSION packet")
+        if self.mux._failure_reason is not None:
+            raise MuxError(self.mux._failure_reason)
 
     def close(self) -> None:
         import usb.util
