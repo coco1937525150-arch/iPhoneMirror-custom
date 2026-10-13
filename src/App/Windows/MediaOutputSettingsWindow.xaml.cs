@@ -31,7 +31,9 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     {
         ApplyPreviewOutputDefaults(force: true);
         RestoreShellPreferences();
-        RecordFpsBox.Text = StreamFpsBox.Text = "30";
+        RecordFpsBox.Text = StreamFpsBox.Text = "60";
+        if (Application.Current is App settingsApp)
+            RecordingDirectoryBox.Text = settingsApp.UpdateSettings.MediaOutputRecordingDirectory;
         RecordBitrateBox.Text = StreamBitrateBox.Text = "6000";
         VirtualCameraFpsBox.SelectedIndex = 0;
         if (_previewOnly)
@@ -156,6 +158,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         app.UpdateSettings.MediaOutputBackgroundImagePath =
             BackgroundImageBox.Text.Trim();
         app.UpdateSettings.MediaOutputPhoneShellImagePath = string.Empty;
+        app.UpdateSettings.MediaOutputRecordingDirectory = RecordingDirectoryBox.Text.Trim();
         _ = app.SaveUpdateSettings();
     }
 
@@ -167,6 +170,30 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void OnChooseBackgroundClick(object sender, RoutedEventArgs e) =>
         PickImage(BackgroundImageBox);
+    private void OnChooseRecordingDirectoryClick(object sender, RoutedEventArgs e)
+    {
+        var picker = new OpenFolderDialog
+        {
+            Title = "选择录制视频的默认保存目录",
+            InitialDirectory = Directory.Exists(RecordingDirectoryBox.Text)
+                ? RecordingDirectoryBox.Text
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+        };
+        if (picker.ShowDialog(this) == true)
+        {
+            RecordingDirectoryBox.Text = picker.FolderName;
+            SaveShellPreferences();
+        }
+    }
+
+    private void OnEditRecordingLayoutClick(object sender, RoutedEventArgs e)
+    {
+        SaveShellPreferences();
+        var editor = new RecordingLayoutEditorWindow(BackgroundImageBox.Text.Trim())
+            { Owner = this };
+        if (editor.ShowDialog() == true) SaveShellPreferences();
+    }
+
 
     private void PickImage(TextBox target)
     {
@@ -328,8 +355,9 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
                 DefaultExt = ".mp4",
                 AddExtension = true,
                 OverwritePrompt = true,
-                InitialDirectory = Environment.GetFolderPath(
-                    Environment.SpecialFolder.MyVideos),
+                InitialDirectory = Directory.Exists(RecordingDirectoryBox.Text)
+                    ? RecordingDirectoryBox.Text
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
                 FileName = suggestedName,
             };
             if (dialog.ShowDialog(this) != true)
