@@ -257,7 +257,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var encoderWidth = (uint)(composition?.OutputWidth ?? (int)request.Width);
                 var encoderHeight = (uint)(composition?.OutputHeight ?? (int)request.Height);
                 capabilities = await ResolveWorkingEncoderAsync(capabilities,
-                    encoderWidth, encoderHeight, cancellationToken);
+                    encoderWidth, encoderHeight, cancellationToken, request.FrameRate);
                 if (!capabilities.HasH264Encoder)
                     throw new InvalidOperationException(
                         $"没有可用的 H.264 编码器支持最终录制画布 {encoderWidth}×{encoderHeight}。" +
@@ -1186,7 +1186,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
 
     private static async Task<MediaOutputCapabilities> ResolveWorkingEncoderAsync(
         MediaOutputCapabilities capabilities, uint width, uint height,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, int frameRate = 30)
     {
         var candidates = capabilities.H264EncoderCandidates.Count == 0
             ? [capabilities.PreferredH264Encoder]
@@ -1199,11 +1199,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
         foreach (var encoder in ordered)
         {
             var usable = await CanEncodeNv12FrameAsync(capabilities.FfmpegPath,
-                encoder, width, height, cancellationToken);
+                encoder, width, height, cancellationToken, frameRate);
             DiagnosticLogger.Info("media_output", "encoder_probe",
                 ("file", Path.GetFileName(capabilities.FfmpegPath)),
                 ("encoder", encoder), ("width", width), ("height", height),
-                ("usable", usable));
+                ("fps", frameRate), ("usable", usable));
             if (usable)
             {
                 return capabilities with
@@ -1223,7 +1223,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
     }
 
     private static async Task<bool> CanEncodeNv12FrameAsync(string path,
-        string encoder, uint width, uint height, CancellationToken cancellationToken)
+        string encoder, uint width, uint height, CancellationToken cancellationToken,
+        int frameRate)
     {
         if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(encoder) ||
             width == 0 || height == 0 || (width & 1U) != 0 || (height & 1U) != 0)
@@ -1241,7 +1242,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
         {
             "-hide_banner", "-loglevel", "error", "-nostdin",
             "-f", "rawvideo", "-pixel_format", "nv12",
-            "-video_size", $"{width}x{height}", "-framerate", "30",
+            "-video_size", $"{width}x{height}", "-framerate", frameRate.ToString(),
             "-color_range", "pc", "-colorspace", "bt709",
             "-color_primaries", "bt709", "-color_trc", "bt709",
             "-i", "pipe:0", "-frames:v", "1", "-an", "-c:v", encoder,
