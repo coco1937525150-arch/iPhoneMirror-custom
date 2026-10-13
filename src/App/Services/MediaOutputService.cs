@@ -460,8 +460,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
         var latch = new FrameLatch();
         using var readerCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken);
-        var readerTask = FrameReaderAsync(sessionHandle, request.Width,
-            request.Height, latch, frameInterval, readerCts.Token);
+        // Run GPU->CPU readback off the video scheduler thread; otherwise a
+        // synchronous frame copy can stall the first periodic output tick.
+        var readerTask = Task.Run(() => FrameReaderAsync(sessionHandle,
+            request.Width, request.Height, latch, frameInterval,
+            readerCts.Token), CancellationToken.None);
         try
         {
             using var timer = new PeriodicTimer(frameInterval);
@@ -547,11 +550,12 @@ internal sealed class MediaOutputService : IAsyncDisposable
         if (framesToWrite <= maximumCatchUpFrames)
             return (framesToWrite, framesWritten);
 
-        // Raw video has no timestamps. Drop the oldest backlog and advance the
-        // logical schedule so the next tick follows current wall time instead
-        // of repeatedly trying to drain an unbounded historical queue.
-        return (maximumCatchUpFrames,
-            checked(framesWritten + framesToWrite - maximumCatchUpFrames));
+        // Upstream v1.8.5-pre2: FFmpeg rawvideo timestamps come from bytes
+        // actually written, not our wall-clock baseline. Pretending skipped
+        // frames were sent silently shortens the video compared with PCM,
+        // yielding permanent audio/video drift after an encoder stall.
+        // Keep the debt but bound each individual write burst to two seconds.
+        return (maximumCatchUpFrames, framesWritten);
     }
 
     private async Task PumpAudioAsync(Process process, Stream output,
