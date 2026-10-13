@@ -600,6 +600,8 @@ struct D3D11PreviewRenderer::Impl {
     std::shared_ptr<const media::DecodedFrame> last_frame;
     std::uint64_t rendered_frames{};
     std::chrono::steady_clock::time_point first_presented_at{};
+    std::chrono::steady_clock::time_point last_accepted_present_at{};
+    double latest_present_interval_ms{};
     std::uint32_t last_sync_refresh_count{};
     std::chrono::steady_clock::time_point last_sync_sample_at{};
     double display_fps{};
@@ -1880,9 +1882,13 @@ struct D3D11PreviewRenderer::Impl {
         if (present_result == DXGI_ERROR_WAS_STILL_DRAWING) {
             ++skipped_present_frames;
         } else {
+            const auto accepted_at = std::chrono::steady_clock::now();
+            if (last_accepted_present_at.time_since_epoch().count() != 0)
+                latest_present_interval_ms = std::chrono::duration<double, std::milli>(
+                    accepted_at - last_accepted_present_at).count();
+            last_accepted_present_at = accepted_at;
             ++rendered_frames;
-            if (rendered_frames == 1)
-                first_presented_at = std::chrono::steady_clock::now();
+            if (rendered_frames == 1) first_presented_at = accepted_at;
         }
         DXGI_FRAME_STATISTICS frame_statistics{};
         const auto statistics_result = swap_chain->GetFrameStatistics(&frame_statistics);
@@ -1914,10 +1920,11 @@ struct D3D11PreviewRenderer::Impl {
             const std::string display_fps_text = display_statistics_valid
                 ? std::format("{:.2f}", display_fps) : "unavailable";
             logging::write(std::format(
-                "d3d_preview accepted={} skipped={} timestamp={} submit_fps={:.2f} "
-                "vblank_hz={} requested_cap={} monitor_cap={} render={}x{} stats_hr=0x{:08X}",
-                rendered_frames, skipped_present_frames, frame.timestamp_100ns, present_fps,
-                display_fps_text,
+                "d3d_preview accepted={} skipped={} interval_ms={:.2f} timestamp={} "
+                "submit_fps={:.2f} vblank_hz={} requested_cap={} monitor_cap={} "
+                "render={}x{} stats_hr=0x{:08X}",
+                rendered_frames, skipped_present_frames, latest_present_interval_ms,
+                frame.timestamp_100ns, present_fps, display_fps_text,
                 max_fps.load(std::memory_order_relaxed), monitor_refresh_hz,
                 local_render_width, local_render_height,
                 static_cast<unsigned>(statistics_result)));
