@@ -4210,6 +4210,32 @@ Sequence(["-hide_banner", "-loglevel", "warning", "-nostdin",
     recordingArguments,
     "recording opens the audio pipe before stdin video and keeps stable mapping");
 
+var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
+    "shell-capture.mp4", 1080, 1920, 30, 6000,
+    IncludePhoneShell: true, BackgroundImage: "custom-background.png",
+    PhoneShellImage: "iphone16promax.png");
+var shellComposition = new PhoneShellComposition(
+    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770);
+var shellArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
+    composition: shellComposition);
+Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
+    shellArgs.Contains("[composited]", StringComparer.Ordinal) &&
+    shellArgs.Contains("custom-background.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("transparent-shell.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("0:a:0", StringComparer.Ordinal),
+    "recording composites custom backdrop, decoded screen, transparent phone frame and audio");
+Equal(true, shellArgs.Any(x => x.Contains(
+        "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)),
+    "phone shell overlays the full-rate video after background composition");
+var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
+    audioPipePath: null, includeAudio: false, composition: shellComposition);
+Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
+    shellSilentArgs.Any(x => x.Contains("[phone_screen][2:v]overlay=0:0",
+        StringComparison.Ordinal)) && shellSilentArgs.Contains("-an", StringComparer.Ordinal),
+    "video-only shell output maintains correct input indices without PCM audio");
+Equal(false, recordingArguments.Contains("-filter_complex", StringComparer.Ordinal),
+    "ordinary recording keeps its original uncomposited encoder pipeline");
+
 var softwareRecordingArguments = MediaOutputService.BuildArguments(
     new MediaOutputRequest(MediaOutputKind.Recording, "software.mp4", 1280, 720,
         30, 6000), videoOnlyCapabilities, audioPipePath: null,
