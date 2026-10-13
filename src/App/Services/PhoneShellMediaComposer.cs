@@ -155,7 +155,8 @@ internal static class PhoneShellMediaComposer
                         pixels[i + 2] * 30) / 100;
             // Smooth white removal also avoids a giant opaque white rectangle
             // hiding the incoming iPhone video.
-            pixels[i + 3] = (byte)Math.Clamp((238 - luma) * 255 / 22, 0, 255);
+            pixels[i + 3] = (byte)Math.Min(pixels[i + 3],
+                Math.Clamp((238 - luma) * 255 / 22, 0, 255));
         }
         var writable = BitmapSource.Create(source.PixelWidth, source.PixelHeight,
             96, 96, PixelFormats.Bgra32, null, pixels, stride);
