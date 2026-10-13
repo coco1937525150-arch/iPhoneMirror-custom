@@ -30,6 +30,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         ApplyPreviewOutputDefaults(force: true);
+        RestoreShellPreferences();
         RecordFpsBox.Text = StreamFpsBox.Text = "30";
         RecordBitrateBox.Text = StreamBitrateBox.Text = "6000";
         VirtualCameraFpsBox.SelectedIndex = 0;
@@ -54,6 +55,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         Loaded -= OnLoaded;
         Closing -= OnClosing;
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        SaveShellPreferences();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -137,6 +139,55 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
                 VirtualCameraCurrentResolutionItem;
     }
 
+    private void RestoreShellPreferences()
+    {
+        if (Application.Current is not App app) return;
+        var settings = app.UpdateSettings;
+        IncludePhoneShellBox.IsChecked = settings.MediaOutputIncludePhoneShell;
+        BackgroundImageBox.Text = settings.MediaOutputBackgroundImagePath;
+        ShellImageBox.Text = settings.MediaOutputPhoneShellImagePath;
+        ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
+    }
+
+    private void SaveShellPreferences()
+    {
+        if (_previewOnly || Application.Current is not App app) return;
+        app.UpdateSettings.MediaOutputIncludePhoneShell =
+            IncludePhoneShellBox.IsChecked == true;
+        app.UpdateSettings.MediaOutputBackgroundImagePath =
+            BackgroundImageBox.Text.Trim();
+        app.UpdateSettings.MediaOutputPhoneShellImagePath =
+            ShellImageBox.Text.Trim();
+        _ = app.SaveUpdateSettings();
+    }
+
+    private void OnShellModeChanged(object sender, RoutedEventArgs e)
+    {
+        if (ShellOptionsPanel is not null)
+            ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
+    }
+
+    private void OnChooseBackgroundClick(object sender, RoutedEventArgs e) =>
+        PickImage(BackgroundImageBox);
+
+    private void OnChooseShellClick(object sender, RoutedEventArgs e) =>
+        PickImage(ShellImageBox);
+
+    private void PickImage(TextBox target)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        if (File.Exists(target.Text))
+            dialog.FileName = target.Text;
+        if (dialog.ShowDialog(this) != true) return;
+        target.Text = dialog.FileName;
+        SaveShellPreferences();
+    }
+
     private void OnStreamProtocolChanged(object sender, SelectionChangedEventArgs e) =>
         UpdateStartButtons();
 
@@ -179,8 +230,10 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (!TryReadOutputSettings(RecordWidthBox, RecordHeightBox, RecordFpsBox,
                 RecordBitrateBox, out var width, out var height, out var fps, out var bitrate))
             return;
+        SaveShellPreferences();
         var result = await _viewModel.StartRecordingAsync(
-            width, height, fps, bitrate);
+            width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
+            BackgroundImageBox.Text.Trim(), ShellImageBox.Text.Trim());
         FeedbackText.Text = result.Message;
     }
 
@@ -195,9 +248,11 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             2 => MediaOutputKind.Whip,
             _ => MediaOutputKind.Rtmp,
         };
+        SaveShellPreferences();
         var result = await _viewModel.StartStreamingAsync(kind,
             StreamDestinationBox.Text.Trim(), StreamAuthorizationBox.Text.Trim(),
-            width, height, fps, bitrate);
+            width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
+            BackgroundImageBox.Text.Trim(), ShellImageBox.Text.Trim());
         FeedbackText.Text = result.Message;
     }
 
