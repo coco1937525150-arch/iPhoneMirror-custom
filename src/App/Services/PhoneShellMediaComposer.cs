@@ -48,21 +48,26 @@ internal static class PhoneShellMediaComposer
         var maxScale = Math.Min(4, Math.Min(
             (canvasWidth - 2 * margin) / baseWidth,
             (canvasHeight - 2 * margin) / baseHeight));
+        if (maxScale < .1)
+            throw new InvalidOperationException(
+                "当前背景画布无法容纳手机壳，请选择较大的背景图片。");
         scale = Math.Clamp(double.IsFinite(scale) ? scale : 1, .1, maxScale);
-        var shellWidth = baseWidth * scale;
-        var shellHeight = baseHeight * scale;
+        // Round the dimensions BEFORE clamping origin. Rounding X and width
+        // separately after floating-point bounds checking could put the right
+        // or bottom edge one pixel outside the required 5px safe region.
+        var shellWidth = Math.Min(Math.Round(baseWidth * scale),
+            canvasWidth - 2 * margin);
+        var shellHeight = Math.Min(Math.Round(baseHeight * scale),
+            canvasHeight - 2 * margin);
         centerX = double.IsFinite(centerX) ? centerX : .5;
         centerY = double.IsFinite(centerY) ? centerY : .5;
-        var minCenterX = (margin + shellWidth / 2) / canvasWidth;
-        var maxCenterX = (canvasWidth - margin - shellWidth / 2) / canvasWidth;
-        var minCenterY = (margin + shellHeight / 2) / canvasHeight;
-        var maxCenterY = (canvasHeight - margin - shellHeight / 2) / canvasHeight;
-        centerX = Math.Clamp(centerX, minCenterX, maxCenterX);
-        centerY = Math.Clamp(centerY, minCenterY, maxCenterY);
-        return (new Rect(
-            Math.Round(canvasWidth * centerX - shellWidth / 2),
-            Math.Round(canvasHeight * centerY - shellHeight / 2),
-            Math.Round(shellWidth), Math.Round(shellHeight)),
+        var left = Math.Clamp(Math.Round(canvasWidth * centerX - shellWidth / 2),
+            margin, canvasWidth - margin - shellWidth);
+        var top = Math.Clamp(Math.Round(canvasHeight * centerY - shellHeight / 2),
+            margin, canvasHeight - margin - shellHeight);
+        centerX = (left + shellWidth / 2) / canvasWidth;
+        centerY = (top + shellHeight / 2) / canvasHeight;
+        return (new Rect(left, top, shellWidth, shellHeight),
             centerX, centerY, scale);
     }
 
