@@ -72,6 +72,8 @@
     <system:String x:Key="WiredControlDisable">Disable wired control</system:String>
     <system:String x:Key="WirelessControlEnable">Enable wireless control</system:String>
     <system:String x:Key="WirelessControlDisable">Disable wireless control</system:String>
+    <system:String x:Key="WirelessControlUnavailableHint">Wireless control requires a trusted Apple device binding. An AirPlay mirroring connection does not authorize remote input.</system:String>
+    <system:String x:Key="WiredControlUnavailableHint">Wired control requires a USB data connection, device trust, and an Apple device identity binding.</system:String>
     <system:String x:Key="UsbControlPrerequisite">Connect an iPhone or iPad by USB and trust this computer before enabling USB control</system:String>
     <system:String x:Key="UsbControlOff">USB control is off</system:String>
     <system:String x:Key="UsbControlStarting">Connecting reverse control</system:String>
