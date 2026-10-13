@@ -47,8 +47,10 @@ public partial class DeviceBindingWindow : Wpf.Ui.Controls.FluentWindow, INotify
     public ObservableCollection<BluetoothClientInfo> BluetoothClients { get; } = [];
     public IReadOnlyList<DeviceViewModel> WiredDevices => _sourceDevices.Where(device =>
         !device.IsWireless && !device.IsMediaCast).ToArray();
+    // An active AirPlay receiver can be marked IsMediaCast while mirroring.
     public IReadOnlyList<DeviceViewModel> AirPlayDevices => _sourceDevices.Where(device =>
-        device.IsWireless && !device.IsMediaCast).ToArray();
+        device.IsWireless && (!device.IsMediaCast ||
+            device.Udid.StartsWith("airplay://", StringComparison.OrdinalIgnoreCase))).ToArray();
     public ProfileListItem? SelectedProfile { get => _selectedProfile; set { _selectedProfile = value; SynchronizeSelectedDevices(); NotifyAll(); } }
     public DeviceViewModel? SelectedWiredDevice { get => _selectedWiredDevice; set { _selectedWiredDevice = value; Notify(nameof(CanBindWired)); } }
     public DeviceViewModel? SelectedAirPlayDevice { get => _selectedAirPlayDevice; set { _selectedAirPlayDevice = value; Notify(nameof(CanBindAirPlay)); } }
