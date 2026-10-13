@@ -649,16 +649,16 @@ internal sealed class MediaOutputService : IAsyncDisposable
         var silenceChunkBytes = checked((int)Math.Max(blockAlign,
             bytesPerSecond / 50 / blockAlign * blockAlign));
         var silence = new byte[silenceChunkBytes];
-        var insertedSilence = firstAudio is null;
+        long silenceBytesWritten = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             if (process.HasExited)
                 throw new InvalidOperationException(string.IsNullOrWhiteSpace(_lastError)
                     ? $"FFmpeg exited with code {process.ExitCode}." : _lastError);
-            var packet = insertedSilence
-                ? ReadNewestAvailableAudioPacket(
-                    cursor => _audioProvider(sessionHandle, cursor), sequence)
-                : _audioProvider(sessionHandle, sequence);
+            // Never jump to the newest audio packet after an underrun:
+            // discarding buffered packets produces audible gaps and clicks.
+            // The provider's sequence cursor advances one packet at a time.
+            var packet = _audioProvider(sessionHandle, sequence);
             if (packet is null)
             {
                 if (firstAudio is null || lastRealPacket.Elapsed >= AudioSilenceGrace)
@@ -674,7 +674,16 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         await output.WriteAsync(
                             silence.AsMemory(0, bytesToWrite), cancellationToken);
                         emittedBytes = checked(emittedBytes + bytesToWrite);
-                        insertedSilence = true;
+                        silenceBytesWritten += bytesToWrite;
+                        if (silenceBytesWritten >= bytesPerSecond)
+                        {
+                            DiagnosticLogger.Warning("media_output",
+                                "audio_silence_inserted",
+                                ("bytes", silenceBytesWritten),
+                                ("sample_rate", outputSampleRate),
+                                ("channels", outputChannels));
+                            silenceBytesWritten = 0;
+                        }
                         continue;
                     }
                 }
@@ -692,8 +701,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             }
             sequence = packet.Sequence;
             lastRealPacket.Restart();
-            insertedSilence = false;
-        }
+         }
     }
 
     internal sealed class Pcm16AudioNormalizer
@@ -908,15 +916,16 @@ internal sealed class MediaOutputService : IAsyncDisposable
                     "-i", background]);
             else
                 args.AddRange(["-f", "lavfi", "-i",
-                    $"color=c=white:s={request.Width}x{request.Height}:r={request.FrameRate}"]);
+                    $"color=c=white:s={composition.OutputWidth}x{composition.OutputHeight}:r={request.FrameRate}"]);
             args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
                 "-i", composition.ShellFile]);
             var videoIndex = includeAudio ? 1 : 0;
             var bgIndex = videoIndex + 1;
             var shellIndex = videoIndex + 2;
             args.AddRange(["-filter_complex",
-                $"[{bgIndex}:v]scale={request.Width}:{request.Height}:force_original_aspect_ratio=increase," +
-                $"crop={request.Width}:{request.Height},setsar=1[phone_bg];" +
+                // Never center-crop a user-selected background: the MP4 canvas
+                // has already been chosen from its intrinsic pixel dimensions.
+                $"[{bgIndex}:v]setsar=1[phone_bg];" +
                 $"[{videoIndex}:v]scale={composition.ScreenWidth}:{composition.ScreenHeight}:" +
                 "force_original_aspect_ratio=decrease," +
                 $"pad={composition.ScreenWidth}:{composition.ScreenHeight}:(ow-iw)/2:(oh-ih)/2:black," +
