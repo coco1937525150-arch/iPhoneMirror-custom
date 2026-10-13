@@ -4337,10 +4337,9 @@ Equal(true, (expanded.Width & 1) == 0 && (expanded.Height & 1) == 0,
 
 // 120fps MP4 must be based on distinct source frames, not on the
 // requested FFmpeg -framerate or on a 120Hz monitor alone.
-Equal(120.0, MediaOutputService.CalculateVerifiedSourceFps(
-    120, TimeSpan.FromSeconds(1), 9_916_667),
-    "120Hz source probe measures true unique 120fps timestamps",
-    tolerance: 0.05);
+Equal(true, Math.Abs(MediaOutputService.CalculateVerifiedSourceFps(
+    120, TimeSpan.FromSeconds(1), 9_916_667) - 120.0) <= 0.05,
+    "120Hz source probe measures true unique 120fps timestamps");
 Equal(true, MediaOutputService.CalculateVerifiedSourceFps(
     60, TimeSpan.FromSeconds(1), 9_833_333) < 70,
     "a real 60fps source cannot pass 120fps capture gate");
