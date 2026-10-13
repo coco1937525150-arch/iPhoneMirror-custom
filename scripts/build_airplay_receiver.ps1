@@ -68,6 +68,8 @@ $SourceRoot = (Resolve-Path -LiteralPath $BuildSourceRoot).Path
     -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AirPlayDisconnectTracePatch.ps1') `
     -SourceRoot $SourceRoot
+& (Join-Path $ReceiverRoot 'patches\Apply-AirPlayGracefulTeardownCPatch.ps1') `
+    -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AirPlayOrientationAccessUnitPatch.ps1') `
     -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AudioCodecPatch.ps1') `
@@ -88,6 +90,8 @@ $CompatibilityMarkers = @(
        Marker = 'IPHONE_MIRROR_MIRROR_DISCONNECT_TRACE' },
     @{ Path = 'AirPlayServerLib\lib\httpd.c';
        Marker = 'IPHONE_MIRROR_CONTROL_DISCONNECT_TRACE' },
+    @{ Path = 'AirPlayServerLib\lib\raop_rtp_mirror.c';
+       Marker = 'IPHONE_MIRROR_TEARDOWN_C_GRACEFUL_CLOSE' },
     @{ Path = 'AirPlayServerLib\lib\raop.c';
        Marker = 'IPHONE_MIRROR_RAOP_TEARDOWN_TRACE' },
     @{ Path = 'AirPlayServerLib\lib\raop_rtp.c';
