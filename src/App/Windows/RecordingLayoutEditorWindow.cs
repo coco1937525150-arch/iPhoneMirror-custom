@@ -21,13 +21,15 @@ internal sealed class RecordingLayoutEditorWindow : Window
     private readonly Image _phone = new() { Stretch = Stretch.Fill, Cursor = Cursors.SizeAll };
     private readonly TextBlock _readout = new() { TextWrapping = TextWrapping.Wrap };
     private readonly BitmapSource _shell;
+    private readonly bool _landscape;
     private double _backgroundWidth = 1280, _backgroundHeight = 720;
     private double _centerX = .5, _centerY = .5, _scale = 1.0;
     private bool _dragging;
     private Point _dragOffset;
 
-    internal RecordingLayoutEditorWindow(string backgroundPath)
+    internal RecordingLayoutEditorWindow(string backgroundPath, bool landscape = false)
     {
+        _landscape = landscape;
         Title = "编辑录制布局 — 拖动手机壳 / 鼠标滚轮缩放";
         Width = 1040;
         Height = 740;
@@ -69,7 +71,10 @@ internal sealed class RecordingLayoutEditorWindow : Window
         _overlay.HorizontalAlignment = HorizontalAlignment.Center;
         _overlay.VerticalAlignment = VerticalAlignment.Center;
         _preview.Children.Add(_overlay);
-        _phone.Source = _shell;
+        // Rotate exactly as the FFmpeg shell composer when the capture is landscape.
+        _phone.Source = _landscape
+            ? new TransformedBitmap(_shell, new RotateTransform(90))
+            : _shell;
         _overlay.Children.Add(_phone);
         _phone.MouseLeftButtonDown += StartDrag;
         _phone.MouseMove += ContinueDrag;
@@ -146,7 +151,9 @@ internal sealed class RecordingLayoutEditorWindow : Window
         // routine is used when generating the actual MP4 shell overlay.
         var reference = DeviceFrameProfileResolver.ActiveIPhoneShell
             .GetOuterDimensions(1320, 2868);
-        var aspect = reference.Width / (double)reference.Height;
+        var aspect = _landscape
+            ? reference.Height / (double)reference.Width
+            : reference.Width / (double)reference.Height;
         var fit = PhoneShellMediaComposer.FitInsideCanvas(
             _backgroundWidth, _backgroundHeight, aspect,
             _centerX, _centerY, _scale);
