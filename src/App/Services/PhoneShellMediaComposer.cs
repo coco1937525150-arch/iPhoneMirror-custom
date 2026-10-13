@@ -31,7 +31,7 @@ internal static class PhoneShellMediaComposer
             throw new FileNotFoundException("The chosen recording background no longer exists.", backgroundFile);
         if (shellImageFile is { Length: > 0 } && !File.Exists(shellImageFile))
             throw new FileNotFoundException("The chosen phone-shell image no longer exists.", shellImageFile);
-        if (width is < 160 or > 3840 || height is < 160 or > 2160)
+        if (width is < 160 or > 4096 || height is < 160 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(width));
         // Match the already tuned iPhone 16 Pro Max viewport geometry.
         var profile = DeviceFrameProfileResolver.IPhoneDynamicIsland;
@@ -44,9 +44,30 @@ internal static class PhoneShellMediaComposer
         var outer = new Rect(
             Math.Round((width - outerWidth) / 2), Math.Round((height - outerHeight) / 2),
             Math.Round(outerWidth), Math.Round(outerHeight));
-        var inner = profile.GetScreenRect((int)outer.Width, (int)outer.Height);
-        var screenX = (int)outer.X + inner.X;
-        var screenY = (int)outer.Y + inner.Y;
+        // The output screen crop must rotate with the shell, not simply
+        // reuse the portrait offsets when output is landscape.
+        var portraitOuter = landscape ? new Rect(
+            outer.X + (outer.Width - outer.Height) / 2,
+            outer.Y + (outer.Height - outer.Width) / 2,
+            outer.Height, outer.Width) : outer;
+        var portraitScreen = profile.GetScreenRect(
+            (int)portraitOuter.Width, (int)portraitOuter.Height);
+        var inner = landscape
+            ? new DeviceScreenRect(
+                (int)Math.Round(portraitOuter.Y + portraitScreen.Y - outer.Y),
+                (int)Math.Round(portraitOuter.X + portraitScreen.X - outer.X),
+                portraitScreen.Height, portraitScreen.Width)
+            : portraitScreen;
+        var screenX = landscape
+            ? (int)Math.Round(outer.X + outer.Width / 2 +
+                (portraitOuter.Y + portraitOuter.Height / 2) -
+                (portraitOuter.Y + portraitScreen.Y + portraitScreen.Height))
+            : (int)outer.X + inner.X;
+        var screenY = landscape
+            ? (int)Math.Round(outer.Y + outer.Height / 2 +
+                (portraitOuter.X + portraitScreen.X) -
+                (portraitOuter.X + portraitOuter.Width / 2))
+            : (int)outer.Y + inner.Y;
         var filename = Path.Combine(Path.GetTempPath(),
             "iphoneMirror-shell-" + Guid.NewGuid().ToString("N") + ".png");
         try
@@ -58,27 +79,17 @@ internal static class PhoneShellMediaComposer
                 {
                     // Render the complete shell as one rotated unit. The
                     // video screen rectangle uses the same profile rotation.
-                    var portraitOuter = outer;
                     if (landscape)
-                    {
                         context.PushTransform(new RotateTransform(90,
                             outer.X + outer.Width / 2, outer.Y + outer.Height / 2));
-                        portraitOuter = new Rect(
-                            outer.X + (outer.Width - outer.Height) / 2,
-                            outer.Y + (outer.Height - outer.Width) / 2,
-                            outer.Height, outer.Width);
-                    }
+                    var sourceScreen = new Rect(
+                        portraitOuter.X + portraitScreen.X,
+                        portraitOuter.Y + portraitScreen.Y,
+                        portraitScreen.Width, portraitScreen.Height);
                     if (!string.IsNullOrWhiteSpace(shellImageFile))
-                        DrawImportedShell(context, shellImageFile, portraitOuter);
+                        DrawImportedShell(context, shellImageFile, portraitOuter, sourceScreen);
                     else
-                    {
-                        var portraitScreen = profile.GetScreenRect(
-                            (int)portraitOuter.Width, (int)portraitOuter.Height);
-                        DrawDefaultShell(context, portraitOuter, new Rect(
-                            portraitOuter.X + portraitScreen.X,
-                            portraitOuter.Y + portraitScreen.Y,
-                            portraitScreen.Width, portraitScreen.Height));
-                    }
+                        DrawDefaultShell(context, portraitOuter, sourceScreen);
                     if (landscape) context.Pop();
                 }
                 var bitmap = new RenderTargetBitmap((int)width, (int)height,
@@ -135,7 +146,7 @@ internal static class PhoneShellMediaComposer
                 btnW, btnH * 1.7), radius, radius);
     }
 
-    private static void DrawImportedShell(DrawingContext context, string imageFile, Rect outer)
+    private static void DrawImportedShell(DrawingContext context, string imageFile, Rect outer, Rect screen)
     {
         // User-provided white-background iPhone 16 Pro Max template. Only the
         // physical shell and buttons survive: white areas remain transparent.
@@ -166,6 +177,18 @@ internal static class PhoneShellMediaComposer
         var cropH = (int)(source.PixelHeight * .945);
         var cropped = new CroppedBitmap(writable,
             new Int32Rect(cropX, cropY, cropW, cropH));
+        // The source can be an opaque photo with a BLACK sample display. Mask
+        // out the exact video aperture, otherwise the imported template
+        // obscures the actual phone picture in the encoded output.
+        var margin = Math.Max(8.0, outer.Width * 0.12);
+        var bounds = new RectangleGeometry(new Rect(
+            outer.X - margin, outer.Y - margin,
+            outer.Width + 2 * margin, outer.Height + 2 * margin));
+        var apertureRadius = Math.Min(screen.Width, screen.Height) * 0.07;
+        var aperture = new RectangleGeometry(screen, apertureRadius, apertureRadius);
+        context.PushClip(new CombinedGeometry(GeometryCombineMode.Exclude,
+            bounds, aperture));
         context.DrawImage(cropped, outer);
+        context.Pop();
     }
 }
