@@ -371,7 +371,7 @@ try {
         & $CTest --test-dir build/native -C $Configuration --output-on-failure
         if ($LASTEXITCODE -ne 0) { throw "Native tests failed: $LASTEXITCODE" }
 
-        # Rust iUsbBridge cargo tests run during Build-UsbTouchBridge.
+        # Upstream Python bridge dependency/runtime smoke tests run during Build-UsbTouchBridge.
         & (Join-Path $Root 'scripts\test_usb_bridge_build_source.ps1') | Out-Host
 
         $TestProjects = @(
