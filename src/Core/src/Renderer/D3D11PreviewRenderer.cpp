@@ -1227,6 +1227,14 @@ struct D3D11PreviewRenderer::Impl {
     // Windows Imaging Component decodes the exact bundled alpha PNG once per
     // D3D device lifetime. Missing assets fail open to the legacy frame.
     void load_reference_shell() {
+        // Frame creation can also happen on a renderer worker after device
+        // loss; initialize COM on whichever thread performs WIC decoding.
+        struct ScopedCom {
+            HRESULT result{CoInitializeEx(nullptr, COINIT_MULTITHREADED)};
+            ~ScopedCom() { if (SUCCEEDED(result)) CoUninitialize(); }
+        } apartment;
+        if (FAILED(apartment.result) &&
+            apartment.result != RPC_E_CHANGED_MODE) return;
         wchar_t module_path[32768]{};
         const auto length = GetModuleFileNameW(nullptr, module_path,
             static_cast<DWORD>(std::size(module_path)));
