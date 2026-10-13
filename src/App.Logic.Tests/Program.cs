@@ -4335,6 +4335,18 @@ Equal(true, expanded.X <= opening.X - 3 &&
 Equal(true, (expanded.Width & 1) == 0 && (expanded.Height & 1) == 0,
     "expanded phone video uses chroma-safe even intermediate dimensions");
 
+// Under an audio backlog, release PCM at wall-clock speed instead of
+// letting a burst lead the encoded video by several seconds.
+Equal(TimeSpan.Zero, MediaOutputService.CalculateAudioPacingDelay(
+    19200, 0, 192000, TimeSpan.Zero),
+    "a 100ms PCM packet needs no delay inside the 125ms lead budget");
+Equal(true, Math.Abs(MediaOutputService.CalculateAudioPacingDelay(
+    96000, 0, 192000, TimeSpan.Zero).TotalMilliseconds - 375) < 0.1,
+    "a 500ms PCM burst is paced by 375ms");
+Equal(TimeSpan.Zero, MediaOutputService.CalculateAudioPacingDelay(
+    96000, 0, 192000, TimeSpan.FromMilliseconds(400)),
+    "audio pacing catches up automatically when video wall-clock progresses");
+
 // 120fps MP4 must be based on distinct source frames, not on the
 // requested FFmpeg -framerate or on a 120Hz monitor alone.
 Equal(true, Math.Abs(MediaOutputService.CalculateVerifiedSourceFps(
