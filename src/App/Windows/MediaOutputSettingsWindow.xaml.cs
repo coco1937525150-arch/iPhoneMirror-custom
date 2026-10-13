@@ -193,6 +193,36 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         }
     }
 
+    private void OnImportGlobalShellClick(object sender, RoutedEventArgs e)
+    {
+        if (_previewOnly) return;
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入全局 iPhone 16 Pro Max 手机壳",
+            Filter = "PNG 手机壳 (*.png)|*.png",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            PhoneShellAssetStore.Install(dialog.FileName);
+            DiagnosticLogger.Info("media_output", "global_shell_installed",
+                ("file", Path.GetFileName(PhoneShellAssetStore.CustomPath)));
+            MessageBox.Show(this,
+                "新手机壳已安装，录制、推流和布局编辑器将使用它。" +
+                " 为让已经创建的独立窗口重新载入 GPU 贴图，请重启软件。",
+                "手机壳更新完成", MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception error)
+        {
+            DiagnosticLogger.Exception("media_output", "global_shell_import_failed", error);
+            MessageBox.Show(this, error.Message, "导入手机壳失败",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void OnEditRecordingLayoutClick(object sender, RoutedEventArgs e)
     {
         SaveShellPreferences();
