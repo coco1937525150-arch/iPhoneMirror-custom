@@ -838,12 +838,40 @@ internal sealed class MediaOutputService : IAsyncDisposable
             }
             if (normalized.Length != 0)
             {
+                var afterWrite = checked(emittedBytes + normalized.Length);
+                // Buffered iPhone PCM may arrive in a burst after recovery.
+                // Do not feed minutes of audio into FFmpeg in a few seconds:
+                // pace the PCM by wall clock with at most 125ms audio lead.
+                while (true)
+                {
+                    var pacing = CalculateAudioPacingDelay(afterWrite,
+                        initialBytes, bytesPerSecond, audioClock.Elapsed);
+                    if (pacing <= TimeSpan.FromMilliseconds(1)) break;
+                    await Task.Delay(TimeSpan.FromMilliseconds(
+                        Math.Min(25.0, pacing.TotalMilliseconds)), cancellationToken);
+                }
                 await output.WriteAsync(normalized, cancellationToken);
-                emittedBytes = checked(emittedBytes + normalized.Length);
+                emittedBytes = afterWrite;
             }
             sequence = packet.Sequence;
             lastRealPacket.Restart();
          }
+    }
+
+    internal static TimeSpan CalculateAudioPacingDelay(
+        long projectedBytes, long initialBytes, long bytesPerSecond,
+        TimeSpan elapsed)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(projectedBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(initialBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytesPerSecond);
+        var allowed = initialBytes +
+            Math.Max(0, elapsed.TotalSeconds) * bytesPerSecond +
+            bytesPerSecond * 0.125;
+        var aheadBytes = projectedBytes - allowed;
+        return aheadBytes > 0
+            ? TimeSpan.FromSeconds(aheadBytes / bytesPerSecond)
+            : TimeSpan.Zero;
     }
 
     internal sealed class Pcm16AudioNormalizer
