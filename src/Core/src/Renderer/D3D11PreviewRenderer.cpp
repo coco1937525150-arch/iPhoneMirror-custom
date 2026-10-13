@@ -9,6 +9,7 @@
 #include <dcomp.h>
 #include <dxgi1_3.h>
 #include <dxgi1_6.h>
+#include <wincodec.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -17,6 +18,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <vector>
 #include <format>
 #include <mutex>
 #include <stdexcept>
@@ -209,6 +212,7 @@ constexpr const char* PreviewPixelShaders = R"(
 Texture2D<float> yPlane : register(t0);
 Texture2D<float2> uvPlane : register(t1);
 Texture2D<float4> image : register(t2);
+Texture2D<float4> referenceShell : register(t3);
 SamplerState linearSampler : register(s0);
 
 cbuffer ShapeConstants : register(b0) {
@@ -462,6 +466,13 @@ float4 copyMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGE
     return premultiplyForCorner(image.Sample(linearSampler, rotateUv(uv)).rgb, position.xy);
 }
 
+float4 referenceShellMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
+    if (frameEnabled < 0.5) return float4(0, 0, 0, 0);
+    float2 shellUv = outputSize.x > outputSize.y ?
+        float2(uv.y, 1.0 - uv.x) : uv;
+    return referenceShell.Sample(linearSampler, shellUv);
+}
+
 float4 maskMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     return premultiplyForCorner(float3(0.0, 0.0, 0.0), position.xy);
 }
@@ -554,6 +565,9 @@ struct D3D11PreviewRenderer::Impl {
     ComPtr<ID3D11PixelShader> copy_pixel_shader;
     ComPtr<ID3D11PixelShader> mask_pixel_shader;
     ComPtr<ID3D11PixelShader> frame_pixel_shader;
+    ComPtr<ID3D11PixelShader> reference_shell_shader;
+    ComPtr<ID3D11Texture2D> reference_shell_texture;
+    ComPtr<ID3D11ShaderResourceView> reference_shell_view;
     ComPtr<ID3D11PixelShader> cutout_pixel_shader;
     ComPtr<ID3D11BlendState> premultiplied_blend_state;
     ComPtr<ID3D11Buffer> shape_constants;
@@ -749,6 +763,7 @@ struct D3D11PreviewRenderer::Impl {
         const auto mask_pixel_blob = compile_shader(PreviewPixelShaders, "maskMain", "ps_5_0");
         const auto frame_pixel_blob = compile_shader(PreviewPixelShaders, "frameMain", "ps_5_0");
         const auto cutout_pixel_blob = compile_shader(PreviewPixelShaders, "cutoutMain", "ps_5_0");
+        const auto reference_shell_blob = compile_shader(PreviewPixelShaders, "referenceShellMain", "ps_5_0");
         check(device->CreateVertexShader(vertex_blob->GetBufferPointer(), vertex_blob->GetBufferSize(),
             nullptr, &vertex_shader), "CreateVertexShader");
         check(device->CreatePixelShader(pixel_blob->GetBufferPointer(), pixel_blob->GetBufferSize(),
@@ -765,6 +780,9 @@ struct D3D11PreviewRenderer::Impl {
         check(device->CreatePixelShader(cutout_pixel_blob->GetBufferPointer(),
             cutout_pixel_blob->GetBufferSize(), nullptr, &cutout_pixel_shader),
             "Create cutout PixelShader");
+        check(device->CreatePixelShader(reference_shell_blob->GetBufferPointer(),
+            reference_shell_blob->GetBufferSize(), nullptr, &reference_shell_shader),
+            "Create reference shell PixelShader");
 
         D3D11_BLEND_DESC blend_description{};
         blend_description.RenderTarget[0].BlendEnable = TRUE;
@@ -793,6 +811,7 @@ struct D3D11PreviewRenderer::Impl {
         sampler_description.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sampler_description.MaxLOD = D3D11_FLOAT32_MAX;
         check(device->CreateSamplerState(&sampler_description, &sampler), "CreateSamplerState");
+        load_reference_shell();
         recreate_target();
         output_state = {};
         output_state.monitor_generation = monitor_generation;
@@ -837,6 +856,9 @@ struct D3D11PreviewRenderer::Impl {
         sampler.Reset();
         shape_constants.Reset();
         premultiplied_blend_state.Reset();
+        reference_shell_view.Reset();
+        reference_shell_texture.Reset();
+        reference_shell_shader.Reset();
         cutout_pixel_shader.Reset();
         frame_pixel_shader.Reset();
         mask_pixel_shader.Reset();
