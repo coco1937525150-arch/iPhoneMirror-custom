@@ -7,6 +7,7 @@ on:
       - feature/airplay-idle-rotation-smooth-zoom
       - feature/airplay-1080p60-wifi-touch-v1
       - feature/independent-window-rotation-pin-fps-v2
+      - feature/upstream-185-pre2-selective
     paths:
       - 'third_party/airplay-server/patches/Apply-AirPlayMirrorRecoveryPatch.ps1'
       - 'third_party/airplay-server/patches/Apply-AirPlayDisconnectTracePatch.ps1'
@@ -20,6 +21,8 @@ on:
       - 'src/App/Windows/NativePreviewWindow.cs'
       - 'src/App/Updater/UpdateSettingsStore.cs'
       - 'src/App.Logic.Tests/Program.cs'
+      - 'src/App.Logic.Tests/IPhoneMirror.App.Logic.Tests.csproj'
+      - 'src/App/Services/DirectUsbInputBridge.cs'
       - 'src/Core/src/Renderer/D3D11PreviewRenderer.cpp'
       - 'src/App/Services/MediaOutputService.cs'
       - 'src/App/Services/PhoneShellMediaComposer.cs'
@@ -134,7 +137,7 @@ jobs:
       - name: Upload experimental portable build (single extraction)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.ref_name == 'feature/independent-window-rotation-pin-fps-v2' && 'iPhoneMirror-Rotation-Pin-LockTrace-EXPERIMENTAL' || (github.ref_name == 'feature/airplay-1080p60-wifi-touch-v1' && 'iPhoneMirror-AirPlay-LockTrace-1080p60-WiFiTouch-EXPERIMENTAL' || 'iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL') }}
+          name: ${{ github.ref_name == 'feature/upstream-185-pre2-selective' && 'iPhoneMirror-Stage1-Upstream185pre2-EXPERIMENTAL' || (github.ref_name == 'feature/independent-window-rotation-pin-fps-v2' && 'iPhoneMirror-Rotation-Pin-LockTrace-EXPERIMENTAL' || (github.ref_name == 'feature/airplay-1080p60-wifi-touch-v1' && 'iPhoneMirror-AirPlay-LockTrace-1080p60-WiFiTouch-EXPERIMENTAL' || 'iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL')) }}
           path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14

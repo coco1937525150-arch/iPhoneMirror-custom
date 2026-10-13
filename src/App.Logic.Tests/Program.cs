@@ -4191,6 +4191,18 @@ finally
         Directory.Delete(ffmpegLocationRoot, recursive: true);
 }
 
+// Upstream v1.8.5-pre2: Apple's trustcache bundle can use either
+// Image.trustcache or Image.dmg.trustcache. Our Python bridge supported both,
+// while the C# preflight incorrectly rejected the latter.
+var usbDdiPreflightSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Services", "DirectUsbInputBridge.cs"));
+Equal(true,
+    usbDdiPreflightSource.Contains("fileName == \"Image.trustcache\" && !File.Exists(filePath)",
+        StringComparison.Ordinal) &&
+    usbDdiPreflightSource.Contains("Path.Combine(directory, \"Image.dmg.trustcache\")",
+        StringComparison.Ordinal),
+    "upstream pre2 DDI trustcache alternate filename reaches the personalized bridge");
+
 var recordingArguments = MediaOutputService.BuildArguments(
     new MediaOutputRequest(MediaOutputKind.Recording, "capture.mp4", 1280, 720, 30, 6000),
     ffmpegCapabilities);
@@ -4290,8 +4302,12 @@ var boundedVideoSchedule = MediaOutputService.CalculateVideoWritePlan(
     TimeSpan.FromSeconds(10), 30, 0);
 Equal(60L, boundedVideoSchedule.FramesToWrite,
     "video output bounds catch-up to two seconds of repeated frames");
-Equal(240L, boundedVideoSchedule.FramesWrittenBaseline,
-    "video output discards the oldest backlog before resuming current output");
+Equal(0L, boundedVideoSchedule.FramesWrittenBaseline,
+    "pre2 recording fix preserves the real number of frames written");
+Equal(240L, MediaOutputService.CalculateDueVideoFrames(
+        TimeSpan.FromSeconds(10), 30,
+        boundedVideoSchedule.FramesWrittenBaseline + boundedVideoSchedule.FramesToWrite),
+    "pre2 recording fix retains missing video duration so audio does not drift");
 Throws<ArgumentOutOfRangeException>(() =>
         MediaOutputService.CalculateDueVideoFrames(
             TimeSpan.FromSeconds(1), 0, 0),
