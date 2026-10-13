@@ -1239,8 +1239,20 @@ struct D3D11PreviewRenderer::Impl {
         const auto length = GetModuleFileNameW(nullptr, module_path,
             static_cast<DWORD>(std::size(module_path)));
         if (length == 0 || length >= std::size(module_path)) return;
-        const auto path = std::filesystem::path(module_path).parent_path() /
+        const auto bundled_path = std::filesystem::path(module_path).parent_path() /
             L"Assets" / L"iphone16_pro_max_shell.png";
+        // The WPF recorder and layout editor prefer the same user-installed
+        // PNG. Store it under LocalAppData so portable/exe directories can
+        // remain read-only; reconnect/relaunch to reload the GPU texture.
+        auto path = bundled_path;
+        wchar_t local_app_data[32768]{};
+        const auto local_length = GetEnvironmentVariableW(L"LOCALAPPDATA",
+            local_app_data, static_cast<DWORD>(std::size(local_app_data)));
+        if (local_length > 0 && local_length < std::size(local_app_data)) {
+            const auto user_path = std::filesystem::path(local_app_data) /
+                L"iPhoneMirror" / L"Assets" / L"iphone16_pro_max_shell.png";
+            if (std::filesystem::exists(user_path)) path = user_path;
+        }
         if (!std::filesystem::exists(path)) {
             logging::write("d3d_preview reference_shell_missing");
             return;
@@ -1291,7 +1303,8 @@ struct D3D11PreviewRenderer::Impl {
 
     bool use_reference_shell(const DeviceFrameProfileData& profile) const noexcept {
         return profile.enabled && reference_shell_view &&
-            std::abs(profile.side_inset - 0.064F) < 0.002F &&
+            (std::abs(profile.side_inset - 0.064F) < 0.002F ||
+             std::abs(profile.side_inset - 0.035F) < 0.002F) &&
             profile.cutout_kind == 0;
     }
 
