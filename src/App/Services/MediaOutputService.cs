@@ -958,11 +958,24 @@ internal sealed class MediaOutputService : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var elapsed = Stopwatch.StartNew();
+        var rejected = 0;
         while (elapsed.Elapsed < TimeSpan.FromMilliseconds(250))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var packet = ReadNewestAvailableAudioPacket(
-                cursor => _audioProvider(sessionHandle, cursor), 0);
+            AudioPacket? packet;
+            try
+            {
+                packet = ReadNewestAvailableAudioPacket(
+                    cursor => _audioProvider(sessionHandle, cursor), 0);
+            }
+            catch (InvalidDataException error)
+            {
+                if (++rejected <= 2)
+                    DiagnosticLogger.Warning("media_output",
+                        "startup_audio_stale_packet", ("error", error.Message));
+                await Task.Delay(20, cancellationToken);
+                continue;
+            }
             if (packet is { SampleRate: >= 8000 and <= 192000,
                     Channels: >= 1 and <= 8, BitsPerSample: 16 } &&
                 packet.Pcm.Length != 0 &&
