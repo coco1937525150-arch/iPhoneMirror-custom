@@ -12,7 +12,7 @@ namespace IPhoneMirror.App.Services;
 /// </summary>
 internal sealed record PhoneShellComposition(
     string ShellFile, string? BackgroundFile, int ScreenX, int ScreenY,
-    int ScreenWidth, int ScreenHeight)
+    int ScreenWidth, int ScreenHeight, int OutputWidth, int OutputHeight)
 {
     internal void Cleanup()
     {
@@ -22,8 +22,69 @@ internal sealed record PhoneShellComposition(
     }
 }
 
+internal static class PhoneShellLayoutSettingsProvider
+{
+    internal static Func<PhoneShellLayoutSettings?>? Current;
+}
+
+internal sealed record PhoneShellLayoutSettings(double CenterX, double CenterY, double Scale);
+
 internal static class PhoneShellMediaComposer
 {
+    // Shared by the WPF layout editor and the encoder. Enforce a 5px
+    // safety margin on the ORIGINAL background image in both paths.
+    internal static (Rect Bounds, double CenterX, double CenterY, double Scale)
+        FitInsideCanvas(double canvasWidth, double canvasHeight, double aspect,
+            double centerX, double centerY, double scale)
+    {
+        if (!double.IsFinite(canvasWidth) || !double.IsFinite(canvasHeight) ||
+            canvasWidth <= 10 || canvasHeight <= 10 ||
+            !double.IsFinite(aspect) || aspect <= 0)
+            throw new ArgumentOutOfRangeException(nameof(canvasWidth));
+        const double margin = 5;
+        var baseHeight = Math.Min(canvasHeight * .94,
+            canvasWidth * .94 / aspect);
+        var baseWidth = baseHeight * aspect;
+        var maxScale = Math.Min(4, Math.Min(
+            (canvasWidth - 2 * margin) / baseWidth,
+            (canvasHeight - 2 * margin) / baseHeight));
+        if (maxScale < .1)
+            throw new InvalidOperationException(
+                "当前背景画布无法容纳手机壳，请选择较大的背景图片。");
+        scale = Math.Clamp(double.IsFinite(scale) ? scale : 1, .1, maxScale);
+        // Round the dimensions BEFORE clamping origin. Rounding X and width
+        // separately after floating-point bounds checking could put the right
+        // or bottom edge one pixel outside the required 5px safe region.
+        var shellWidth = Math.Min(Math.Round(baseWidth * scale),
+            canvasWidth - 2 * margin);
+        var shellHeight = Math.Min(Math.Round(baseHeight * scale),
+            canvasHeight - 2 * margin);
+        centerX = double.IsFinite(centerX) ? centerX : .5;
+        centerY = double.IsFinite(centerY) ? centerY : .5;
+        var left = Math.Clamp(Math.Round(canvasWidth * centerX - shellWidth / 2),
+            margin, canvasWidth - margin - shellWidth);
+        var top = Math.Clamp(Math.Round(canvasHeight * centerY - shellHeight / 2),
+            margin, canvasHeight - margin - shellHeight);
+        centerX = (left + shellWidth / 2) / canvasWidth;
+        centerY = (top + shellHeight / 2) / canvasHeight;
+        return (new Rect(left, top, shellWidth, shellHeight),
+            centerX, centerY, scale);
+    }
+
+    // A small overscan keeps the encoded iOS frame behind the antialiased
+    // bezel after WPF layout rounding and FFmpeg chroma alignment. The shell
+    // PNG masks the surplus pixels, so the background cannot show as a hairline
+    // at the top, bottom, or sides of the screen opening.
+    internal static DeviceScreenRect ExpandVideoUnderBezel(
+        DeviceScreenRect visibleScreen)
+    {
+        const int bleed = 3;
+        return new DeviceScreenRect(
+            visibleScreen.X - bleed, visibleScreen.Y - bleed,
+            (visibleScreen.Width + bleed * 2 + 1) & ~1,
+            (visibleScreen.Height + bleed * 2 + 1) & ~1);
+    }
+
     internal static PhoneShellComposition Prepare(uint width, uint height,
         string? backgroundFile, string? shellImageFile)
     {
@@ -31,27 +92,53 @@ internal static class PhoneShellMediaComposer
             throw new FileNotFoundException("The chosen recording background no longer exists.", backgroundFile);
         // Use the bundled, transparent iPhone 16 Pro Max reference shell.
         // The old user-selected shell path is intentionally ignored.
-        var bundledShell = Path.Combine(AppContext.BaseDirectory,
-            "Assets", "iphone16_pro_max_shell.png");
+        var bundledShell = PhoneShellAssetStore.ActivePath;
         if (!File.Exists(bundledShell))
             throw new FileNotFoundException("The built-in phone-shell image is missing.",
                 bundledShell);
-        if (width is < 160 or > 3840 || height is < 160 or > 2160)
-            throw new ArgumentOutOfRangeException(nameof(width));
+        // The FFmpeg source retains its capture dimensions; the composited
+        // canvas is instead the *full* background image at native pixel size.
+        var canvasWidth = (int)width;
+        var canvasHeight = (int)height;
+        if (!string.IsNullOrWhiteSpace(backgroundFile))
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri(Path.GetFullPath(backgroundFile));
+            image.EndInit();
+            canvasWidth = image.PixelWidth;
+            canvasHeight = image.PixelHeight;
+        }
+        if (canvasWidth is < 160 or > 4096 || canvasHeight is < 160 or > 4096)
+            throw new ArgumentOutOfRangeException(nameof(backgroundFile),
+                "背景图原始尺寸需要在 160–4096 像素之间。");
+        if ((canvasWidth & 1) != 0 || (canvasHeight & 1) != 0)
+            throw new InvalidOperationException(
+                "H.264 NV12 视频要求画布宽高为偶数。请将背景图调整为偶数像素尺寸后重试。");
         // Match the already tuned iPhone 16 Pro Max viewport geometry.
-        var profile = DeviceFrameProfileResolver.IPhoneDynamicIsland;
+        var profile = DeviceFrameProfileResolver.ActiveIPhoneShell;
         var reference = profile.GetOuterDimensions(1320, 2868);
         var landscape = width > height;
         var aspect = landscape ? reference.Height / (double)reference.Width
             : reference.Width / (double)reference.Height;
-        var outerHeight = Math.Min(height * .94, width * .94 / aspect);
-        var outerWidth = outerHeight * aspect;
-        var outer = new Rect(
-            Math.Round((width - outerWidth) / 2), Math.Round((height - outerHeight) / 2),
-            Math.Round(outerWidth), Math.Round(outerHeight));
+        var settings = PhoneShellLayoutSettingsProvider.Current?.Invoke();
+        var layoutScale = settings?.Scale ?? 1.0;
+        if (!double.IsFinite(layoutScale)) layoutScale = 1;
+        layoutScale = Math.Clamp(layoutScale, .1, 4.0);
+        var centerX = settings?.CenterX ?? .5;
+        var centerY = settings?.CenterY ?? .5;
+        if (!double.IsFinite(centerX)) centerX = .5;
+        if (!double.IsFinite(centerY)) centerY = .5;
+        var outer = FitInsideCanvas(canvasWidth, canvasHeight, aspect,
+            centerX, centerY, layoutScale).Bounds;
         var inner = profile.GetScreenRect((int)outer.Width, (int)outer.Height);
-        var screenX = (int)outer.X + inner.X;
-        var screenY = (int)outer.Y + inner.Y;
+        // An exact rectangle can expose a 1–2 pixel background seam under
+        // the antialiased shell edge. Expand only the VIDEO; keep the PNG
+        // shell and background at their unchanged original canvas positions.
+        var coveredScreen = ExpandVideoUnderBezel(inner);
+        var screenX = (int)outer.X + coveredScreen.X;
+        var screenY = (int)outer.Y + coveredScreen.Y;
         var filename = Path.Combine(Path.GetTempPath(),
             "iphoneMirror-shell-" + Guid.NewGuid().ToString("N") + ".png");
         try
@@ -76,7 +163,7 @@ internal static class PhoneShellMediaComposer
                     DrawImportedShell(context, bundledShell, portraitOuter);
                     if (landscape) context.Pop();
                 }
-                var bitmap = new RenderTargetBitmap((int)width, (int)height,
+                var bitmap = new RenderTargetBitmap(canvasWidth, canvasHeight,
                     96, 96, PixelFormats.Pbgra32);
                 bitmap.Render(visual);
                 using var output = File.Create(filename);
@@ -89,7 +176,8 @@ internal static class PhoneShellMediaComposer
             if (dispatcher.CheckAccess()) Render();
             else dispatcher.Invoke(Render);
             return new(filename, backgroundFile, screenX, screenY,
-                inner.Width, inner.Height);
+                coveredScreen.Width, coveredScreen.Height,
+                canvasWidth, canvasHeight);
         }
         catch
         {

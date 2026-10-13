@@ -77,8 +77,14 @@
                     <Button Grid.Row="0" Grid.Column="2" Style="{StaticResource ToolButton}"
                             Content="{DynamicResource MediaOutputChooseBackground}"
                             Click="OnChooseBackgroundClick"/>
-                    <!-- The bundled reference shell is always used; only the
-                         optional background is user-selectable. -->
+                    <!-- One replacement applies to the independent window,
+                         recording, streaming and the layout editor. -->
+                    <Button Grid.Row="1" Grid.ColumnSpan="3"
+                            Content="更换全局 iPhone 16 Pro Max 手机壳 PNG…"
+                            Margin="0,10,0,0"
+                            Style="{StaticResource ToolButton}"
+                            ToolTip="选择新的手机壳，导入后将自动处理屏幕透明区域；独立窗口需重启软件后刷新"
+                            Click="OnImportGlobalShellClick"/>
                 </Grid>
             </StackPanel>
         </Border>
@@ -120,6 +126,22 @@
                                     <TextBox x:Name="RecordBitrateBox" Style="{StaticResource RoundedTextBox}" Height="36"/>
                                 </StackPanel>
                             </Grid>
+                            <TextBlock Text="默认视频保存位置" Style="{StaticResource DetailLabel}" Margin="0,12,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="RecordingDirectoryBox" Grid.Column="0"
+                                         Style="{StaticResource RoundedTextBox}" Height="36"
+                                         ToolTip="完成录制后自动保存到这个文件夹"/>
+                                <Button Grid.Column="2" Content="选择目录…" Style="{StaticResource ToolButton}"
+                                        Click="OnChooseRecordingDirectoryClick"/>
+                            </Grid>
+                            <Button x:Name="EditRecordingLayoutButton" Content="编辑录制布局（拖动 / 缩放手机）"
+                                    Style="{StaticResource ToolButton}" Margin="0,10,0,0"
+                                    Click="OnEditRecordingLayoutClick"/>
                             <Button x:Name="StartRecordingButton"
                                     Content="{DynamicResource StartRecording}" Click="OnStartRecordingClick"
                                     IsEnabled="False"
@@ -258,7 +280,7 @@
                 <Button Content="{DynamicResource DiscardRecording}"
                         Click="OnDiscardClick" Style="{StaticResource ToolButton}"
                         MinWidth="110" Margin="0,0,8,0"/>
-                <Button Content="{DynamicResource StopMediaOutput}"
+                <Button x:Name="StopMediaOutputButton" Content="完成录制"
                         Click="OnStopClick" Style="{StaticResource ToolButton}"
                         IsEnabled="{Binding CanStopMediaOutput}" MinWidth="110"/>
             </StackPanel>

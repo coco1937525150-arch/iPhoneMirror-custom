@@ -393,6 +393,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _viewModel.MediaCastAudioSettingsChanged += OnMediaCastAudioSettingsChanged;
         _viewModel.ProjectionSettingsRequested += OnProjectionSettingsRequested;
         _viewModel.MediaOutputSettingsRequested += OnMediaOutputSettingsRequested;
+        _viewModel.DeviceBindingRequested += OnDeviceBindingRequested;
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _refreshTimer.Tick += (_, _) => _ = _viewModel.RefreshAsync();
         _mediaCastTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
@@ -1916,6 +1917,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         SetSettingsPanelVisible(!_isSettingsPanelVisible);
     }
 
+    private void OnDeviceBindingRequested() =>
+        OnNavigateReverseControlClick(this, new RoutedEventArgs());
+
     private void OnNavigateReverseControlClick(object sender, RoutedEventArgs e)
     {
         if (_reverseControlWindow is { IsLoaded: true, IsVisible: true })
@@ -2591,6 +2595,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _viewModel.MediaCastAudioSettingsChanged -= OnMediaCastAudioSettingsChanged;
         _viewModel.ProjectionSettingsRequested -= OnProjectionSettingsRequested;
         _viewModel.MediaOutputSettingsRequested -= OnMediaOutputSettingsRequested;
+        _viewModel.DeviceBindingRequested -= OnDeviceBindingRequested;
         _refreshTimer.Stop();
         _mediaCastTimer.Stop();
         var application = Application.Current;

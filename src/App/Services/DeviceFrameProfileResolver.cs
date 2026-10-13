@@ -28,6 +28,18 @@ internal static class DeviceFrameProfileResolver
         // Dynamic Island is already part of the decoded iOS picture.
         DeviceCutoutKind.None, 0, 0, 0);
 
+    // Geometry matched to the imported high-resolution phone-shell image.
+    // Keep the legacy insets for existing users until a custom shell is
+    // imported; both paths switch together on the next app launch.
+    internal static readonly DeviceFrameProfile IPhoneImportedShell = new(
+        "iphone-dynamic-island-custom-shell", true,
+        0.035, 0.018, 0.018, 0.158,
+        DeviceCutoutKind.None, 0, 0, 0);
+
+    internal static DeviceFrameProfile ActiveIPhoneShell =>
+        PhoneShellAssetStore.HasCustomShell
+            ? IPhoneImportedShell : IPhoneDynamicIsland;
+
     internal static readonly DeviceFrameProfile IPad = new(
         "ipad", true,
         0.026, 0.026, 0.026, 0.060,
@@ -56,7 +68,7 @@ internal static class DeviceFrameProfileResolver
             if (major == 10)
                 return minor is 3 or 6 ? IPhoneNotch : IPhoneHomeButton;
             if (NotchedModernIPhones.Contains((major, minor))) return IPhoneNotch;
-            return major >= 15 ? IPhoneDynamicIsland : IPhoneNotch;
+            return major >= 15 ? ActiveIPhoneShell : IPhoneNotch;
         }
 
         if (TryParseProductType(productType, "iPad", out _, out _)) return IPad;
@@ -66,7 +78,7 @@ internal static class DeviceFrameProfileResolver
         var shortEdge = Math.Min(frameWidth, frameHeight);
         var longEdge = Math.Max(frameWidth, frameHeight);
         var ratio = shortEdge / (double)longEdge;
-        if (ratio is >= 0.38 and <= 0.56) return IPhoneDynamicIsland;
+        if (ratio is >= 0.38 and <= 0.56) return ActiveIPhoneShell;
         if (ratio is >= 0.64 and <= 0.80) return IPad;
         return DeviceFrameProfile.None;
     }

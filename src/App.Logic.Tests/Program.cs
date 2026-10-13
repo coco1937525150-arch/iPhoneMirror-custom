@@ -8,6 +8,8 @@ using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using IPhoneMirror.App.Localization;
 using IPhoneMirror.App.Interop;
 using IPhoneMirror.App.Services;
@@ -4250,12 +4252,119 @@ var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
 Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal),
     "output settings no longer require picking an external phone shell");
 
+// The editor must follow every selected background's native size, not a
+// fixed 1448x1440 preview. Test boundary placement after pixel rounding.
+foreach (var (canvasW, canvasH) in new[]
+    { (1000, 2000), (1448, 1440), (1920, 1080), (1080, 1920) })
+{
+    foreach (var (locationX, locationY, zoom) in new[]
+        { (-8.0, 7.0, 4.0), (0.5, 0.5, 1.0), (2.0, -2.0, 3.0) })
+    {
+        var fitted = PhoneShellMediaComposer.FitInsideCanvas(
+            canvasW, canvasH, .46, locationX, locationY, zoom);
+        Equal(true, fitted.Bounds.X >= 5 && fitted.Bounds.Y >= 5 &&
+            fitted.Bounds.Right <= canvasW - 5 &&
+            fitted.Bounds.Bottom <= canvasH - 5,
+            $"phone shell stays within actual {canvasW}x{canvasH} backdrop");
+        Equal(true, fitted.Bounds.Width > 0 && fitted.Bounds.Height > 0,
+            "clamped shell retains a positive size");
+    }
+}
+
+// Imported phone image may have a solid-black display. Verify that the
+// imported asset gains a truly transparent aperture without modifying the
+// user's active shell file under LocalAppData.
+var maskFixtureDirectory = Path.Combine(Path.GetTempPath(),
+    "iphone-mirror-mask-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(maskFixtureDirectory);
+try
+{
+    const int shellTestWidth = 640, shellTestHeight = 1360;
+    var opaqueBlack = new byte[shellTestWidth * shellTestHeight * 4];
+    for (var index = 3; index < opaqueBlack.Length; index += 4)
+        opaqueBlack[index] = 255;
+    var opaqueBitmap = BitmapSource.Create(shellTestWidth, shellTestHeight,
+        96, 96, PixelFormats.Bgra32, null, opaqueBlack, shellTestWidth * 4);
+    var sourceFile = Path.Combine(maskFixtureDirectory, "source.png");
+    var installedFile = Path.Combine(maskFixtureDirectory, "installed.png");
+    var sourcePng = new PngBitmapEncoder();
+    sourcePng.Frames.Add(BitmapFrame.Create(opaqueBitmap));
+    using (var stream = File.Create(sourceFile)) sourcePng.Save(stream);
+    PhoneShellAssetStore.Install(sourceFile, installedFile);
+    var imported = new BitmapImage();
+    imported.BeginInit();
+    imported.CacheOption = BitmapCacheOption.OnLoad;
+    imported.UriSource = new Uri(installedFile, UriKind.Absolute);
+    imported.EndInit();
+    var converted = new FormatConvertedBitmap(imported,
+        PixelFormats.Bgra32, null, 0);
+    var importedPixels = new byte[opaqueBlack.Length];
+    converted.CopyPixels(importedPixels, shellTestWidth * 4, 0);
+    Equal((byte)0, importedPixels[
+        ((shellTestHeight / 2) * shellTestWidth + shellTestWidth / 2) * 4 + 3],
+        "imported phone shell removes the opaque-black display");
+    Equal((byte)255, importedPixels[
+        ((shellTestHeight / 2) * shellTestWidth) * 4 + 3],
+        "imported phone shell preserves opaque side-frame pixels");
+    var installedAgain = Path.Combine(maskFixtureDirectory, "installed-again.png");
+    PhoneShellAssetStore.Install(installedFile, installedAgain);
+    var importedAgain = new BitmapImage();
+    importedAgain.BeginInit();
+    importedAgain.CacheOption = BitmapCacheOption.OnLoad;
+    importedAgain.UriSource = new Uri(installedAgain, UriKind.Absolute);
+    importedAgain.EndInit();
+    var convertedAgain = new FormatConvertedBitmap(importedAgain,
+        PixelFormats.Bgra32, null, 0);
+    var pixelsAgain = new byte[importedPixels.Length];
+    convertedAgain.CopyPixels(pixelsAgain, shellTestWidth * 4, 0);
+    Equal(true, importedPixels.AsSpan().SequenceEqual(pixelsAgain),
+        "re-import preserves an existing transparent phone-shell aperture");
+}
+finally
+{
+    Directory.Delete(maskFixtureDirectory, recursive: true);
+}
+
+var opening = new DeviceScreenRect(18, 22, 934, 1901);
+var expanded = PhoneShellMediaComposer.ExpandVideoUnderBezel(opening);
+Equal(true, expanded.X <= opening.X - 3 &&
+    expanded.Y <= opening.Y - 3 &&
+    expanded.X + expanded.Width >= opening.X + opening.Width + 3 &&
+    expanded.Y + expanded.Height >= opening.Y + opening.Height + 3,
+    "phone video extends beneath the alpha-aliased shell edges on every side");
+Equal(true, (expanded.Width & 1) == 0 && (expanded.Height & 1) == 0,
+    "expanded phone video uses chroma-safe even intermediate dimensions");
+
+// Layout bounds are identical in the editor and the MP4 compositor, and
+// old out-of-range preferences must not be able to crop the phone shell.
+var boundedShell = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, 1.11, .49, 3.5);
+Equal(true, boundedShell.Bounds.X >= 5 &&
+    boundedShell.Bounds.Y >= 5 &&
+    boundedShell.Bounds.Right <= 1443 &&
+    boundedShell.Bounds.Bottom <= 1435,
+    "layout keeps every pixel of the shell within the 5px canvas-safe area");
+var boundedNegative = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, -9, -20, 1);
+Equal(true, boundedNegative.Bounds.X >= 5 &&
+    boundedNegative.Bounds.Y >= 5,
+    "layout clamps negative and stale center coordinates");
+var boundedNan = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, double.NaN, double.PositiveInfinity,
+    double.NaN);
+Equal(true, boundedNan.Bounds.X >= 5 &&
+    boundedNan.Bounds.Right <= 1443 &&
+    boundedNan.Bounds.Bottom <= 1435,
+    "layout rejects nonfinite scale and placement");
+Equal(true, boundedShell.Scale < 3.5,
+    "layout zoom is limited by the original background boundaries");
+
 var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
     "shell-capture.mp4", 1080, 1920, 30, 6000,
     IncludePhoneShell: true, BackgroundImage: "custom-background.png",
     PhoneShellImage: "iphone16promax.png");
 var shellComposition = new PhoneShellComposition(
-    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770);
+    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770, 1280, 1440);
 var shellArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
     composition: shellComposition);
 Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
@@ -4267,6 +4376,16 @@ Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
 Equal(true, shellArgs.Any(x => x.Contains(
         "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)),
     "phone shell overlays the full-rate video after background composition");
+Equal(true, shellArgs.Any(arg => arg.Contains(
+        "[2:v]setsar=1[phone_bg]", StringComparison.Ordinal)) &&
+    shellArgs.Any(arg => arg.Contains(
+        "force_original_aspect_ratio=increase,crop=984:1770",
+        StringComparison.Ordinal)) &&
+    shellArgs.All(arg => !arg.Contains("pad=984:1770",
+        StringComparison.Ordinal)),
+    "background remains uncropped while the phone video fills the complete shell opening");
+Equal(true, shellArgs.Contains("custom-background.png", StringComparer.Ordinal),
+    "recording carries the selected background as an independent FFmpeg input");
 var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
     audioPipePath: null, includeAudio: false, composition: shellComposition);
 Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
@@ -4628,6 +4747,121 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
     finally
     {
         try { File.Delete(audioRecordingPath); } catch { }
+    }
+
+    // Real FFmpeg regression: the shell/background filter must encode a
+    // complete MP4 rather than merely passing argument-string assertions.
+    var shellTestRoot = Path.Combine(Path.GetTempPath(),
+        $"iphone-shell-smoke-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(shellTestRoot);
+    var shellTestBackground = Path.Combine(shellTestRoot, "background.png");
+    var shellTestOverlay = Path.Combine(shellTestRoot, "overlay.png");
+    var shellTestOutput = Path.Combine(shellTestRoot, "capture.mp4");
+    // Distinctive colours expose errors that a black-on-black smoke test
+    // cannot: background=blue, shell rim=red, phone video=white.
+    var backgroundPixels = new byte[320 * 240 * 4];
+    var shellPixels = new byte[320 * 240 * 4];
+    for (var y = 0; y < 240; y++)
+    for (var x = 0; x < 320; x++)
+    {
+        var index = (y * 320 + x) * 4;
+        backgroundPixels[index] = 255;
+        backgroundPixels[index + 3] = 255;
+        if (x < 4 || x >= 316 || y < 4 || y >= 236)
+        {
+            shellPixels[index + 2] = 255;
+            shellPixels[index + 3] = 255;
+        }
+    }
+    static void SaveTestBitmap(string path, byte[] pixels)
+    {
+        var bitmap = BitmapSource.Create(320, 240, 96, 96,
+            PixelFormats.Bgra32, null, pixels, 320 * 4);
+        bitmap.Freeze();
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var output = File.Create(path);
+        encoder.Save(output);
+    }
+    SaveTestBitmap(shellTestBackground, backgroundPixels);
+    SaveTestBitmap(shellTestOverlay, shellPixels);
+    long shellFrameTime = 0;
+    string? shellFailure = null;
+    await using (var shellRecorder = new MediaOutputService(
+        (_, w, h) =>
+        {
+            var ySize = checked((int)(w * h));
+            var pixels = new byte[checked(ySize + ySize / 2)];
+            Array.Fill(pixels, (byte)235, 0, ySize);
+            Array.Fill(pixels, (byte)128, ySize, pixels.Length - ySize);
+            return new Nv12VideoFrame(w, h, w,
+                Interlocked.Add(ref shellFrameTime, 1_000_000), pixels);
+        },
+        (_, _) => null,
+        (_, _, bg, _) => new PhoneShellComposition(
+            shellTestOverlay, bg, 24, 16, 144, 208, 320, 240)))
+    {
+        shellRecorder.StatusChanged += (message, failed) =>
+        {
+            if (failed) shellFailure = message;
+        };
+        await shellRecorder.StartAsync(1,
+            new MediaOutputRequest(MediaOutputKind.Recording,
+                shellTestOutput, 160, 160, 10, 500,
+                IncludePhoneShell: true, BackgroundImage: shellTestBackground),
+            installedFfmpegCapabilities);
+        await Task.Delay(850);
+        await shellRecorder.StopAsync();
+        if (shellFailure is not null)
+            throw new InvalidOperationException("composited recording failed: " +
+                shellFailure);
+        Equal(true, File.Exists(shellTestOutput),
+            "FFmpeg shell/background composite completes recording");
+        var shellMp4 = File.ReadAllBytes(shellTestOutput);
+        Equal(true, shellMp4.AsSpan().IndexOf("ftyp"u8) >= 0 &&
+            shellMp4.AsSpan().IndexOf("moov"u8) >= 0,
+            "composited recording is a finalized MP4");
+        // Decode one actual MP4 frame. A transparent hole must show the
+        // phone video, while pixels outside the bezel retain the background.
+        var decodedFile = Path.Combine(shellTestRoot, "decoded.rgb");
+        var decoderStart = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = installedFfmpegCapabilities.FfmpegPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var arg in new[] {
+            "-hide_banner", "-loglevel", "error",
+            "-i", shellTestOutput, "-frames:v", "1",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-y", decodedFile })
+            decoderStart.ArgumentList.Add(arg);
+        using (var decoder = System.Diagnostics.Process.Start(decoderStart) ??
+            throw new InvalidOperationException("Unable to launch MP4 frame decoder"))
+        {
+            await decoder.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            Equal(0, decoder.ExitCode, "FFmpeg decodes the MP4 composition");
+        }
+        var decoded = File.ReadAllBytes(decodedFile);
+        Equal(320 * 240 * 3, decoded.Length,
+            "MP4 composition retains the original background dimensions");
+        static (int R, int G, int B) RgbAt(byte[] frame, int x, int y)
+        {
+            var i = (y * 320 + x) * 3;
+            return (frame[i], frame[i + 1], frame[i + 2]);
+        }
+        var screenColor = RgbAt(decoded, 96, 120);
+        var backgroundColor = RgbAt(decoded, 240, 120);
+        var frameColor = RgbAt(decoded, 2, 120);
+        Equal(true, screenColor.R > 165 && screenColor.G > 165 &&
+            screenColor.B > 165,
+            "recorded phone screen is not obscured by the PNG bezel");
+        Equal(true, backgroundColor.B > backgroundColor.R + 75 &&
+            backgroundColor.B > backgroundColor.G + 75,
+            "full background retains its original colour outside the phone");
+        Equal(true, frameColor.R > frameColor.G + 75 &&
+            frameColor.R > frameColor.B + 75,
+            "recorded transparent phone shell retains the visible bezel");
+
     }
 
     var interruptedAudioPath = Path.Combine(Path.GetTempPath(),

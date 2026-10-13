@@ -120,10 +120,10 @@ jobs:
       # The PR build already publishes outputs/iPhoneMirror; preserve it as
       # a directly downloadable portable package for the combined pre2 test.
       - name: Upload Stage1 experimental portable artifact
-        if: github.event_name == 'pull_request' && (github.head_ref == 'feature/upstream-185-pre2-selective' || github.head_ref == 'feature/stage1-pre3-recording-diagnostics' || github.head_ref == 'feature/stage1-pre4-shell-usb-upstream')
+        if: github.event_name == 'pull_request' && (github.head_ref == 'feature/upstream-185-pre2-selective' || github.head_ref == 'feature/stage1-pre3-recording-diagnostics' || github.head_ref == 'feature/stage1-pre4-shell-usb-upstream' || github.head_ref == 'feature/stage1-pre5-media-layout-wireless')
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.head_ref == 'feature/stage1-pre4-shell-usb-upstream' && 'iPhoneMirror-pre4-USB-ReferenceShell-EXPERIMENTAL' || (github.head_ref == 'feature/stage1-pre3-recording-diagnostics' && 'iPhoneMirror-Stage1-pre3-DIAGNOSTICS-EXPERIMENTAL' || 'iPhoneMirror-Stage1-Upstream185pre2-EXPERIMENTAL') }}
+          name: ${{ github.head_ref == 'feature/stage1-pre5-media-layout-wireless' && 'iPhoneMirror-pre5-MediaLayout-EXPERIMENTAL' || (github.head_ref == 'feature/stage1-pre4-shell-usb-upstream' && 'iPhoneMirror-pre4-USB-ReferenceShell-EXPERIMENTAL' || (github.head_ref == 'feature/stage1-pre3-recording-diagnostics' && 'iPhoneMirror-Stage1-pre3-DIAGNOSTICS-EXPERIMENTAL' || 'iPhoneMirror-Stage1-Upstream185pre2-EXPERIMENTAL')) }}
           path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14

@@ -33,6 +33,11 @@ internal sealed class UpdateSettings
     public bool MediaOutputIncludePhoneShell { get; set; } = true;
     public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
     public string MediaOutputPhoneShellImagePath { get; set; } = string.Empty;
+    public string MediaOutputRecordingDirectory { get; set; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "iPhoneMirror");
+    public double MediaOutputShellCenterX { get; set; } = 0.5;
+    public double MediaOutputShellCenterY { get; set; } = 0.5;
+    public double MediaOutputShellScale { get; set; } = 1.0;
     public WirelessReceiverBackend WirelessReceiverBackend { get; set; } =
         WirelessReceiverBackend.Original;
     public string WirelessDisplayProfileId { get; set; } = "1080p";
@@ -115,6 +120,10 @@ internal sealed class UpdateSettings
         MediaOutputIncludePhoneShell = MediaOutputIncludePhoneShell,
         MediaOutputBackgroundImagePath = MediaOutputBackgroundImagePath,
         MediaOutputPhoneShellImagePath = MediaOutputPhoneShellImagePath,
+        MediaOutputRecordingDirectory = MediaOutputRecordingDirectory,
+        MediaOutputShellCenterX = MediaOutputShellCenterX,
+        MediaOutputShellCenterY = MediaOutputShellCenterY,
+        MediaOutputShellScale = MediaOutputShellScale,
         WirelessReceiverBackend = WirelessReceiverBackend,
         WirelessDisplayProfileId = WirelessDisplayProfileId,
         WirelessReceiverName = WirelessReceiverName,

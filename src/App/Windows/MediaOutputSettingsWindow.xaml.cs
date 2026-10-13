@@ -31,7 +31,16 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     {
         ApplyPreviewOutputDefaults(force: true);
         RestoreShellPreferences();
-        RecordFpsBox.Text = StreamFpsBox.Text = "30";
+        PhoneShellLayoutSettingsProvider.Current = () =>
+        {
+            if (Application.Current is not App app) return null;
+            var p = app.UpdateSettings;
+            return new PhoneShellLayoutSettings(p.MediaOutputShellCenterX,
+                p.MediaOutputShellCenterY, p.MediaOutputShellScale);
+        };
+        RecordFpsBox.Text = StreamFpsBox.Text = "60";
+        if (Application.Current is App settingsApp)
+            RecordingDirectoryBox.Text = settingsApp.UpdateSettings.MediaOutputRecordingDirectory;
         RecordBitrateBox.Text = StreamBitrateBox.Text = "6000";
         VirtualCameraFpsBox.SelectedIndex = 0;
         if (_previewOnly)
@@ -156,6 +165,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         app.UpdateSettings.MediaOutputBackgroundImagePath =
             BackgroundImageBox.Text.Trim();
         app.UpdateSettings.MediaOutputPhoneShellImagePath = string.Empty;
+        app.UpdateSettings.MediaOutputRecordingDirectory = RecordingDirectoryBox.Text.Trim();
         _ = app.SaveUpdateSettings();
     }
 
@@ -167,6 +177,66 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void OnChooseBackgroundClick(object sender, RoutedEventArgs e) =>
         PickImage(BackgroundImageBox);
+    private void OnChooseRecordingDirectoryClick(object sender, RoutedEventArgs e)
+    {
+        var picker = new OpenFolderDialog
+        {
+            Title = "选择录制视频的默认保存目录",
+            InitialDirectory = Directory.Exists(RecordingDirectoryBox.Text)
+                ? RecordingDirectoryBox.Text
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+        };
+        if (picker.ShowDialog(this) == true)
+        {
+            RecordingDirectoryBox.Text = picker.FolderName;
+            SaveShellPreferences();
+        }
+    }
+
+    private void OnImportGlobalShellClick(object sender, RoutedEventArgs e)
+    {
+        if (_previewOnly) return;
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入全局 iPhone 16 Pro Max 手机壳",
+            Filter = "PNG 手机壳 (*.png)|*.png",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            PhoneShellAssetStore.Install(dialog.FileName);
+            DiagnosticLogger.Info("media_output", "global_shell_installed",
+                ("file", Path.GetFileName(PhoneShellAssetStore.CustomPath)));
+            MessageBox.Show(this,
+                "新手机壳已安装，录制、推流和布局编辑器将使用它。" +
+                " 为让已经创建的独立窗口重新载入 GPU 贴图，请重启软件。",
+                "手机壳更新完成", MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception error)
+        {
+            DiagnosticLogger.Exception("media_output", "global_shell_import_failed", error);
+            MessageBox.Show(this, error.Message, "导入手机壳失败",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OnEditRecordingLayoutClick(object sender, RoutedEventArgs e)
+    {
+        SaveShellPreferences();
+        var hasWidth = uint.TryParse(RecordWidthBox.Text, out var width);
+        var hasHeight = uint.TryParse(RecordHeightBox.Text, out var height);
+        var canvasWidth = hasWidth ? Math.Clamp(width & ~1U, 160U, 3840U) : 1280U;
+        var canvasHeight = hasHeight ? Math.Clamp(height & ~1U, 160U, 2160U) : 720U;
+        var landscape = canvasWidth > canvasHeight;
+        var editor = new RecordingLayoutEditorWindow(
+            BackgroundImageBox.Text.Trim(), landscape, canvasWidth, canvasHeight)
+            { Owner = this };
+        if (editor.ShowDialog() == true) SaveShellPreferences();
+    }
+
 
     private void PickImage(TextBox target)
     {
@@ -226,6 +296,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
                 RecordBitrateBox, out var width, out var height, out var fps, out var bitrate))
             return;
         SaveShellPreferences();
+        StopMediaOutputButton.Content = "完成录制";
         var result = await _viewModel.StartRecordingAsync(
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
             BackgroundImageBox.Text.Trim(), string.Empty);
@@ -244,6 +315,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             _ => MediaOutputKind.Rtmp,
         };
         SaveShellPreferences();
+        StopMediaOutputButton.Content = "停止推流";
         var result = await _viewModel.StartStreamingAsync(kind,
             StreamDestinationBox.Text.Trim(), StreamAuthorizationBox.Text.Trim(),
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
@@ -317,53 +389,45 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         _savePromptOpen = true;
         try
         {
-            var suggestedName = Path.GetFileName(pending);
-            var suffix = suggestedName.LastIndexOf('_');
-            if (suffix > 0)
-                suggestedName = suggestedName[..suffix] + ".mp4";
-            var dialog = new SaveFileDialog
+            // Finalize directly into the user's configured folder. The
+            // staging file is retained if saving fails.
+            var directory = RecordingDirectoryBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(directory))
+                directory = Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.MyVideos), "iPhoneMirror");
+            directory = Path.GetFullPath(directory);
+            Directory.CreateDirectory(directory);
+            var filename = $"iPhoneMirror_{DateTime.Now:yyyyMMdd_HHmmss}.mp4";
+            var destination = Path.Combine(directory, filename);
+            for (var counter = 1; File.Exists(destination); counter++)
+                destination = Path.Combine(directory,
+                    $"iPhoneMirror_{DateTime.Now:yyyyMMdd_HHmmss}_{counter}.mp4");
+            try { File.Move(pending, destination, overwrite: false); }
+            catch (IOException)
             {
-                Title = LocalizationService.Get("RecordSaveTitle"),
-                Filter = LocalizationService.Get("RecordMp4Filter"),
-                DefaultExt = ".mp4",
-                AddExtension = true,
-                OverwritePrompt = true,
-                InitialDirectory = Environment.GetFolderPath(
-                    Environment.SpecialFolder.MyVideos),
-                FileName = suggestedName,
-            };
-            if (dialog.ShowDialog(this) != true)
-            {
-                FeedbackText.Text = LocalizationService.Get("RecordingPendingSave");
-                return;
+                // Also works when the temporary staging volume is not the
+                // same physical disk as the user's chosen video folder.
+                await using var source = new FileStream(pending, FileMode.Open,
+                    FileAccess.Read, FileShare.Read, 1024 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                await using var target = new FileStream(destination, FileMode.CreateNew,
+                    FileAccess.Write, FileShare.None, 1024 * 1024,
+                    FileOptions.Asynchronous);
+                await source.CopyToAsync(target);
+                await target.FlushAsync();
+                File.Delete(pending);
             }
-
-            try
-            {
-                try { File.Move(pending, dialog.FileName, overwrite: true); }
-                catch (IOException)
-                {
-                    await using var source = new FileStream(pending, FileMode.Open,
-                        FileAccess.Read, FileShare.Read, 1024 * 1024,
-                        FileOptions.Asynchronous | FileOptions.SequentialScan);
-                    await using var destination = new FileStream(dialog.FileName,
-                        FileMode.Create, FileAccess.Write, FileShare.None,
-                        1024 * 1024, FileOptions.Asynchronous);
-                    await source.CopyToAsync(destination);
-                    await destination.FlushAsync();
-                    File.Delete(pending);
-                }
-                _viewModel.MarkPendingRecordingSaved(pending);
-                FeedbackText.Text = LocalizationService.Format(
-                    "RecordingSavedFormat", dialog.FileName);
-            }
-            catch (Exception error)
-            {
-                DiagnosticLogger.Exception("recording", "save_failed", error,
-                    ("file", Path.GetFileName(dialog.FileName)));
-                FeedbackText.Text = LocalizationService.Format(
-                    "RecordingSaveFailedFormat", error.Message);
-            }
+            _viewModel.MarkPendingRecordingSaved(pending);
+            FeedbackText.Text = LocalizationService.Format(
+                "RecordingSavedFormat", destination);
+            DiagnosticLogger.Info("recording", "saved_to_default_directory",
+                ("file", Path.GetFileName(destination)));
+        }
+        catch (Exception error)
+        {
+            DiagnosticLogger.Exception("recording", "save_failed", error);
+            FeedbackText.Text = LocalizationService.Format(
+                "RecordingSaveFailedFormat", error.Message);
         }
         finally { _savePromptOpen = false; }
     }
