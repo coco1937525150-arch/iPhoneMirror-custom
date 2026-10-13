@@ -452,7 +452,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             uint.TryParse(heightBox.Text, out height) &&
             int.TryParse(fpsBox.Text, out fps) &&
             int.TryParse(bitrateBox.Text, out bitrate) &&
-            width >= 160 && height >= 160 && fps is >= 10 and <= 60 &&
+            width >= 160 && height >= 160 &&
+            fps >= 10 && fps <= (ReferenceEquals(fpsBox, RecordFpsBox) ? 120 : 60) &&
             bitrate is >= 500 and <= 50000)
             return true;
         FeedbackText.Text = LocalizationService.Get("MediaOutputInvalidSettings");
