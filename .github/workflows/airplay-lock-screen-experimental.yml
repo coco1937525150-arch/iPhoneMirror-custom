@@ -7,6 +7,7 @@ on:
       - feature/airplay-idle-rotation-smooth-zoom
       - feature/airplay-1080p60-wifi-touch-v1
       - feature/independent-window-rotation-pin-fps-v2
+      - feature/phase1-pre2-integrated-package
     paths:
       - 'third_party/airplay-server/patches/Apply-AirPlayMirrorRecoveryPatch.ps1'
       - 'third_party/airplay-server/patches/Apply-AirPlayDisconnectTracePatch.ps1'
@@ -23,6 +24,9 @@ on:
       - 'src/Core/src/Renderer/D3D11PreviewRenderer.cpp'
       - 'src/App/Services/MediaOutputService.cs'
       - 'src/App/Services/PhoneShellMediaComposer.cs'
+      - 'src/App/Services/DirectUsbInputBridge.cs'
+      - 'src/App.Logic.Tests/IPhoneMirror.App.Logic.Tests.csproj'
+      - 'docs/UPSTREAM_PRE2_INTEGRATION.md'
       - 'src/App/Windows/MediaOutputSettingsWindow.xaml'
       - 'src/App/Windows/MediaOutputSettingsWindow.xaml.cs'
       - 'src/App/Localization/Strings.*.xaml'
@@ -131,10 +135,25 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Configuration Release
 
+      - name: Verify portable layout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD 'outputs\\iPhoneMirror'
+          foreach ($name in @('iPhoneMirror.exe', 'iPhoneMirror.Core.dll', 'Wireless\\iPhoneMirror.WirelessHost.exe', 'Wireless\\airplay2dll.dll', 'tools\\iUsbBridge.exe')) {
+            $path = Join-Path $root $name
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Incomplete portable package: $name" }
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "$name SHA256=$hash"
+          }
+          "### Stage1 + selective upstream pre2 integration" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "Branch: ${{ github.ref_name }}; Commit: ${{ github.sha }}" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "Full upstream v1.8.5-pre2 feature parity is NOT claimed; includes selectively reviewed DDI support. Lock screen remains diagnostic until iPhone validation." | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
       - name: Upload experimental portable build (single extraction)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.ref_name == 'feature/independent-window-rotation-pin-fps-v2' && 'iPhoneMirror-Rotation-Pin-LockTrace-EXPERIMENTAL' || (github.ref_name == 'feature/airplay-1080p60-wifi-touch-v1' && 'iPhoneMirror-AirPlay-LockTrace-1080p60-WiFiTouch-EXPERIMENTAL' || 'iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL') }}
+          name: ${{ github.ref_name == 'feature/phase1-pre2-integrated-package' && 'iPhoneMirror-Stage1-Pre2-Integrated-Win64' || (github.ref_name == 'feature/independent-window-rotation-pin-fps-v2' && 'iPhoneMirror-Rotation-Pin-LockTrace-EXPERIMENTAL' || (github.ref_name == 'feature/airplay-1080p60-wifi-touch-v1' && 'iPhoneMirror-AirPlay-LockTrace-1080p60-WiFiTouch-EXPERIMENTAL' || 'iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL')) }}
           path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14
