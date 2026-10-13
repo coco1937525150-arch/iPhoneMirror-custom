@@ -2065,6 +2065,10 @@ try
     var bridgeRuntimeDependency = Path.Combine(bridgeRuntimeInternal, "dependency.bin");
     File.WriteAllText(bridgeRuntimeExecutable, "bridge");
     File.WriteAllText(bridgeRuntimeDependency, "dependency");
+    var usb0Path = Path.Combine(bridgeRuntimeInternal, "libusb0.dll");
+    var libusbPath = Path.Combine(bridgeRuntimeInternal, "libusb-1.0.dll");
+    File.WriteAllText(usb0Path, "pinned libusb0 fixture");
+    File.WriteAllText(libusbPath, "pinned libusb-1.0 fixture");
     var bridgeRuntimeFiles = new[]
     {
         new
@@ -2078,6 +2082,18 @@ try
             path = "_internal/dependency.bin",
             sha256 = Convert.ToHexString(SHA256.HashData(
                 File.ReadAllBytes(bridgeRuntimeDependency))).ToLowerInvariant(),
+        },
+        new
+        {
+            path = "_internal/libusb0.dll",
+            sha256 = Convert.ToHexString(SHA256.HashData(
+                File.ReadAllBytes(usb0Path))).ToLowerInvariant(),
+        },
+        new
+        {
+            path = "_internal/libusb-1.0.dll",
+            sha256 = Convert.ToHexString(SHA256.HashData(
+                File.ReadAllBytes(libusbPath))).ToLowerInvariant(),
         },
     };
     File.WriteAllText(Path.Combine(bridgeRuntimeTestRoot,
