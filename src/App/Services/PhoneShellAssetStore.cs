@@ -57,6 +57,13 @@ internal static class PhoneShellAssetStore
         var y0 = hole.Y;
         var x1 = hole.X + hole.Width;
         var y1 = hole.Y + hole.Height;
+        // If the supplied PNG already has a real alpha aperture, preserve
+        // its hand-authored anti-aliasing instead of punching another rounded
+        // rectangle through the physical bezel on subsequent imports.
+        var centerX = Math.Clamp((x0 + x1) / 2, 0, width - 1);
+        var centerY = Math.Clamp((y0 + y1) / 2, 0, height - 1);
+        var alreadyTransparent = pixels[centerY * pitch + centerX * 4 + 3] <= 16;
+        if (!alreadyTransparent)
         for (var y = Math.Max(0, y0); y < Math.Min(height, y1); y++)
         {
             for (var x = Math.Max(0, x0); x < Math.Min(width, x1); x++)
