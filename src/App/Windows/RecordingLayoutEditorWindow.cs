@@ -64,7 +64,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
         }
         _preview.ClipToBounds = true;
         _preview.Children.Add(previewImage);
-        _overlay.ClipToBounds = false;
+        _overlay.ClipToBounds = true;
         _overlay.IsHitTestVisible = true;
         _overlay.HorizontalAlignment = HorizontalAlignment.Center;
         _overlay.VerticalAlignment = VerticalAlignment.Center;
@@ -80,6 +80,8 @@ internal sealed class RecordingLayoutEditorWindow : Window
         var save = new Button { Content = "保存布局", Padding = new Thickness(22, 10, 22, 10), Margin = new Thickness(6) };
         save.Click += (_, _) =>
         {
+            // Re-clamp even a layout loaded from older, unbounded versions.
+            ConstrainLayout();
             if (Application.Current is App app)
             {
                 app.UpdateSettings.MediaOutputShellCenterX = _centerX;
@@ -138,8 +140,25 @@ internal sealed class RecordingLayoutEditorWindow : Window
         return image;
     }
 
+    private Rect ConstrainLayout()
+    {
+        // Compute in original image pixels, not WPF preview units; the same
+        // routine is used when generating the actual MP4 shell overlay.
+        var reference = DeviceFrameProfileResolver.IPhoneDynamicIsland
+            .GetOuterDimensions(1320, 2868);
+        var aspect = reference.Width / (double)reference.Height;
+        var fit = PhoneShellMediaComposer.FitInsideCanvas(
+            _backgroundWidth, _backgroundHeight, aspect,
+            _centerX, _centerY, _scale);
+        _centerX = fit.CenterX;
+        _centerY = fit.CenterY;
+        _scale = fit.Scale;
+        return fit.Bounds;
+    }
+
     private void Redraw()
     {
+        var bounds = ConstrainLayout();
         if (_preview.ActualWidth <= 0 || _preview.ActualHeight <= 0) return;
         var factor = Math.Min(_preview.ActualWidth / _backgroundWidth,
             _preview.ActualHeight / _backgroundHeight);
@@ -147,18 +166,11 @@ internal sealed class RecordingLayoutEditorWindow : Window
         var displayedHeight = _backgroundHeight * factor;
         _overlay.Width = displayedWidth;
         _overlay.Height = displayedHeight;
-
-        // Match PhoneShellMediaComposer's reference geometry exactly.
-        var reference = DeviceFrameProfileResolver.IPhoneDynamicIsland.GetOuterDimensions(1320, 2868);
-        var aspect = reference.Width / (double)reference.Height;
-        var baseHeight = Math.Min(displayedHeight * .94, displayedWidth * .94 / aspect);
-        var shellHeight = baseHeight * _scale;
-        var shellWidth = shellHeight * aspect;
-        _phone.Width = shellWidth;
-        _phone.Height = shellHeight;
-        Canvas.SetLeft(_phone, displayedWidth * _centerX - shellWidth / 2);
-        Canvas.SetTop(_phone, displayedHeight * _centerY - shellHeight / 2);
-        _readout.Text = $"画布 {_backgroundWidth:0}×{_backgroundHeight:0} · 比例 {_scale:P0} · 位置 {_centerX:P0}, {_centerY:P0}";
+        _phone.Width = bounds.Width * factor;
+        _phone.Height = bounds.Height * factor;
+        Canvas.SetLeft(_phone, bounds.X * factor);
+        Canvas.SetTop(_phone, bounds.Y * factor);
+        _readout.Text = $"画布 {_backgroundWidth:0}×{_backgroundHeight:0} · 比例 {_scale:P0} · 位置 {_centerX:P0}, {_centerY:P0} · 安全边距 5px";
     }
 
     private void StartDrag(object sender, MouseButtonEventArgs e)
