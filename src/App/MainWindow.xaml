@@ -1210,7 +1210,7 @@
                             <Button Click="OnStartWirelessControlClick"
                                     IsEnabled="{Binding CanToggleWirelessControl}"
                                     Style="{StaticResource PreviewToolButton}"
-                                    ToolTip="{Binding WirelessControlActionText}"
+                                    ToolTip="{Binding WirelessControlAvailabilityText}"
                                     AutomationProperties.AutomationId="WirelessControlButton">
                                 <StackPanel Orientation="Horizontal">
                                     <ui:SymbolIcon Style="{StaticResource ButtonSymbolIcon}" Symbol="Wifi120" FontSize="15"/>
@@ -1220,7 +1220,7 @@
                             <Button Click="OnStartUsbControlClick"
                                     IsEnabled="{Binding CanToggleWiredControl}"
                                     Style="{StaticResource PreviewToolButton}"
-                                    ToolTip="{Binding WiredControlActionText}"
+                                    ToolTip="{Binding WiredControlAvailabilityText}"
                                     AutomationProperties.AutomationId="UsbControlButton">
                                 <StackPanel Orientation="Horizontal">
                                     <ui:SymbolIcon Style="{StaticResource ButtonSymbolIcon}" Symbol="UsbPlug24" FontSize="15"/>
