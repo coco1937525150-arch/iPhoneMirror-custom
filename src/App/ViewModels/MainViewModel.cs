@@ -68,6 +68,8 @@ internal sealed class BluetoothMouseDirectionOption(
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
+internal sealed record FrameRateOption(int Value, string Label);
+
 internal sealed class MainViewModel : INotifyPropertyChanged
 {
     internal ControlStatusService ControlStatus { get; } = new();
@@ -174,7 +176,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     private string _audioDisplay = string.Empty;
     private string _protectedAudioDisplay = string.Empty;
     private ResolutionPreset _selectedResolutionPreset = null!;
-    private int _selectedFrameRate = 60;
+    private int _selectedFrameRate = 0;
     private double _playbackVolume = 100;
     private bool _playAudio = true;
     private bool _advancedMode;
@@ -290,7 +292,16 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         new("Resolution720p", 1280, 720),
         new("Resolution540p", 960, 540),
     ];
-    public IReadOnlyList<int> FrameRates { get; } = [120, 60, 30, 24];
+    // 0 is native 'uncapped'; pre6 renderer limits it to the active
+    // monitor's real refresh frequency. Never synthesize phone frames.
+    public IReadOnlyList<FrameRateOption> FrameRates { get; } =
+    [
+        new(0, "自动 / Auto"),
+        new(30, "30 fps"),
+        new(60, "60 fps"),
+        new(120, "120 fps · 实验性"),
+        new(24, "24 fps"),
+    ];
     public IReadOnlyList<WirelessDisplayProfile> WirelessDisplayProfiles { get; } =
         WirelessReceiverConfiguration.DisplayProfiles;
     public IReadOnlyList<WirelessReceiverBackendOption> WirelessReceiverBackends { get; } =
@@ -1105,7 +1116,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         : IsMediaCastSelected
         ? LocalizationService.Format("MediaCastFpsCapabilityFormat",
             _wireless.AppliedProfile.FrameRate)
-        : LocalizationService.Format("TargetFpsFormat", SelectedFrameRate);
+        : SelectedFrameRate == 0
+            ? "自动 / Auto（显示器刷新率上限）"
+            : LocalizationService.Format("TargetFpsFormat", SelectedFrameRate);
     public string LogText { get => _logText; private set => Set(ref _logText, value); }
     public string LogPathDisplay => _logReader.Path;
 
@@ -5752,7 +5765,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
     private void RestoreSelectedVideoControls(DeviceCaptureState? state)
     {
-        var frameRate = state?.FrameRate ?? 60;
+        var frameRate = state?.FrameRate ?? 0;
         if (_selectedFrameRate != frameRate)
         {
             _selectedFrameRate = frameRate;
