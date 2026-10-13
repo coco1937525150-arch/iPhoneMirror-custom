@@ -204,6 +204,21 @@ internal sealed class MediaOutputService : IAsyncDisposable
     {
         ArgumentOutOfRangeException.ThrowIfZero(sessionHandle);
         Validate(request, capabilities);
+        // FFmpeg assigns the requested nominal FPS to rawvideo, regardless of
+        // whether iOS supplies that many distinct frames. Refuse 120fps MP4
+        // unless the source's distinct timestamps and wall-clock observations
+        // BOTH substantiate a true high-frame-rate feed.
+        if (request.Kind == MediaOutputKind.Recording && request.FrameRate > 60)
+        {
+            var measured = await MeasureDistinctSourceFpsAsync(
+                sessionHandle, request.Width, request.Height, cancellationToken);
+            DiagnosticLogger.Info("media_output", "high_fps_source_preflight",
+                ("requested_fps", request.FrameRate), ("measured_fps", measured));
+            if (measured < request.FrameRate * 0.90)
+                throw new InvalidOperationException(
+                    $"无法启动真实 {request.FrameRate}fps 录制：实际输入约 {measured:F1}fps。" +
+                    " 请改用 60fps，或先确认 iPhone 视频流确实输出 120 帧/秒。");
+        }
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
@@ -665,6 +680,40 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         ("width", width), ("height", height));
             }
         }
+    }
+
+    private async Task<double> MeasureDistinctSourceFpsAsync(
+        ulong sessionHandle, uint width, uint height, CancellationToken cancellationToken)
+    {
+        var clock = Stopwatch.StartNew();
+        long firstTimestamp = 0, lastTimestamp = 0;
+        var distinct = 0;
+        while (clock.Elapsed < TimeSpan.FromMilliseconds(1200))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var frame = _frameProvider(sessionHandle, width, height);
+            if (frame is { Timestamp100Ns: > 0 } &&
+                frame.Timestamp100Ns > lastTimestamp)
+            {
+                if (distinct == 0) firstTimestamp = frame.Timestamp100Ns;
+                lastTimestamp = frame.Timestamp100Ns;
+                ++distinct;
+            }
+            await Task.Delay(4, cancellationToken);
+        }
+        return CalculateVerifiedSourceFps(distinct, clock.Elapsed,
+            lastTimestamp - firstTimestamp);
+    }
+
+    internal static double CalculateVerifiedSourceFps(int distinctFrames,
+        TimeSpan observedTime, long sourceTimestampSpan100Ns)
+    {
+        if (distinctFrames < 2 || observedTime <= TimeSpan.Zero ||
+            sourceTimestampSpan100Ns <= 0) return 0;
+        var sourceRate = (distinctFrames - 1) * 10_000_000.0 /
+            sourceTimestampSpan100Ns;
+        var observedRate = distinctFrames / observedTime.TotalSeconds;
+        return Math.Min(sourceRate, observedRate);
     }
 
     internal static long CalculateDueVideoFrames(TimeSpan elapsed,
@@ -1268,7 +1317,9 @@ internal sealed class MediaOutputService : IAsyncDisposable
         if (request.Width is < 160 or > 3840 || request.Height is < 160 or > 2160 ||
             (request.Width & 1) != 0 || (request.Height & 1) != 0)
             throw new ArgumentOutOfRangeException(nameof(request), "Output dimensions must be even and at most 3840x2160.");
-        if (request.FrameRate is < 10 or > 60 || request.BitrateKbps is < 500 or > 50000)
+        var maxFps = request.Kind == MediaOutputKind.Recording ? 120 : 60;
+        if (request.FrameRate < 10 || request.FrameRate > maxFps ||
+            request.BitrateKbps is < 500 or > 50000)
             throw new ArgumentOutOfRangeException(nameof(request));
         if (string.IsNullOrWhiteSpace(request.Destination))
             throw new ArgumentException("An output destination is required.", nameof(request));
