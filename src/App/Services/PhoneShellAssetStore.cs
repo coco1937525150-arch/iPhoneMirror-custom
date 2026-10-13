@@ -23,7 +23,7 @@ internal static class PhoneShellAssetStore
     internal static string ActivePath => HasCustomShell ? CustomPath :
         Path.Combine(AppContext.BaseDirectory, "Assets", AssetName);
 
-    internal static void Install(string file)
+    internal static void Install(string file, string? destinationPath = null)
     {
         if (!File.Exists(file)) throw new FileNotFoundException(
             "手机壳 PNG 文件不存在。", file);
@@ -79,13 +79,14 @@ internal static class PhoneShellAssetStore
             PixelFormats.Bgra32, null, pixels, pitch);
         var png = new PngBitmapEncoder();
         png.Frames.Add(BitmapFrame.Create(corrected));
-        var folder = Path.GetDirectoryName(CustomPath)!;
+        var destination = destinationPath ?? CustomPath;
+        var folder = Path.GetDirectoryName(destination)!;
         Directory.CreateDirectory(folder);
-        var staging = CustomPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        var staging = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             using (var output = File.Create(staging)) png.Save(output);
-            File.Move(staging, CustomPath, overwrite: true);
+            File.Move(staging, destination, overwrite: true);
         }
         finally { if (File.Exists(staging)) File.Delete(staging); }
     }
