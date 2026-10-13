@@ -4611,6 +4611,19 @@ Equal((byte)1, writingFrame.Span[0], "published frame owns its bytes before nati
 frameLatch.Publish(nv12Payload);
 Equal((byte)1, writingFrame.Span[0], "an in-flight pipe write retains the preceding snapshot");
 Equal((byte)99, frameLatch.Get().Span[0], "the next snapshot receives the new frame");
+var verifiedLatch = new MediaOutputService.FrameLatch();
+verifiedLatch.Publish(nv12Payload, 1_000_000);
+verifiedLatch.Publish(nv12Payload, 1_000_000);
+verifiedLatch.Publish(nv12Payload, 1_083_333);
+verifiedLatch.Publish(nv12Payload, 1_050_000);
+verifiedLatch.Publish(nv12Payload, 1_166_666);
+var verifiedMetrics = verifiedLatch.SourceMetrics;
+Equal(5L, verifiedMetrics.Reads,
+    "source diagnostics include all frame read samples");
+Equal(3L, verifiedMetrics.Distinct,
+    "source diagnostics count unique increasing timestamps, not repeated frames");
+Equal(1_166_666L, verifiedMetrics.LastTimestamp100Ns,
+    "source diagnostics retain the last increasing source timestamp");
 Throws<InvalidDataException>(() => MediaOutputService.GetNv12FramePayload(
         new IPhoneMirror.App.Interop.Nv12VideoFrame(4, 4, 8, 2, nv12Pixels),
         4, 4),
