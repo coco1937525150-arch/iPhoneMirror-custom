@@ -24,7 +24,7 @@ internal static class DeviceFrameProfileResolver
     internal static readonly DeviceFrameProfile IPhoneDynamicIsland = new(
         "iphone-dynamic-island", true,
         // Thin front-frame proportions of iPhone 16 Pro Max.
-        0.027, 0.028, 0.028, 0.158,
+        0.064, 0.058, 0.058, 0.158,
         // Dynamic Island is already part of the decoded iOS picture.
         DeviceCutoutKind.None, 0, 0, 0);
 
