@@ -82,6 +82,8 @@ function Build-UsbTouchBridge {
         throw 'USB bridge executable or runtime manifest is missing.'
     }
     Assert-UsbTouchBridgeRuntime -Directory (Join-Path $Root 'dist') -Label 'Built upstream USB touch bridge'
+    # The .NET publish manifest requires the runtime's license beside the bridge.
+    Copy-Item -LiteralPath (Join-Path $UsbControlRoot 'LICENSE') -Destination (Join-Path $Root 'dist\iUsbBridge-LICENSE.txt') -Force
 }
 
 function Resolve-CMakeTool([string]$Name) {
