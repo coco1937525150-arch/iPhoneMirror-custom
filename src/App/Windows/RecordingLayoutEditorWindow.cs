@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using IPhoneMirror.App.Services;
+using IPhoneMirror.App.Models;
 
 namespace IPhoneMirror.App.Windows;
 
@@ -147,7 +148,9 @@ internal sealed class RecordingLayoutEditorWindow : Window
         _overlay.Width = displayedWidth;
         _overlay.Height = displayedHeight;
 
-        var aspect = _shell.PixelWidth / (double)_shell.PixelHeight;
+        // Match PhoneShellMediaComposer's reference geometry exactly.
+        var reference = DeviceFrameProfileResolver.IPhoneDynamicIsland.GetOuterDimensions(1320, 2868);
+        var aspect = reference.Width / (double)reference.Height;
         var baseHeight = Math.Min(displayedHeight * .94, displayedWidth * .94 / aspect);
         var shellHeight = baseHeight * _scale;
         var shellWidth = shellHeight * aspect;
