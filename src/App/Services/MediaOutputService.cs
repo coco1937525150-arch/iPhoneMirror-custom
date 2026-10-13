@@ -732,6 +732,15 @@ internal sealed class MediaOutputService : IAsyncDisposable
             // discarding buffered packets produces audible gaps and clicks.
             // The provider's sequence cursor advances one packet at a time.
             var packet = _audioProvider(sessionHandle, sequence);
+            if (packet is not null && packet.Sequence <= sequence)
+            {
+                // Treat a stale packet as temporary silence so that audio
+                // timestamps still advance instead of spinning indefinitely.
+                if (++invalidPacketCount <= 3)
+                    DiagnosticLogger.Warning("media_output", "audio_stale_sequence",
+                        ("received", packet.Sequence), ("last", sequence));
+                packet = null;
+            }
             if (packet is null)
             {
                 if (firstAudio is null || lastRealPacket.Elapsed >= AudioSilenceGrace)
@@ -760,16 +769,6 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         continue;
                     }
                 }
-                await Task.Delay(5, cancellationToken);
-                continue;
-            }
-            if (packet.Sequence <= sequence)
-            {
-                // A duplicate packet can occur immediately after AirPlay
-                // resume. It must not tear down an otherwise valid MP4.
-                if (++invalidPacketCount <= 3)
-                    DiagnosticLogger.Warning("media_output", "audio_stale_sequence",
-                        ("received", packet.Sequence), ("last", sequence));
                 await Task.Delay(5, cancellationToken);
                 continue;
             }
