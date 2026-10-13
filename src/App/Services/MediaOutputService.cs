@@ -930,8 +930,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 "force_original_aspect_ratio=decrease," +
                 $"pad={composition.ScreenWidth}:{composition.ScreenHeight}:(ow-iw)/2:(oh-ih)/2:black," +
                 "setsar=1[phone_video];" +
+                // A user may deliberately move the shell partially outside the
+                // background. Crop the moving screen via overlay, never crop
+                // the background canvas or stretch it to the phone dimensions.
                 $"[phone_bg][phone_video]overlay={composition.ScreenX}:{composition.ScreenY}:" +
-                "shortest=1:eof_action=endall[phone_screen];" +
+                "shortest=1:eof_action=endall:format=auto[phone_screen];" +
                 $"[phone_screen][{shellIndex}:v]overlay=0:0:shortest=1," +
                 "format=nv12[composited]"]);
             args.AddRange(["-map", "[composited]"]);
