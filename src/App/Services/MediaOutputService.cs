@@ -682,27 +682,38 @@ internal sealed class MediaOutputService : IAsyncDisposable
         }
     }
 
-    private async Task<double> MeasureDistinctSourceFpsAsync(
+    private Task<double> MeasureDistinctSourceFpsAsync(
         ulong sessionHandle, uint width, uint height, CancellationToken cancellationToken)
     {
-        var clock = Stopwatch.StartNew();
-        long firstTimestamp = 0, lastTimestamp = 0;
-        var distinct = 0;
-        while (clock.Elapsed < TimeSpan.FromMilliseconds(1200))
+        // A Windows Task.Delay(4) may actually wait 15.6ms and wrongly
+        // reject a real 120fps feed. Observe on a worker using Stopwatch.
+        return Task.Run(() =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var frame = _frameProvider(sessionHandle, width, height);
-            if (frame is { Timestamp100Ns: > 0 } &&
-                frame.Timestamp100Ns > lastTimestamp)
+            var clock = Stopwatch.StartNew();
+            long firstTimestamp = 0, lastTimestamp = 0;
+            var distinct = 0;
+            var nextRead = TimeSpan.Zero;
+            while (clock.Elapsed < TimeSpan.FromMilliseconds(1200))
             {
-                if (distinct == 0) firstTimestamp = frame.Timestamp100Ns;
-                lastTimestamp = frame.Timestamp100Ns;
-                ++distinct;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (clock.Elapsed < nextRead)
+                {
+                    Thread.SpinWait(256);
+                    continue;
+                }
+                var frame = _frameProvider(sessionHandle, width, height);
+                if (frame is { Timestamp100Ns: > 0 } &&
+                    frame.Timestamp100Ns > lastTimestamp)
+                {
+                    if (distinct == 0) firstTimestamp = frame.Timestamp100Ns;
+                    lastTimestamp = frame.Timestamp100Ns;
+                    ++distinct;
+                }
+                nextRead = clock.Elapsed + TimeSpan.FromMilliseconds(2.5);
             }
-            await Task.Delay(4, cancellationToken);
-        }
-        return CalculateVerifiedSourceFps(distinct, clock.Elapsed,
-            lastTimestamp - firstTimestamp);
+            return CalculateVerifiedSourceFps(distinct, clock.Elapsed,
+                lastTimestamp - firstTimestamp);
+        }, cancellationToken);
     }
 
     internal static double CalculateVerifiedSourceFps(int distinctFrames,
