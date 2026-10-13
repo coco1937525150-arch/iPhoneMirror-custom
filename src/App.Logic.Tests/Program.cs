@@ -4222,6 +4222,18 @@ Sequence(["-hide_banner", "-loglevel", "warning", "-nostdin",
     recordingArguments,
     "recording opens the audio pipe before stdin video and keeps stable mapping");
 
+var bundledShellPath = Path.Combine(sourceDirectory, "App", "Assets",
+    "iphone16_pro_max_shell.png");
+var bundledShellBytes = File.ReadAllBytes(bundledShellPath);
+Equal(true, bundledShellBytes.Length > 2000 &&
+    bundledShellBytes.AsSpan(0, 8).SequenceEqual(
+        new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
+    "bundled user-reference phone shell has a valid PNG header");
+var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Windows", "MediaOutputSettingsWindow.xaml"));
+Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal),
+    "output settings no longer require picking an external phone shell");
+
 var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
     "shell-capture.mp4", 1080, 1920, 30, 6000,
     IncludePhoneShell: true, BackgroundImage: "custom-background.png",
@@ -4424,6 +4436,12 @@ Equal(24, nv12Payload.Length,
 Equal(true, nv12Payload.Span.SequenceEqual(nv12Pixels),
     "NV12 output is forwarded without a managed color conversion or copy");
 var frameLatch = new MediaOutputService.FrameLatch();
+frameLatch.NoteFailure("native NV12 error");
+Equal("native NV12 error", frameLatch.LastFailure,
+    "frame reader keeps a reason for startup failure");
+frameLatch.Publish(nv12Payload);
+Equal(true, frameLatch.LastFailure is null,
+    "a successfully published frame clears previous read failures");
 frameLatch.Publish(nv12Payload);
 var writingFrame = frameLatch.Get();
 nv12Pixels[0] = 99;
