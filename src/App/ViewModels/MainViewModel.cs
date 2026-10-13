@@ -4317,19 +4317,17 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
             var pipeline = _core.SetDevicePipelinePreferences(requestedHandle!,
                 (uint)requestedDecoder, 1U);
-            var render = (Success: true, Message: string.Empty);
-            if (!requestedDevice.IsWireless)
-            {
-                render = _core.SetDeviceVideoPreferences(requestedHandle!,
+            // AirPlay does not negotiate the sender's frame rate here, but
+            // its local native D3D preview HAS a real cap. Apply it to the
+            // wireless renderer too; previously 120fps selections were only
+            // saved in the UI and never reached an active wireless session.
+            var render = _core.SetDeviceVideoPreferences(requestedHandle!,
+                requestedPreset.Width, requestedPreset.Height,
+                (uint)requestedFrameRate);
+            if (render.Success)
+                requestedState.MarkRenderSettingsApplied(
                     requestedPreset.Width, requestedPreset.Height,
-                    (uint)requestedFrameRate);
-                if (render.Success)
-                {
-                    requestedState.MarkRenderSettingsApplied(
-                        requestedPreset.Width, requestedPreset.Height,
-                        requestedFrameRate);
-                }
-            }
+                    requestedFrameRate);
             var success = pipeline.Success && render.Success;
             var targetStillSelected = DeviceViewModel.UdidEquals(
                 SelectedDevice?.Udid, requestedUdid);
@@ -4370,8 +4368,10 @@ internal sealed class MainViewModel : INotifyPropertyChanged
                     }
                     else
                     {
-                        SetSettingsStatus("DecoderPreferenceSubmittedFormat",
-                            DecoderPreferenceLabel(requestedDecoder));
+                        // The local render limit is applied, not the actual
+                        // AirPlay sender FPS. Source FPS remains measured.
+                        SetSettingsStatus("AppliedRenderFormat",
+                            requestedPreset, requestedFrameRate);
                     }
                 }
             }
