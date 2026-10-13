@@ -76,6 +76,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
     private const int MaximumVideoCatchUpSeconds = 2;
     private readonly Func<ulong, uint, uint, Nv12VideoFrame?> _frameProvider;
     private readonly Func<ulong, ulong, AudioPacket?> _audioProvider;
+    private readonly Func<uint, uint, string?, string?, PhoneShellComposition>
+        _compositionFactory;
+    private readonly object _stderrGate = new();
+    private readonly Queue<string> _stderrTail = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private CancellationTokenSource? _runCancellation;
     private Process? _process;
@@ -87,10 +91,12 @@ internal sealed class MediaOutputService : IAsyncDisposable
     internal ulong SessionHandle { get; private set; }
 
     internal MediaOutputService(Func<ulong, uint, uint, Nv12VideoFrame?> frameProvider,
-        Func<ulong, ulong, AudioPacket?> audioProvider)
+        Func<ulong, ulong, AudioPacket?> audioProvider,
+        Func<uint, uint, string?, string?, PhoneShellComposition>? compositionFactory = null)
     {
         _frameProvider = frameProvider;
         _audioProvider = audioProvider;
+        _compositionFactory = compositionFactory ?? PhoneShellMediaComposer.Prepare;
     }
 
     internal static async Task<MediaOutputCapabilities> ProbeAsync(
@@ -202,12 +208,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
         try
         {
             if (IsRunning) throw new InvalidOperationException("A media output is already active.");
-            capabilities = await ResolveWorkingEncoderAsync(capabilities,
-                request.Width, request.Height, cancellationToken);
-            if (!capabilities.HasH264Encoder)
-                throw new InvalidOperationException(
-                    "No installed FFmpeg H.264 encoder could encode at the requested size.");
             _lastError = string.Empty;
+            lock (_stderrGate) _stderrTail.Clear();
             var firstAudio = await TryWaitForAudioAsync(sessionHandle, cancellationToken);
             string? recordingStagingPath = null;
             var processRequest = request;
@@ -232,8 +234,26 @@ internal sealed class MediaOutputService : IAsyncDisposable
             try
             {
                 if (request.IncludePhoneShell)
-                    composition = PhoneShellMediaComposer.Prepare(request.Width,
-                        request.Height, request.BackgroundImage, request.PhoneShellImage);
+                    composition = _compositionFactory(request.Width, request.Height,
+                        request.BackgroundImage, request.PhoneShellImage);
+                // The encoder sees the final composited canvas, not the phone
+                // capture resolution. Hardware encoders can accept one and reject
+                // the other, which previously surfaced only as a broken pipe.
+                var encoderWidth = (uint)(composition?.OutputWidth ?? (int)request.Width);
+                var encoderHeight = (uint)(composition?.OutputHeight ?? (int)request.Height);
+                capabilities = await ResolveWorkingEncoderAsync(capabilities,
+                    encoderWidth, encoderHeight, cancellationToken);
+                if (!capabilities.HasH264Encoder)
+                    throw new InvalidOperationException(
+                        $"没有可用的 H.264 编码器支持最终录制画布 {encoderWidth}×{encoderHeight}。" +
+                        " 请换较小的背景图或安装支持 libx264 的 FFmpeg。");
+                DiagnosticLogger.Info("media_output", "recording_preflight",
+                    ("kind", request.Kind), ("source_width", request.Width),
+                    ("source_height", request.Height),
+                    ("canvas_width", encoderWidth), ("canvas_height", encoderHeight),
+                    ("fps", request.FrameRate),
+                    ("encoder", capabilities.PreferredH264Encoder),
+                    ("audio", includeAudio), ("shell", composition is not null));
                 audioPipe = audioPipeName is null ? null : new NamedPipeServerStream(
                     audioPipeName, PipeDirection.Out, 1, PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous, 64 * 1024, 64 * 1024);
@@ -245,7 +265,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         includeAudio: includeAudio, composition: composition));
                 process.ErrorDataReceived += (_, args) =>
                 {
-                    if (!string.IsNullOrWhiteSpace(args.Data)) _lastError = args.Data;
+                    if (!string.IsNullOrWhiteSpace(args.Data))
+                        CaptureFfmpegError(args.Data);
                 };
                 if (!process.Start())
                     throw new InvalidOperationException("FFmpeg could not be started.");
@@ -313,6 +334,53 @@ internal sealed class MediaOutputService : IAsyncDisposable
         finally { _lifecycleGate.Release(); }
     }
 
+    private void CaptureFfmpegError(string line)
+    {
+        lock (_stderrGate)
+        {
+            _lastError = line;
+            _stderrTail.Enqueue(line);
+            while (_stderrTail.Count > 24) _stderrTail.Dequeue();
+        }
+    }
+
+    private string GetFfmpegErrorTail()
+    {
+        lock (_stderrGate)
+        {
+            var tail = string.Join(" | ", _stderrTail);
+            return tail.Length > 2400 ? tail[^2400..] : tail;
+        }
+    }
+
+    private async Task<Exception> ExplainPipeFailureAsync(
+        Process process, IOException error)
+    {
+        // Wait briefly for the encoder's stderr reader to flush its final
+        // diagnostics. A closed stdin/PCM pipe is a symptom, not a root cause.
+        if (!process.HasExited)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(2));
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) { }
+        }
+        var tail = GetFfmpegErrorTail();
+        var exitCode = TryGetExitCode(process, out var code)
+            ? code.ToString() : "仍在运行";
+        DiagnosticLogger.Exception("media_output", "ffmpeg_pipe_closed", error,
+            ("exit_code", exitCode), ("stderr", tail));
+        var detail = string.IsNullOrWhiteSpace(tail)
+            ? "FFmpeg 没有返回详细错误，请查看 application.log。"
+            : tail;
+        return new IOException(
+            $"录制编码器输入管道提前关闭（FFmpeg 退出码：{exitCode}）。" +
+            $" 错误详情：{detail}。日志：{DiagnosticLogger.Path}", error);
+    }
+
     internal async Task StopAsync()
     {
         Task? task;
@@ -366,6 +434,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+        catch (IOException error) when (!cancellationToken.IsCancellationRequested)
+        {
+            failure = await ExplainPipeFailureAsync(process, error);
         }
         catch (Exception error)
         {
