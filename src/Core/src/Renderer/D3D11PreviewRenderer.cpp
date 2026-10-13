@@ -1314,6 +1314,7 @@ struct D3D11PreviewRenderer::Impl {
 
     void draw_device_frame(const DeviceFrameProfileData& profile) {
         if (!device_frame_enabled(profile)) return;
+        if (use_reference_shell(profile)) { draw_reference_shell(profile); return; }
         D3D11_VIEWPORT viewport{};
         viewport.Width = static_cast<float>(target_width);
         viewport.Height = static_cast<float>(target_height);
@@ -1800,6 +1801,7 @@ struct D3D11PreviewRenderer::Impl {
                 rounded, turns);
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
+            if (framed) draw_reference_shell(frame_profile);
             // No synthetic island or notch over the real iOS video.
         } else {
             ensure_render_texture(limited_width, limited_height);
@@ -1838,6 +1840,7 @@ struct D3D11PreviewRenderer::Impl {
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             context->PSSetShaderResources(0, 3, empty);
+            if (framed) draw_reference_shell(frame_profile);
             // Likewise leave the limited-render path's original pixels unobscured.
         }
         // The render loop applies the requested frame-rate cap. A nonblocking
