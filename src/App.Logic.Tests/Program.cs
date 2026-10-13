@@ -4757,22 +4757,46 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
     var shellTestBackground = Path.Combine(shellTestRoot, "background.png");
     var shellTestOverlay = Path.Combine(shellTestRoot, "overlay.png");
     var shellTestOutput = Path.Combine(shellTestRoot, "capture.mp4");
+    // Distinctive colours expose errors that a black-on-black smoke test
+    // cannot: background=blue, shell rim=red, phone video=white.
+    var backgroundPixels = new byte[320 * 240 * 4];
     var shellPixels = new byte[320 * 240 * 4];
-    for (var i = 3; i < shellPixels.Length; i += 4)
-        shellPixels[i] = 255;
-    var shellBitmap = BitmapSource.Create(320, 240, 96, 96,
-        PixelFormats.Bgra32, null, shellPixels, 320 * 4);
-    shellBitmap.Freeze();
-    var shellPng = new PngBitmapEncoder();
-    shellPng.Frames.Add(BitmapFrame.Create(shellBitmap));
-    using (var png = File.Create(shellTestBackground)) shellPng.Save(png);
-    File.Copy(shellTestBackground, shellTestOverlay);
+    for (var y = 0; y < 240; y++)
+    for (var x = 0; x < 320; x++)
+    {
+        var index = (y * 320 + x) * 4;
+        backgroundPixels[index] = 255;
+        backgroundPixels[index + 3] = 255;
+        if (x < 4 || x >= 316 || y < 4 || y >= 236)
+        {
+            shellPixels[index + 2] = 255;
+            shellPixels[index + 3] = 255;
+        }
+    }
+    static void SaveTestBitmap(string path, byte[] pixels)
+    {
+        var bitmap = BitmapSource.Create(320, 240, 96, 96,
+            PixelFormats.Bgra32, null, pixels, 320 * 4);
+        bitmap.Freeze();
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var output = File.Create(path);
+        encoder.Save(output);
+    }
+    SaveTestBitmap(shellTestBackground, backgroundPixels);
+    SaveTestBitmap(shellTestOverlay, shellPixels);
     long shellFrameTime = 0;
     string? shellFailure = null;
     await using (var shellRecorder = new MediaOutputService(
-        (_, w, h) => new Nv12VideoFrame(w, h, w,
-            Interlocked.Add(ref shellFrameTime, 1_000_000),
-            new byte[checked((int)((ulong)w * h * 3U / 2U))]),
+        (_, w, h) =>
+        {
+            var ySize = checked((int)(w * h));
+            var pixels = new byte[checked(ySize + ySize / 2)];
+            Array.Fill(pixels, (byte)235, 0, ySize);
+            Array.Fill(pixels, (byte)128, ySize, pixels.Length - ySize);
+            return new Nv12VideoFrame(w, h, w,
+                Interlocked.Add(ref shellFrameTime, 1_000_000), pixels);
+        },
         (_, _) => null,
         (_, _, bg, _) => new PhoneShellComposition(
             shellTestOverlay, bg, 24, 16, 144, 208, 320, 240)))
@@ -4797,6 +4821,47 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
         Equal(true, shellMp4.AsSpan().IndexOf("ftyp"u8) >= 0 &&
             shellMp4.AsSpan().IndexOf("moov"u8) >= 0,
             "composited recording is a finalized MP4");
+        // Decode one actual MP4 frame. A transparent hole must show the
+        // phone video, while pixels outside the bezel retain the background.
+        var decodedFile = Path.Combine(shellTestRoot, "decoded.rgb");
+        var decoderStart = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = installedFfmpegCapabilities.FfmpegPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var arg in new[] {
+            "-hide_banner", "-loglevel", "error",
+            "-i", shellTestOutput, "-frames:v", "1",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-y", decodedFile })
+            decoderStart.ArgumentList.Add(arg);
+        using (var decoder = System.Diagnostics.Process.Start(decoderStart) ??
+            throw new InvalidOperationException("Unable to launch MP4 frame decoder"))
+        {
+            await decoder.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            Equal(0, decoder.ExitCode, "FFmpeg decodes the MP4 composition");
+        }
+        var decoded = File.ReadAllBytes(decodedFile);
+        Equal(320 * 240 * 3, decoded.Length,
+            "MP4 composition retains the original background dimensions");
+        static (int R, int G, int B) RgbAt(byte[] frame, int x, int y)
+        {
+            var i = (y * 320 + x) * 3;
+            return (frame[i], frame[i + 1], frame[i + 2]);
+        }
+        var screenColor = RgbAt(decoded, 96, 120);
+        var backgroundColor = RgbAt(decoded, 240, 120);
+        var frameColor = RgbAt(decoded, 2, 120);
+        Equal(true, screenColor.R > 165 && screenColor.G > 165 &&
+            screenColor.B > 165,
+            "recorded phone screen is not obscured by the PNG bezel");
+        Equal(true, backgroundColor.B > backgroundColor.R + 75 &&
+            backgroundColor.B > backgroundColor.G + 75,
+            "full background retains its original colour outside the phone");
+        Equal(true, frameColor.R > frameColor.G + 75 &&
+            frameColor.R > frameColor.B + 75,
+            "recorded transparent phone shell retains the visible bezel");
+
     }
 
     var interruptedAudioPath = Path.Combine(Path.GetTempPath(),
