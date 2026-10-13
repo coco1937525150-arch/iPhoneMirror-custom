@@ -4252,6 +4252,30 @@ var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
 Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal),
     "output settings no longer require picking an external phone shell");
 
+// Layout bounds are identical in the editor and the MP4 compositor, and
+// old out-of-range preferences must not be able to crop the phone shell.
+var boundedShell = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, 1.11, .49, 3.5);
+Equal(true, boundedShell.Bounds.X >= 5 &&
+    boundedShell.Bounds.Y >= 5 &&
+    boundedShell.Bounds.Right <= 1443 &&
+    boundedShell.Bounds.Bottom <= 1435,
+    "layout keeps every pixel of the shell within the 5px canvas-safe area");
+var boundedNegative = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, -9, -20, 1);
+Equal(true, boundedNegative.Bounds.X >= 5 &&
+    boundedNegative.Bounds.Y >= 5,
+    "layout clamps negative and stale center coordinates");
+var boundedNan = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, double.NaN, double.PositiveInfinity,
+    double.NaN);
+Equal(true, boundedNan.Bounds.X >= 5 &&
+    boundedNan.Bounds.Right <= 1443 &&
+    boundedNan.Bounds.Bottom <= 1435,
+    "layout rejects nonfinite scale and placement");
+Equal(true, boundedShell.Scale < 3.5,
+    "layout zoom is limited by the original background boundaries");
+
 var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
     "shell-capture.mp4", 1080, 1920, 30, 6000,
     IncludePhoneShell: true, BackgroundImage: "custom-background.png",
@@ -4271,10 +4295,12 @@ Equal(true, shellArgs.Any(x => x.Contains(
     "phone shell overlays the full-rate video after background composition");
 Equal(true, shellArgs.Any(arg => arg.Contains(
         "[2:v]setsar=1[phone_bg]", StringComparison.Ordinal)) &&
-    shellArgs.All(arg => !arg.Contains("force_original_aspect_ratio=increase",
+    shellArgs.Any(arg => arg.Contains(
+        "force_original_aspect_ratio=increase,crop=984:1770",
         StringComparison.Ordinal)) &&
-    shellArgs.All(arg => !arg.Contains("crop=1080:1920", StringComparison.Ordinal)),
-    "custom background retains its complete source canvas with no center cropping");
+    shellArgs.All(arg => !arg.Contains("pad=984:1770",
+        StringComparison.Ordinal)),
+    "background remains uncropped while the phone video fills the complete shell opening");
 Equal(true, shellArgs.Contains("custom-background.png", StringComparer.Ordinal),
     "recording carries the selected background as an independent FFmpeg input");
 var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
