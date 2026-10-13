@@ -4191,6 +4191,18 @@ finally
         Directory.Delete(ffmpegLocationRoot, recursive: true);
 }
 
+// Upstream v1.8.5-pre2: Apple's trustcache bundle can use either
+// Image.trustcache or Image.dmg.trustcache. Our Python bridge supported both,
+// while the C# preflight incorrectly rejected the latter.
+var usbDdiPreflightSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Services", "DirectUsbInputBridge.cs"));
+Equal(true,
+    usbDdiPreflightSource.Contains("fileName == \"Image.trustcache\" && !File.Exists(filePath)",
+        StringComparison.Ordinal) &&
+    usbDdiPreflightSource.Contains("Path.Combine(directory, \"Image.dmg.trustcache\")",
+        StringComparison.Ordinal),
+    "upstream pre2 DDI trustcache alternate filename reaches the personalized bridge");
+
 var recordingArguments = MediaOutputService.BuildArguments(
     new MediaOutputRequest(MediaOutputKind.Recording, "capture.mp4", 1280, 720, 30, 6000),
     ffmpegCapabilities);
