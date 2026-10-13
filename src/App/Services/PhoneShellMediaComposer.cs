@@ -31,6 +31,41 @@ internal sealed record PhoneShellLayoutSettings(double CenterX, double CenterY, 
 
 internal static class PhoneShellMediaComposer
 {
+    // Shared by the WPF layout editor and the encoder. Enforce a 5px
+    // safety margin on the ORIGINAL background image in both paths.
+    internal static (Rect Bounds, double CenterX, double CenterY, double Scale)
+        FitInsideCanvas(double canvasWidth, double canvasHeight, double aspect,
+            double centerX, double centerY, double scale)
+    {
+        if (!double.IsFinite(canvasWidth) || !double.IsFinite(canvasHeight) ||
+            canvasWidth <= 10 || canvasHeight <= 10 ||
+            !double.IsFinite(aspect) || aspect <= 0)
+            throw new ArgumentOutOfRangeException(nameof(canvasWidth));
+        const double margin = 5;
+        var baseHeight = Math.Min(canvasHeight * .94,
+            canvasWidth * .94 / aspect);
+        var baseWidth = baseHeight * aspect;
+        var maxScale = Math.Min(4, Math.Min(
+            (canvasWidth - 2 * margin) / baseWidth,
+            (canvasHeight - 2 * margin) / baseHeight));
+        scale = Math.Clamp(double.IsFinite(scale) ? scale : 1, .1, maxScale);
+        var shellWidth = baseWidth * scale;
+        var shellHeight = baseHeight * scale;
+        centerX = double.IsFinite(centerX) ? centerX : .5;
+        centerY = double.IsFinite(centerY) ? centerY : .5;
+        var minCenterX = (margin + shellWidth / 2) / canvasWidth;
+        var maxCenterX = (canvasWidth - margin - shellWidth / 2) / canvasWidth;
+        var minCenterY = (margin + shellHeight / 2) / canvasHeight;
+        var maxCenterY = (canvasHeight - margin - shellHeight / 2) / canvasHeight;
+        centerX = Math.Clamp(centerX, minCenterX, maxCenterX);
+        centerY = Math.Clamp(centerY, minCenterY, maxCenterY);
+        return (new Rect(
+            Math.Round(canvasWidth * centerX - shellWidth / 2),
+            Math.Round(canvasHeight * centerY - shellHeight / 2),
+            Math.Round(shellWidth), Math.Round(shellHeight)),
+            centerX, centerY, scale);
+    }
+
     internal static PhoneShellComposition Prepare(uint width, uint height,
         string? backgroundFile, string? shellImageFile)
     {
@@ -77,13 +112,8 @@ internal static class PhoneShellMediaComposer
         var centerY = settings?.CenterY ?? .5;
         if (!double.IsFinite(centerX)) centerX = .5;
         if (!double.IsFinite(centerY)) centerY = .5;
-        var outerHeight = Math.Min(canvasHeight * .94,
-            canvasWidth * .94 / aspect) * layoutScale;
-        var outerWidth = outerHeight * aspect;
-        var outer = new Rect(
-            Math.Round(canvasWidth * centerX - outerWidth / 2),
-            Math.Round(canvasHeight * centerY - outerHeight / 2),
-            Math.Round(outerWidth), Math.Round(outerHeight));
+        var outer = FitInsideCanvas(canvasWidth, canvasHeight, aspect,
+            centerX, centerY, layoutScale).Bounds;
         var inner = profile.GetScreenRect((int)outer.Width, (int)outer.Height);
         var screenX = (int)outer.X + inner.X;
         var screenY = (int)outer.Y + inner.Y;
