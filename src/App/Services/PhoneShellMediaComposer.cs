@@ -73,8 +73,7 @@ internal static class PhoneShellMediaComposer
             throw new FileNotFoundException("The chosen recording background no longer exists.", backgroundFile);
         // Use the bundled, transparent iPhone 16 Pro Max reference shell.
         // The old user-selected shell path is intentionally ignored.
-        var bundledShell = Path.Combine(AppContext.BaseDirectory,
-            "Assets", "iphone16_pro_max_shell.png");
+        var bundledShell = PhoneShellAssetStore.ActivePath;
         if (!File.Exists(bundledShell))
             throw new FileNotFoundException("The built-in phone-shell image is missing.",
                 bundledShell);
@@ -99,7 +98,7 @@ internal static class PhoneShellMediaComposer
             throw new InvalidOperationException(
                 "H.264 NV12 视频要求画布宽高为偶数。请将背景图调整为偶数像素尺寸后重试。");
         // Match the already tuned iPhone 16 Pro Max viewport geometry.
-        var profile = DeviceFrameProfileResolver.IPhoneDynamicIsland;
+        var profile = DeviceFrameProfileResolver.ActiveIPhoneShell;
         var reference = profile.GetOuterDimensions(1320, 2868);
         var landscape = width > height;
         var aspect = landscape ? reference.Height / (double)reference.Width
