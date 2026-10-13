@@ -570,6 +570,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
         var outputClock = Stopwatch.StartNew();
         long framesWritten = 0;
         ReadOnlyMemory<byte> lastFrame = default;
+        var statsClock = Stopwatch.StartNew();
+        long lastDistinctSourceFrames = 0;
         // Decouple the GPU->CPU frame readback from the pump timer. The
         // readback (materialize_gpu_frame + letterbox + SDR) is synchronous
         // and can exceed the frame interval on weak hardware, which delays
@@ -653,6 +655,21 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         cancellationToken);
                     ++framesWritten;
                 }
+                if (statsClock.Elapsed >= TimeSpan.FromSeconds(5))
+                {
+                    var metrics = latch.SourceMetrics;
+                    var distinctThisWindow = metrics.Distinct - lastDistinctSourceFrames;
+                    var uniqueFps = distinctThisWindow / statsClock.Elapsed.TotalSeconds;
+                    DiagnosticLogger.Info("media_output", "video_frame_rate_observed",
+                        ("nominal_fps", request.FrameRate),
+                        ("distinct_input_fps", Math.Round(uniqueFps, 2)),
+                        ("input_read_samples", metrics.Reads),
+                        ("distinct_source_frames", metrics.Distinct),
+                        ("encoded_frame_slots", framesWritten),
+                        ("timestamp_100ns", metrics.LastTimestamp100Ns));
+                    lastDistinctSourceFrames = metrics.Distinct;
+                    statsClock.Restart();
+                }
             }
         }
         finally
@@ -686,7 +703,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
             {
                 var frame = _frameProvider(sessionHandle, width, height);
                 if (frame is not null)
-                    latch.Publish(GetNv12FramePayload(frame, width, height));
+                    latch.Publish(GetNv12FramePayload(frame, width, height),
+                        frame.Timestamp100Ns);
                 else
                     latch.NoteFailure("Frame provider returned no NV12 data.");
             }
@@ -1673,20 +1691,41 @@ internal sealed class MediaOutputService : IAsyncDisposable
     {
         private ReadOnlyMemory<byte> _frame;
         private string? _lastFailure;
+        private long _lastSourceTimestamp;
+        private long _readSamples;
+        private long _distinctSourceFrames;
         internal string? LastFailure { get { lock (this) return _lastFailure; } }
+        internal (long Reads, long Distinct, long LastTimestamp100Ns) SourceMetrics
+        {
+            get
+            {
+                lock (this)
+                    return (_readSamples, _distinctSourceFrames, _lastSourceTimestamp);
+            }
+        }
 
         internal void NoteFailure(string reason)
         {
             lock (this) { _lastFailure = reason; }
         }
 
-        internal void Publish(ReadOnlyMemory<byte> frame)
+        internal void Publish(ReadOnlyMemory<byte> frame, long sourceTimestamp100Ns = 0)
         {
             // Native readback reuses its array. The writer may still be awaiting
             // a pipe write when the next frame arrives, so publish an owned,
             // immutable snapshot rather than a view of the producer's buffer.
             var snapshot = frame.ToArray();
-            lock (this) { _frame = snapshot; _lastFailure = null; }
+            lock (this)
+            {
+                _frame = snapshot;
+                _lastFailure = null;
+                ++_readSamples;
+                if (sourceTimestamp100Ns > _lastSourceTimestamp)
+                {
+                    _lastSourceTimestamp = sourceTimestamp100Ns;
+                    ++_distinctSourceFrames;
+                }
+            }
         }
 
         internal ReadOnlyMemory<byte> Get()
