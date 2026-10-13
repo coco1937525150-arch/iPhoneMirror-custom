@@ -20,6 +20,12 @@ on:
       - 'src/App/Windows/NativePreviewWindow.cs'
       - 'src/App/Updater/UpdateSettingsStore.cs'
       - 'src/App.Logic.Tests/Program.cs'
+      - 'src/Core/src/Renderer/D3D11PreviewRenderer.cpp'
+      - 'src/App/Services/MediaOutputService.cs'
+      - 'src/App/Services/PhoneShellMediaComposer.cs'
+      - 'src/App/Windows/MediaOutputSettingsWindow.xaml'
+      - 'src/App/Windows/MediaOutputSettingsWindow.xaml.cs'
+      - 'src/App/Localization/Strings.*.xaml'
       - '.github/workflows/airplay-lock-screen-experimental.yml'
 
 permissions:
