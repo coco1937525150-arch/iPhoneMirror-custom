@@ -62,6 +62,7 @@ target_link_libraries(iPhoneMirror.Core PRIVATE
     dcomp
     dxgi
     ole32
+    windowscodecs
     avrt
     winhttp
     delayimp
