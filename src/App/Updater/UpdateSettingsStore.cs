@@ -30,6 +30,9 @@ internal sealed class UpdateSettings
     // Default for newly opened independent preview windows; each window can
     // change its own topmost state without changing other open windows.
     public bool IndependentWindowAlwaysOnTop { get; set; }
+    public bool MediaOutputIncludePhoneShell { get; set; }
+    public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
+    public string MediaOutputPhoneShellImagePath { get; set; } = string.Empty;
     public WirelessReceiverBackend WirelessReceiverBackend { get; set; } =
         WirelessReceiverBackend.Original;
     public string WirelessDisplayProfileId { get; set; } = "1080p";
@@ -109,6 +112,9 @@ internal sealed class UpdateSettings
         Theme = Theme,
         ApplicationDisplayMode = ApplicationDisplayMode,
         IndependentWindowAlwaysOnTop = IndependentWindowAlwaysOnTop,
+        MediaOutputIncludePhoneShell = MediaOutputIncludePhoneShell,
+        MediaOutputBackgroundImagePath = MediaOutputBackgroundImagePath,
+        MediaOutputPhoneShellImagePath = MediaOutputPhoneShellImagePath,
         WirelessReceiverBackend = WirelessReceiverBackend,
         WirelessDisplayProfileId = WirelessDisplayProfileId,
         WirelessReceiverName = WirelessReceiverName,
