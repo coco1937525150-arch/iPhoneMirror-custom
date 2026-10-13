@@ -4302,8 +4302,14 @@ var boundedVideoSchedule = MediaOutputService.CalculateVideoWritePlan(
     TimeSpan.FromSeconds(10), 30, 0);
 Equal(60L, boundedVideoSchedule.FramesToWrite,
     "video output bounds catch-up to two seconds of repeated frames");
-Equal(240L, boundedVideoSchedule.FramesWrittenBaseline,
-    "video output discards the oldest backlog before resuming current output");
+Equal(0L, boundedVideoSchedule.FramesWrittenBaseline,
+    "pre2 fix: video frame count advances only for frames actually written");
+var residualCatchUpSchedule = MediaOutputService.CalculateVideoWritePlan(
+    TimeSpan.FromSeconds(10), 30, 60);
+Equal(60L, residualCatchUpSchedule.FramesToWrite,
+    "pre2 fix: video output retains missed frame debt for subsequent ticks");
+Equal(60L, residualCatchUpSchedule.FramesWrittenBaseline,
+    "pre2 fix: video output never fabricates timestamps for dropped frames");
 Throws<ArgumentOutOfRangeException>(() =>
         MediaOutputService.CalculateDueVideoFrames(
             TimeSpan.FromSeconds(1), 0, 0),
