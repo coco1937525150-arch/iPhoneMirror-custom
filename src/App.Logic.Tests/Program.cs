@@ -4255,7 +4255,7 @@ var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
     IncludePhoneShell: true, BackgroundImage: "custom-background.png",
     PhoneShellImage: "iphone16promax.png");
 var shellComposition = new PhoneShellComposition(
-    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770);
+    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770, 1280, 1440);
 var shellArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
     composition: shellComposition);
 Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
@@ -4267,6 +4267,14 @@ Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
 Equal(true, shellArgs.Any(x => x.Contains(
         "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)),
     "phone shell overlays the full-rate video after background composition");
+Equal(true, shellArgs.Any(arg => arg.Contains(
+        "[2:v]setsar=1[phone_bg]", StringComparison.Ordinal)) &&
+    shellArgs.All(arg => !arg.Contains("force_original_aspect_ratio=increase",
+        StringComparison.Ordinal)) &&
+    shellArgs.All(arg => !arg.Contains("crop=1080:1920", StringComparison.Ordinal)),
+    "custom background retains its complete source canvas with no center cropping");
+Equal(true, shellArgs.Contains("custom-background.png", StringComparer.Ordinal),
+    "recording carries the selected background as an independent FFmpeg input");
 var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
     audioPipePath: null, includeAudio: false, composition: shellComposition);
 Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
