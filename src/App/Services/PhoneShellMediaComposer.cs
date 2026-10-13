@@ -22,6 +22,13 @@ internal sealed record PhoneShellComposition(
     }
 }
 
+internal static class PhoneShellLayoutSettingsProvider
+{
+    internal static Func<PhoneShellLayoutSettings?>? Current;
+}
+
+internal sealed record PhoneShellLayoutSettings(double CenterX, double CenterY, double Scale);
+
 internal static class PhoneShellMediaComposer
 {
     internal static PhoneShellComposition Prepare(uint width, uint height,
@@ -62,12 +69,12 @@ internal static class PhoneShellMediaComposer
         var landscape = width > height;
         var aspect = landscape ? reference.Height / (double)reference.Width
             : reference.Width / (double)reference.Height;
-        var settings = (Application.Current as global::IPhoneMirror.App.App)?.UpdateSettings;
-        var layoutScale = settings?.MediaOutputShellScale ?? 1.0;
+        var settings = PhoneShellLayoutSettingsProvider.Current?.Invoke();
+        var layoutScale = settings?.Scale ?? 1.0;
         if (!double.IsFinite(layoutScale)) layoutScale = 1;
         layoutScale = Math.Clamp(layoutScale, .1, 4.0);
-        var centerX = settings?.MediaOutputShellCenterX ?? .5;
-        var centerY = settings?.MediaOutputShellCenterY ?? .5;
+        var centerX = settings?.CenterX ?? .5;
+        var centerY = settings?.CenterY ?? .5;
         if (!double.IsFinite(centerX)) centerX = .5;
         if (!double.IsFinite(centerY)) centerY = .5;
         var outerHeight = Math.Min(canvasHeight * .94,
