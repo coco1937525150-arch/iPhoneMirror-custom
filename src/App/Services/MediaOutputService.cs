@@ -722,6 +722,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             bytesPerSecond / 50 / blockAlign * blockAlign));
         var silence = new byte[silenceChunkBytes];
         long silenceBytesWritten = 0;
+        var invalidPacketCount = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             if (process.HasExited)
@@ -763,9 +764,30 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 continue;
             }
             if (packet.Sequence <= sequence)
-                throw new InvalidDataException(
-                    "The projection audio sequence did not advance.");
-            var normalized = normalizer.Convert(packet);
+            {
+                // A duplicate packet can occur immediately after AirPlay
+                // resume. It must not tear down an otherwise valid MP4.
+                if (++invalidPacketCount <= 3)
+                    DiagnosticLogger.Warning("media_output", "audio_stale_sequence",
+                        ("received", packet.Sequence), ("last", sequence));
+                await Task.Delay(5, cancellationToken);
+                continue;
+            }
+            byte[] normalized;
+            try
+            {
+                normalized = normalizer.Convert(packet);
+            }
+            catch (InvalidDataException error)
+            {
+                // Keep a bounded PCM gap available for silence compensation;
+                // malformed packets must not kill the video encoder session.
+                sequence = packet.Sequence;
+                if (++invalidPacketCount <= 3)
+                    DiagnosticLogger.Warning("media_output", "audio_invalid_pcm",
+                        ("sequence", packet.Sequence), ("reason", error.Message));
+                continue;
+            }
             if (normalized.Length != 0)
             {
                 await output.WriteAsync(normalized, cancellationToken);
