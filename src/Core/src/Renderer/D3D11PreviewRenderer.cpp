@@ -1931,7 +1931,7 @@ struct D3D11PreviewRenderer::Impl {
         const auto monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
         MONITORINFOEXW info{};
         info.cbSize = sizeof(info);
-        if (monitor && GetMonitorInfoW(monitor, &info)) {
+        if (monitor && GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(&info))) {
             DEVMODEW mode{};
             mode.dmSize = sizeof(mode);
             if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
