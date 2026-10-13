@@ -100,6 +100,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         DeviceProtectionStateChanged;
     internal event Action<string>? ProjectionSettingsRequested;
     internal event Action? MediaOutputSettingsRequested;
+    internal event Action? DeviceBindingRequested;
     private readonly NativeCore _core;
     private readonly IPhoneFilterDriverService _filterDriver = new();
     private readonly DriverManagerLauncher _driverManager = new();
@@ -432,7 +433,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     private bool CanEnableWirelessControlFor(DeviceViewModel? device) =>
         !_wirelessControlEnabled && !_usbControlEnabled && !_usbControlStarting &&
         !_usbControlStopping && !_bluetoothControlStarting &&
-        !_bluetoothControlStopping && device is not null && !device.IsMediaCast &&
+        !_bluetoothControlStopping && device is { IsWireless: true } &&
         device.State != ConnectionState.Disconnected;
 
     // AirPlay supplies the picture, but direct touch always goes through a
@@ -2078,8 +2079,25 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         var device = SelectedDevice;
         ControlStatus.Report(ControlStatusMode.Wireless, ControlStage.CheckingDevice, device?.Name ?? "iPhone", "正在检查设备和绑定状态…");
         var boundUdid = device is null ? null : _identityResolver.Resolve(device).AppleUdid;
-        if (device is null || string.IsNullOrWhiteSpace(boundUdid) || !CanEnableWirelessControlFor(device))
-        { ControlStatus.Failed(ControlStatusMode.Wireless, device?.Name ?? "iPhone", "无法启用无线反向控制", "设备未就绪或尚未完成绑定。"); return; }
+        if (device is null || !CanEnableWirelessControlFor(device))
+        {
+            ControlStatus.Failed(ControlStatusMode.Wireless, device?.Name ?? "iPhone",
+                "无法启用无线反向控制", "请先选择已连接的 AirPlay iPhone，再检查设备状态。");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(boundUdid))
+        {
+            var resolution = _identityResolver.ResolveProfile(device);
+            DiagnosticLogger.ReverseControlError("wireless", "apple_binding_required",
+                ("device", AppLog.Device(device.Udid)), ("state", resolution.State));
+            ControlStatus.Failed(ControlStatusMode.Wireless, device.Name,
+                "需要绑定 Apple 设备身份",
+                "AirPlay 画面已连接，但缺少可信 Apple UDID。请通过 USB 连接并信任此 iPhone，" +
+                "然后在设备绑定窗口关联该 USB 设备和当前 AirPlay 投屏源。");
+            Application.Current?.Dispatcher.BeginInvoke(() =>
+                DeviceBindingRequested?.Invoke());
+            return;
+        }
         if (!ConfirmReverseControlPrerequisites(wireless: true))
         { ControlStatus.Failed(ControlStatusMode.Wireless, device.Name, "已取消无线反向控制", "用户取消了启动前置确认。"); return; }
         _usbControlStarting = true;
