@@ -8,6 +8,8 @@ using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using IPhoneMirror.App.Localization;
 using IPhoneMirror.App.Interop;
 using IPhoneMirror.App.Services;
@@ -4636,6 +4638,56 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
     finally
     {
         try { File.Delete(audioRecordingPath); } catch { }
+    }
+
+    // Real FFmpeg regression: the shell/background filter must encode a
+    // complete MP4 rather than merely passing argument-string assertions.
+    var shellTestRoot = Path.Combine(Path.GetTempPath(),
+        $"iphone-shell-smoke-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(shellTestRoot);
+    var shellTestBackground = Path.Combine(shellTestRoot, "background.png");
+    var shellTestOverlay = Path.Combine(shellTestRoot, "overlay.png");
+    var shellTestOutput = Path.Combine(shellTestRoot, "capture.mp4");
+    var shellPixels = new byte[320 * 240 * 4];
+    for (var i = 3; i < shellPixels.Length; i += 4)
+        shellPixels[i] = 255;
+    var shellBitmap = BitmapSource.Create(320, 240, 96, 96,
+        PixelFormats.Bgra32, null, shellPixels, 320 * 4);
+    shellBitmap.Freeze();
+    var shellPng = new PngBitmapEncoder();
+    shellPng.Frames.Add(BitmapFrame.Create(shellBitmap));
+    using (var png = File.Create(shellTestBackground)) shellPng.Save(png);
+    File.Copy(shellTestBackground, shellTestOverlay);
+    long shellFrameTime = 0;
+    string? shellFailure = null;
+    await using (var shellRecorder = new MediaOutputService(
+        (_, w, h) => new Nv12VideoFrame(w, h, w,
+            Interlocked.Add(ref shellFrameTime, 1_000_000),
+            new byte[checked((int)((ulong)w * h * 3U / 2U))]),
+        (_, _) => null,
+        (_, _, bg, _) => new PhoneShellComposition(
+            shellTestOverlay, bg, 24, 16, 144, 208, 320, 240)))
+    {
+        shellRecorder.StatusChanged += (message, failed) =>
+        {
+            if (failed) shellFailure = message;
+        };
+        await shellRecorder.StartAsync(1,
+            new MediaOutputRequest(MediaOutputKind.Recording,
+                shellTestOutput, 160, 160, 10, 500,
+                IncludePhoneShell: true, BackgroundImage: shellTestBackground),
+            installedFfmpegCapabilities);
+        await Task.Delay(850);
+        await shellRecorder.StopAsync();
+        if (shellFailure is not null)
+            throw new InvalidOperationException("composited recording failed: " +
+                shellFailure);
+        Equal(true, File.Exists(shellTestOutput),
+            "FFmpeg shell/background composite completes recording");
+        var shellMp4 = File.ReadAllBytes(shellTestOutput);
+        Equal(true, shellMp4.AsSpan().IndexOf("ftyp"u8) >= 0 &&
+            shellMp4.AsSpan().IndexOf("moov"u8) >= 0,
+            "composited recording is a finalized MP4");
     }
 
     var interruptedAudioPath = Path.Combine(Path.GetTempPath(),
