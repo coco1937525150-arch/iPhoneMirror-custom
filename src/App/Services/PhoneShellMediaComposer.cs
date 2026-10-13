@@ -12,7 +12,7 @@ namespace IPhoneMirror.App.Services;
 /// </summary>
 internal sealed record PhoneShellComposition(
     string ShellFile, string? BackgroundFile, int ScreenX, int ScreenY,
-    int ScreenWidth, int ScreenHeight)
+    int ScreenWidth, int ScreenHeight, int OutputWidth, int OutputHeight)
 {
     internal void Cleanup()
     {
@@ -36,18 +36,46 @@ internal static class PhoneShellMediaComposer
         if (!File.Exists(bundledShell))
             throw new FileNotFoundException("The built-in phone-shell image is missing.",
                 bundledShell);
-        if (width is < 160 or > 3840 || height is < 160 or > 2160)
-            throw new ArgumentOutOfRangeException(nameof(width));
+        // The FFmpeg source retains its capture dimensions; the composited
+        // canvas is instead the *full* background image at native pixel size.
+        var canvasWidth = (int)width;
+        var canvasHeight = (int)height;
+        if (!string.IsNullOrWhiteSpace(backgroundFile))
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri(Path.GetFullPath(backgroundFile));
+            image.EndInit();
+            canvasWidth = image.PixelWidth;
+            canvasHeight = image.PixelHeight;
+        }
+        if (canvasWidth is < 160 or > 4096 || canvasHeight is < 160 or > 4096)
+            throw new ArgumentOutOfRangeException(nameof(backgroundFile),
+                "背景图原始尺寸需要在 160–4096 像素之间。");
+        if ((canvasWidth & 1) != 0 || (canvasHeight & 1) != 0)
+            throw new InvalidOperationException(
+                "H.264 NV12 视频要求画布宽高为偶数。请将背景图调整为偶数像素尺寸后重试。");
         // Match the already tuned iPhone 16 Pro Max viewport geometry.
         var profile = DeviceFrameProfileResolver.IPhoneDynamicIsland;
         var reference = profile.GetOuterDimensions(1320, 2868);
         var landscape = width > height;
         var aspect = landscape ? reference.Height / (double)reference.Width
             : reference.Width / (double)reference.Height;
-        var outerHeight = Math.Min(height * .94, width * .94 / aspect);
+        var settings = (Application.Current as App)?.UpdateSettings;
+        var layoutScale = settings?.MediaOutputShellScale ?? 1.0;
+        if (!double.IsFinite(layoutScale)) layoutScale = 1;
+        layoutScale = Math.Clamp(layoutScale, .1, 4.0);
+        var centerX = settings?.MediaOutputShellCenterX ?? .5;
+        var centerY = settings?.MediaOutputShellCenterY ?? .5;
+        if (!double.IsFinite(centerX)) centerX = .5;
+        if (!double.IsFinite(centerY)) centerY = .5;
+        var outerHeight = Math.Min(canvasHeight * .94,
+            canvasWidth * .94 / aspect) * layoutScale;
         var outerWidth = outerHeight * aspect;
         var outer = new Rect(
-            Math.Round((width - outerWidth) / 2), Math.Round((height - outerHeight) / 2),
+            Math.Round(canvasWidth * centerX - outerWidth / 2),
+            Math.Round(canvasHeight * centerY - outerHeight / 2),
             Math.Round(outerWidth), Math.Round(outerHeight));
         var inner = profile.GetScreenRect((int)outer.Width, (int)outer.Height);
         var screenX = (int)outer.X + inner.X;
@@ -76,7 +104,7 @@ internal static class PhoneShellMediaComposer
                     DrawImportedShell(context, bundledShell, portraitOuter);
                     if (landscape) context.Pop();
                 }
-                var bitmap = new RenderTargetBitmap((int)width, (int)height,
+                var bitmap = new RenderTargetBitmap(canvasWidth, canvasHeight,
                     96, 96, PixelFormats.Pbgra32);
                 bitmap.Render(visual);
                 using var output = File.Create(filename);
@@ -89,7 +117,7 @@ internal static class PhoneShellMediaComposer
             if (dispatcher.CheckAccess()) Render();
             else dispatcher.Invoke(Render);
             return new(filename, backgroundFile, screenX, screenY,
-                inner.Width, inner.Height);
+                inner.Width, inner.Height, canvasWidth, canvasHeight);
         }
         catch
         {
