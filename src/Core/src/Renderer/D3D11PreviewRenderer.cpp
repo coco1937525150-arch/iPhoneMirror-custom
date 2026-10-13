@@ -1223,6 +1223,95 @@ struct D3D11PreviewRenderer::Impl {
             GetPropW(window, L"iPhoneMirrorFullScreen") == nullptr;
     }
 
+
+    // Windows Imaging Component decodes the exact bundled alpha PNG once per
+    // D3D device lifetime. Missing assets fail open to the legacy frame.
+    void load_reference_shell() {
+        wchar_t module_path[32768]{};
+        const auto length = GetModuleFileNameW(nullptr, module_path,
+            static_cast<DWORD>(std::size(module_path)));
+        if (length == 0 || length >= std::size(module_path)) return;
+        const auto path = std::filesystem::path(module_path).parent_path() /
+            L"Assets" / L"iphone16_pro_max_shell.png";
+        if (!std::filesystem::exists(path)) {
+            logging::write("d3d_preview reference_shell_missing");
+            return;
+        }
+        ComPtr<IWICImagingFactory> imaging;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+            CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&imaging)))) return;
+        ComPtr<IWICBitmapDecoder> decoder;
+        if (FAILED(imaging->CreateDecoderFromFilename(path.c_str(), nullptr,
+            GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder))) return;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (FAILED(decoder->GetFrame(0, &frame))) return;
+        ComPtr<IWICFormatConverter> converter;
+        if (FAILED(imaging->CreateFormatConverter(&converter)) ||
+            FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone, nullptr, 0.0,
+                WICBitmapPaletteTypeCustom))) return;
+        UINT width{}, height{};
+        if (FAILED(converter->GetSize(&width, &height)) || !width || !height ||
+            width > 2048 || height > 4096) return;
+        const auto pitch = width * 4U;
+        std::vector<BYTE> pixels(static_cast<std::size_t>(pitch) * height);
+        if (FAILED(converter->CopyPixels(nullptr, pitch,
+            static_cast<UINT>(pixels.size()), pixels.data()))) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA initial{};
+        initial.pSysMem = pixels.data();
+        initial.SysMemPitch = pitch;
+        if (FAILED(device->CreateTexture2D(&desc, &initial,
+                &reference_shell_texture)) ||
+            FAILED(device->CreateShaderResourceView(reference_shell_texture.Get(),
+                nullptr, &reference_shell_view))) {
+            reference_shell_texture.Reset();
+            reference_shell_view.Reset();
+            return;
+        }
+        logging::write(std::format("d3d_preview reference_shell_loaded={}x{}",
+            width, height));
+    }
+
+    bool use_reference_shell(const DeviceFrameProfileData& profile) const noexcept {
+        return profile.enabled && reference_shell_view &&
+            std::abs(profile.side_inset - 0.064F) < 0.002F &&
+            profile.cutout_kind == 0;
+    }
+
+    void draw_reference_shell(const DeviceFrameProfileData& profile) {
+        if (!use_reference_shell(profile)) return;
+        D3D11_VIEWPORT viewport{};
+        viewport.Width = static_cast<float>(target_width);
+        viewport.Height = static_cast<float>(target_height);
+        viewport.MinDepth = 0;
+        viewport.MaxDepth = 1;
+        context->RSSetViewports(1, &viewport);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vertex_shader.Get(), nullptr, 0);
+        context->PSSetShader(reference_shell_shader.Get(), nullptr, 0);
+        update_shape_constants(target_width, target_height, false, 0, nullptr,
+            0.0F, 0.0F, &profile);
+        auto* texture_view = reference_shell_view.Get();
+        context->PSSetShaderResources(3, 1, &texture_view);
+        context->PSSetSamplers(0, 1, sampler.GetAddressOf());
+        constexpr float factor[] = {0, 0, 0, 0};
+        context->OMSetBlendState(premultiplied_blend_state.Get(), factor,
+            0xffffffffU);
+        context->Draw(3, 0);
+        context->OMSetBlendState(nullptr, factor, 0xffffffffU);
+        ID3D11ShaderResourceView* empty = nullptr;
+        context->PSSetShaderResources(3, 1, &empty);
+    }
+
     void draw_device_frame(const DeviceFrameProfileData& profile) {
         if (!device_frame_enabled(profile)) return;
         D3D11_VIEWPORT viewport{};
