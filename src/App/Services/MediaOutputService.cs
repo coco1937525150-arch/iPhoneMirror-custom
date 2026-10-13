@@ -655,9 +655,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
         uint height, FrameLatch latch, TimeSpan interval,
         CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(interval);
         var loggedReadErrors = 0;
-        while (await timer.WaitForNextTickAsync(cancellationToken))
+        void ReadLatestFrame()
         {
             try
             {
@@ -669,7 +668,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                break;
+                // Stop is cooperative; the caller owns the cancellation.
             }
             catch (Exception error)
             {
@@ -680,6 +679,41 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         ("width", width), ("height", height));
             }
         }
+
+        if (interval < TimeSpan.FromMilliseconds(10))
+        {
+            // Windows periodic async timers can coalesce 8.33 ms deadlines
+            // into 15.6 ms waits. That causes artificial frame repetition
+            // even when a verified 120fps input is available. This branch
+            // runs only for experimental >100fps recording, on its dedicated
+            // Task.Run reader; never spin on the WPF UI or render thread.
+            var clock = Stopwatch.StartNew();
+            var deadline = interval;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var remaining = deadline - clock.Elapsed;
+                if (remaining > TimeSpan.FromMilliseconds(2))
+                {
+                    Thread.Sleep(0);
+                    continue;
+                }
+                if (remaining > TimeSpan.Zero)
+                {
+                    Thread.SpinWait(128);
+                    continue;
+                }
+                ReadLatestFrame();
+                // Skip overdue sampling deadlines rather than accumulating
+                // a backlog of stale frame copies and raising latency.
+                do { deadline += interval; }
+                while (deadline <= clock.Elapsed);
+            }
+            return;
+        }
+
+        using var timer = new PeriodicTimer(interval);
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+            ReadLatestFrame();
     }
 
     private Task<double> MeasureDistinctSourceFpsAsync(
