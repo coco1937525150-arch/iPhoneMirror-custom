@@ -1700,11 +1700,15 @@ Equal(true,
         StringComparison.Ordinal) &&
     !corePreviewApiCode.Contains("set_rotation(normalized == 2 ? 2 : 0)",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("var targetRotation = ((_rotation + delta) % 4 + 4) % 4;",
+    nativePreviewWindowCode.Contains("var nextRotation = ((_rotation + turns) % 4 + 4) % 4;",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("!NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, targetRotation)",
+    nativePreviewWindowCode.Contains("!NativeCore.SetDeviceWindowRotation(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("SetDeviceWindowVisualRotation(_sessionHandle, _handle,",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_rotationTimeline.Retarget(delta * 90.0",
         StringComparison.Ordinal),
-    "all quarter turns rotate the native video with its window shell; failed turns do not move the shell");
+    "native source commits at quarter turns AFTER whole-shell video/mask DComp animation");
 Equal(true,
     mainViewModelSource.Contains("private bool _bluetoothControlStopping;",
         StringComparison.Ordinal) &&
