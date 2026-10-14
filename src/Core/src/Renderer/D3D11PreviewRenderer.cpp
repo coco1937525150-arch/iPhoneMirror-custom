@@ -1943,7 +1943,7 @@ struct D3D11PreviewRenderer::Impl {
             mode.dmSize = sizeof(mode);
             if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
                 mode.dmDisplayFrequency >= 24 && mode.dmDisplayFrequency <= 480)
-                return std::clamp<std::uint32_t>(mode.dmDisplayFrequency, 24, 120);
+                return std::clamp<std::uint32_t>(mode.dmDisplayFrequency, 24, 480);
         }
         // If Windows won't report the monitor refresh, do not falsely claim
         // that the display is 120Hz. This is a conservative render ceiling.
@@ -1985,8 +1985,11 @@ struct D3D11PreviewRenderer::Impl {
                     }
                     next_refresh_probe = probe_now + std::chrono::seconds(2);
                 }
+                // Detect the *real* Windows display mode (e.g. 200Hz), but
+                // cap this pre6 renderer to 120 presentations per second.
+                // A high-refresh monitor alone never creates fresh iPhone frames.
                 const auto effective_fps = requested_fps == 0
-                    ? monitor_refresh_hz
+                    ? std::min<std::uint32_t>(monitor_refresh_hz, 120)
                     : std::min<std::uint32_t>(
                         std::clamp<std::uint32_t>(requested_fps, 1, 120),
                         monitor_refresh_hz);
