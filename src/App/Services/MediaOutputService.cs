@@ -1203,7 +1203,9 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 // Cover the entire shell viewport. 'decrease' + black pad
                 // exposed the background through the top/bottom of the bezel.
                 // Crop ONLY the phone video; the background stays untouched.
-                $"[{videoIndex}:v]scale={composition.ScreenWidth}:{composition.ScreenHeight}:" +
+                $"[{videoIndex}:v]" +
+                PhoneShellMediaComposer.VideoRotationFilter(composition.VideoRotationDegrees) +
+                $"scale={composition.ScreenWidth}:{composition.ScreenHeight}:" +
                 "force_original_aspect_ratio=increase," +
                 $"crop={composition.ScreenWidth}:{composition.ScreenHeight}:" +
                 "(iw-ow)/2:(ih-oh)/2,setsar=1[phone_video];" +

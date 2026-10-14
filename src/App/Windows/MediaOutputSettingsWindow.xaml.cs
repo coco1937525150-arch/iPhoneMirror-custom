@@ -38,7 +38,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             if (Application.Current is not App app) return null;
             var p = app.UpdateSettings;
             return new PhoneShellLayoutSettings(p.MediaOutputShellCenterX,
-                p.MediaOutputShellCenterY, p.MediaOutputShellScale);
+                p.MediaOutputShellCenterY, p.MediaOutputShellScale,
+                p.MediaOutputShellRotationDegrees);
         };
         RecordFpsBox.Text = StreamFpsBox.Text = "60";
         if (Application.Current is App settingsApp)

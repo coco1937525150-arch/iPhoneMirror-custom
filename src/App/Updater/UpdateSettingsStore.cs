@@ -39,6 +39,8 @@ internal sealed class UpdateSettings
     public double MediaOutputShellCenterX { get; set; } = 0.5;
     public double MediaOutputShellCenterY { get; set; } = 0.5;
     public double MediaOutputShellScale { get; set; } = 1.0;
+    // Null preserves the old automatic portrait/landscape orientation.
+    public int? MediaOutputShellRotationDegrees { get; set; }
     public WirelessReceiverBackend WirelessReceiverBackend { get; set; } =
         WirelessReceiverBackend.Original;
     public string WirelessDisplayProfileId { get; set; } = "1080p";
@@ -125,6 +127,7 @@ internal sealed class UpdateSettings
         MediaOutputShellCenterX = MediaOutputShellCenterX,
         MediaOutputShellCenterY = MediaOutputShellCenterY,
         MediaOutputShellScale = MediaOutputShellScale,
+        MediaOutputShellRotationDegrees = MediaOutputShellRotationDegrees,
         WirelessReceiverBackend = WirelessReceiverBackend,
         WirelessDisplayProfileId = WirelessDisplayProfileId,
         WirelessReceiverName = WirelessReceiverName,

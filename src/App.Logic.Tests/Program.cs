@@ -4328,6 +4328,22 @@ finally
     Directory.Delete(maskFixtureDirectory, recursive: true);
 }
 
+var rotationSample = new DeviceScreenRect(10, 20, 380, 800);
+Equal(new DeviceScreenRect(80, 10, 800, 380),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 90),
+    "quarter-turn bezel maps screen position and dimensions");
+Equal(new DeviceScreenRect(20, 10, 800, 380),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 270),
+    "counter-clockwise rotation maps screen offset to the opposite edge");
+Equal(new DeviceScreenRect(10, 80, 380, 800),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 180),
+    "upside-down bezel maps screen inset correctly");
+Equal(0, PhoneShellMediaComposer.VideoRotation(90, landscapeSource: true),
+    "already-landscape source is not rotated a second time");
+Equal(90, PhoneShellMediaComposer.VideoRotation(90, landscapeSource: false),
+    "portrait input rotates with manually turned shell");
+Equal("transpose=clock,", PhoneShellMediaComposer.VideoRotationFilter(90),
+    "quarter-turn video transform is wired to FFmpeg");
 var opening = new DeviceScreenRect(18, 22, 934, 1901);
 var expanded = PhoneShellMediaComposer.ExpandVideoUnderBezel(opening);
 Equal(true, expanded.X <= opening.X - 3 &&
@@ -4416,6 +4432,11 @@ Equal(true, shellArgs.Any(arg => arg.Contains(
     "background remains uncropped while the phone video fills the complete shell opening");
 Equal(true, shellArgs.Contains("custom-background.png", StringComparer.Ordinal),
     "recording carries the selected background as an independent FFmpeg input");
+var rotatedShellArgs = MediaOutputService.BuildArguments(shellOutput,
+    ffmpegCapabilities, composition: shellComposition with { VideoRotationDegrees = 90 });
+Equal(true, rotatedShellArgs.Any(arg => arg.Contains(
+        "[1:v]transpose=clock,scale=984:1770", StringComparison.Ordinal)),
+    "video rotates in the same filtergraph as the phone-shell layer");
 var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
     audioPipePath: null, includeAudio: false, composition: shellComposition);
 Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&

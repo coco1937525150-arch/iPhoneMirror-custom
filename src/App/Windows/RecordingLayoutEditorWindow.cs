@@ -30,6 +30,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
     private readonly bool _landscape;
     private double _backgroundWidth = 1280, _backgroundHeight = 720;
     private double _centerX = .5, _centerY = .5, _scale = 1.0;
+    private int _rotationDegrees;
     private bool _dragging;
     private Point _dragOffset;
 
@@ -37,6 +38,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
         uint sourceWidth = 1280, uint sourceHeight = 720)
     {
         _landscape = landscape;
+        _rotationDegrees = landscape ? 90 : 0;
         // With no custom background, the recording canvas is the capture
         // resolution selected in the settings window, never a fixed 1280x720.
         _backgroundWidth = Math.Max(160U, sourceWidth);
@@ -61,6 +63,8 @@ internal sealed class RecordingLayoutEditorWindow : Window
                 ? settings.MediaOutputShellCenterY : .5;
             _scale = double.IsFinite(settings.MediaOutputShellScale)
                 ? Math.Clamp(settings.MediaOutputShellScale, .1, 4) : 1;
+            _rotationDegrees = PhoneShellMediaComposer.NormalizeRotation(
+                settings.MediaOutputShellRotationDegrees ?? _rotationDegrees);
         }
 
         _preview.Background = Brushes.LightGray;
@@ -78,10 +82,8 @@ internal sealed class RecordingLayoutEditorWindow : Window
         _overlay.HorizontalAlignment = HorizontalAlignment.Center;
         _overlay.VerticalAlignment = VerticalAlignment.Center;
         _preview.Children.Add(_overlay);
-        // Rotate exactly as the FFmpeg shell composer when the capture is landscape.
-        _phone.Source = _landscape
-            ? new TransformedBitmap(_shell, new RotateTransform(90))
-            : _shell;
+        // The editor and FFmpeg composer share the same persisted rotation.
+        UpdatePhoneImage();
         _overlay.Children.Add(_phone);
         _phone.MouseLeftButtonDown += StartDrag;
         _phone.MouseMove += ContinueDrag;
@@ -99,6 +101,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
                 app.UpdateSettings.MediaOutputShellCenterX = _centerX;
                 app.UpdateSettings.MediaOutputShellCenterY = _centerY;
                 app.UpdateSettings.MediaOutputShellScale = _scale;
+                app.UpdateSettings.MediaOutputShellRotationDegrees = _rotationDegrees;
                 if (!app.SaveUpdateSettings())
                 {
                     MessageBox.Show(this, "无法保存布局配置。", "保存失败");
@@ -113,12 +116,21 @@ internal sealed class RecordingLayoutEditorWindow : Window
         plus.Click += (_, _) => { _scale = Math.Min(4, _scale * 1.1); Redraw(); };
         var minus = new Button { Content = "缩小 −", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(6) };
         minus.Click += (_, _) => { _scale = Math.Max(.1, _scale / 1.1); Redraw(); };
+        var rotateLeft = new Button { Content = "左旋 90°", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(4) };
+        rotateLeft.Click += (_, _) => Rotate(-90);
+        var rotateRight = new Button { Content = "右旋 90°", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(4) };
+        rotateRight.Click += (_, _) => Rotate(90);
+        var resetDirection = new Button { Content = "方向 0°", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(4) };
+        resetDirection.Click += (_, _) => { _rotationDegrees = 0; UpdatePhoneImage(); Redraw(); };
         var cancel = new Button { Content = "取消", Padding = new Thickness(18, 10, 18, 10), Margin = new Thickness(6) };
         cancel.Click += (_, _) => Close();
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         actions.Children.Add(_readout);
         actions.Children.Add(minus);
         actions.Children.Add(plus);
+        actions.Children.Add(rotateLeft);
+        actions.Children.Add(rotateRight);
+        actions.Children.Add(resetDirection);
         actions.Children.Add(reset);
         actions.Children.Add(cancel);
         actions.Children.Add(save);
@@ -152,13 +164,27 @@ internal sealed class RecordingLayoutEditorWindow : Window
         return image;
     }
 
+    private void UpdatePhoneImage()
+    {
+        _phone.Source = _rotationDegrees == 0 ? _shell :
+            new TransformedBitmap(_shell, new RotateTransform(_rotationDegrees));
+    }
+
+    private void Rotate(int delta)
+    {
+        _rotationDegrees = PhoneShellMediaComposer.NormalizeRotation(
+            _rotationDegrees + delta);
+        UpdatePhoneImage();
+        Redraw();
+    }
+
     private Rect ConstrainLayout()
     {
         // Compute in original image pixels, not WPF preview units; the same
         // routine is used when generating the actual MP4 shell overlay.
         var reference = DeviceFrameProfileResolver.ActiveIPhoneShell
             .GetOuterDimensions(1320, 2868);
-        var aspect = _landscape
+        var aspect = _rotationDegrees % 180 != 0
             ? reference.Height / (double)reference.Width
             : reference.Width / (double)reference.Height;
         var fit = PhoneShellMediaComposer.FitInsideCanvas(
@@ -186,7 +212,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
         _phone.Height = bounds.Height * factor;
         Canvas.SetLeft(_phone, bounds.X * factor);
         Canvas.SetTop(_phone, bounds.Y * factor);
-        _readout.Text = $"画布 {_backgroundWidth:0}×{_backgroundHeight:0} · 比例 {_scale:P0} · 位置 {_centerX:P0}, {_centerY:P0} · 安全边距 5px";
+        _readout.Text = $"画布 {_backgroundWidth:0}×{_backgroundHeight:0} · 比例 {_scale:P0} · 位置 {_centerX:P0}, {_centerY:P0} · 旋转 {_rotationDegrees}° · 安全边距 5px";
     }
 
     private void StartDrag(object sender, MouseButtonEventArgs e)
