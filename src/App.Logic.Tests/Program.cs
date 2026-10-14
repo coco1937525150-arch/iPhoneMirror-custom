@@ -1824,6 +1824,16 @@ Equal(true,
     previewRendererCode.Contains("screen_area.y - edge_bleed_pixels",
         StringComparison.Ordinal),
     "native preview bleeds under PNG aperture only for matched source aspect");
+Equal(true,
+    previewRendererCode.Contains("return rotateUvByTurns(uv, apertureControl.y);",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("sourceUv = rotateShellUv(sourceUv);",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("referenceShell.Sample(linearSampler, rotateShellUv(uv))",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("values.color_padding[1] = static_cast<float>",
+        StringComparison.Ordinal),
+    "all quarter turns orient original PNG and aperture with the same video state");
 var themeServiceText = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "ThemeService.cs"));
 Equal(true,
