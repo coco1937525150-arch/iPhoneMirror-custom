@@ -204,33 +204,14 @@ public:
             }
 
             if (header.type == iPhoneMirror::wireless::MessageType::Video) {
-                // Original-quality AirPlay frames are commonly 5-8 MB.  If
-                // the pipe writer is still busy with the previous frame, do
-                // not copy another identical frame into the queue: that copy
-                // happens on AirPlay's decoder callback thread and can stall
-                // the sender long enough to look like an orientation freeze.
-                // A geometry change is always retained so a rotation can
-                // replace the old frame as soon as it arrives.
-                const auto same_device = [&header](const QueuedMessage& queued) {
-                    return queued.header.type ==
-                            iPhoneMirror::wireless::MessageType::Video &&
-                        std::strncmp(queued.header.device_id, header.device_id,
-                            iPhoneMirror::wireless::DeviceIdBytes) == 0;
-                };
-                const auto queued_video = std::ranges::find_if(queue_, same_device);
-                const auto writing_same_device =
-                    writing_video_device_ == std::string_view(header.device_id);
-                const auto writing_same_geometry = writing_same_device &&
-                    writing_video_width_ == header.width &&
-                    writing_video_height_ == header.height;
-                const auto queued_same_geometry = queued_video != queue_.end() &&
-                    queued_video->header.width == header.width &&
-                    queued_video->header.height == header.height;
-                if ((queued_same_geometry || writing_same_geometry) &&
-                    (queued_video != queue_.end() || writing_same_device)) {
-                    dropped_video_.fetch_add(1, std::memory_order_relaxed);
-                    return true;
-                }
+                // Width/height equality does NOT imply equal video pixels.
+                // Previously every same-resolution frame arriving while an
+                // earlier 5-8 MB IPC WriteFile was active was discarded. The
+                // UI could show 60 presented slots but receive far fewer
+                // distinct AirPlay images. Keep exactly ONE newest pending
+                // frame per device, replacing the older queued video below.
+                // This is bounded by MaxQueuedBytes, never an unbounded FIFO.
+                // Geometry changes follow the same latest-frame policy.
                 for (auto position = queue_.begin(); position != queue_.end();) {
                     if (position->header.type == iPhoneMirror::wireless::MessageType::Video &&
                         std::strncmp(position->header.device_id, header.device_id,
@@ -418,26 +399,30 @@ private:
                 }
             }
 
-            // A large original-quality frame may still be in the writer's
-            // local buffer when iOS rotates. If a newer frame for the same
-            // device is already queued, discard this stale frame before
-            // entering WriteFile so rotation is not hidden behind an old
-            // multi-megabyte payload.
+            // Skip obsolete frames when the NEXT queued frame has different
+            // orientation/geometry. Never skip solely because a newer frame
+            // has the SAME size: under constant 60fps input that can starve
+            // the pipe writer indefinitely, appearing as a frozen AirPlay
+            // picture even though iOS remains connected.
             if (message.header.type == iPhoneMirror::wireless::MessageType::Video) {
                 std::scoped_lock lock(mutex_);
-                const auto newer = std::ranges::any_of(queue_,
+                const auto superseded_by_rotation = std::ranges::any_of(queue_,
                     [&message](const QueuedMessage& queued) {
                         return queued.header.type ==
                                 iPhoneMirror::wireless::MessageType::Video &&
                             std::strncmp(queued.header.device_id,
                                 message.header.device_id,
                                 iPhoneMirror::wireless::DeviceIdBytes) == 0 &&
-                            queued.header.sequence > message.header.sequence;
+                            queued.header.sequence > message.header.sequence &&
+                            (queued.header.width != message.header.width ||
+                             queued.header.height != message.header.height);
                     });
-                if (newer) {
+                if (superseded_by_rotation) {
                     buffered_bytes_ -= message.size();
                     --buffered_messages_;
                     dropped_video_.fetch_add(1, std::memory_order_relaxed);
+                    writing_video_device_.clear();
+                    writing_video_width_ = writing_video_height_ = 0;
                     continue;
                 }
             }
