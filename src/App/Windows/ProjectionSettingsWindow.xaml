@@ -143,14 +143,18 @@
                                 <ComboBox ItemsSource="{Binding ResolutionPresets}" DisplayMemberPath="Label"
                                           IsEnabled="{Binding CanChangeVideoPipeline}"
                                           SelectedItem="{Binding SelectedResolutionPreset, Mode=TwoWay}"/>
-                                <TextBlock Text="{DynamicResource TargetFrameRate}"
-                                           Style="{StaticResource DetailLabel}"/>
-                                <ComboBox ItemsSource="{Binding FrameRates}"
-                                          DisplayMemberPath="Label"
-                                          SelectedValuePath="Value"
-                                          IsEnabled="{Binding CanChangeVideoPipeline}"
-                                          SelectedValue="{Binding SelectedFrameRate, Mode=TwoWay}"/>
                             </StackPanel>
+                            <!-- The 120fps preview cap applies to USB AND AirPlay; unlike
+                                 the USB-only render resolution selector, it must not
+                                 disappear for wireless capture. This does not change the
+                                 AirPlay sender's negotiated 60fps source profile. -->
+                            <TextBlock Text="{DynamicResource TargetFrameRate}"
+                                       Style="{StaticResource DetailLabel}"/>
+                            <ComboBox ItemsSource="{Binding FrameRates}"
+                                      DisplayMemberPath="Label"
+                                      SelectedValuePath="Value"
+                                      IsEnabled="{Binding CanChangeDecoderPipeline}"
+                                      SelectedValue="{Binding SelectedFrameRate, Mode=TwoWay}"/>
                             <TextBlock Text="{DynamicResource DecoderPreferenceLabel}"
                                        Style="{StaticResource DetailLabel}"/>
                             <ComboBox ItemsSource="{Binding DecoderPreferences}" DisplayMemberPath="Label"
