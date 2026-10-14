@@ -127,12 +127,10 @@
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
     <Resource Include="Assets\iPhoneMirror.png" />
-    <Content Include="Assets\iphone16_pro_max_shell.png">
-      <Link>Assets\iphone16_pro_max_shell.png</Link>
-      <TargetPath>Assets\iphone16_pro_max_shell.png</TargetPath>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </Content>
+    <!-- Bundle the one permitted phone shell *inside* iPhoneMirror.exe.
+         No loose, user-replaceable shell file is distributed. -->
+    <EmbeddedResource Include="Assets\iphone16_pro_max_shell.png"
+                      LogicalName="IPhoneMirror.Shell.IPhone16ProMax" />
     <Content Include="native\iPhoneMirror.Core.dll" Condition="Exists('native\iPhoneMirror.Core.dll')">
       <Link>iPhoneMirror.Core.dll</Link>
       <TargetPath>iPhoneMirror.Core.dll</TargetPath>
