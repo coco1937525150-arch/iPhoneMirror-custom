@@ -59,6 +59,7 @@
     <Compile Include="..\App\Services\AppleProductNames.cs" Link="AppleProductNames.cs" />
     <Compile Include="..\App\Services\MediaOutputService.cs" Link="MediaOutputService.cs" />
     <Compile Include="..\App\Services\PhoneShellMediaComposer.cs" Link="PhoneShellMediaComposer.cs" />
+    <Compile Include="..\App\Services\PhoneShellApertureMask.cs" Link="PhoneShellApertureMask.cs" />
     <Compile Include="..\App\Services\PhoneShellAssetStore.cs" Link="PhoneShellAssetStore.cs" />
     <Compile Include="..\App\Services\RuntimeBinaryIntegrity.cs" Link="RuntimeBinaryIntegrity.cs" />
     <Compile Include="..\App\Services\PendingRecordingStore.cs" Link="PendingRecordingStore.cs" />
