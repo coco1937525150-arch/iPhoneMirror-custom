@@ -132,4 +132,36 @@ if (-not $raop.Contains('IPHONE_MIRROR_RAOP_TEARDOWN_TRACE')) {
     Write-Source $raopPath $raop
 }
 
+# Experiment C is a separate baseline-derived diagnostic variant. No B keepAlive change.
+# Collect only socket counts/state, never addresses, keys, or payload bytes.
+$mirror = Read-Source $mirrorPath
+if (-not $mirror.Contains('IPHONE_MIRROR_C_SOCKET_CLOSE_TRACE')) {
+    $needle = '    /* Close the stream file descriptor */'
+    $replacement = @'
+    /* IPHONE_MIRROR_C_SOCKET_CLOSE_TRACE: instrument shutdown without
+     * changing ownership, socket options, or close timing. */
+#ifdef WIN32
+    if (stream_fd != -1) {
+        u_long unread = 0;
+        int queued = ioctlsocket((SOCKET)stream_fd, FIONREAD, &unread);
+        int status_error = 0;
+        int status_size = (int)sizeof(status_error);
+        int status_result = getsockopt((SOCKET)stream_fd, SOL_SOCKET,
+            SO_ERROR, (char *)&status_error, &status_size);
+        int already_stopping;
+        MUTEX_LOCK(raop_rtp_mirror->run_mutex);
+        already_stopping = raop_rtp_mirror->stop_in_progress;
+        MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
+        logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+            "IPHONE_MIRROR_C_SOCKET_CLOSE_TRACE phase=worker_close exception=%d stopping=%d unread_ok=%d unread_bytes=%lu so_error_ok=%d so_error=%d",
+            exceptionExit, already_stopping, queued == 0,
+            queued == 0 ? unread : 0UL, status_result == 0,
+            status_result == 0 ? status_error : -1);
+    }
+#endif
+'@ -replace '\r?\n', $Lf
+    $mirror = Replace-Once $mirror $needle ($replacement + $Lf + $needle) 'C mirror worker socket-close diagnostics'
+    Write-Source $mirrorPath $mirror
+}
+
 Write-Host 'Applied diagnostic-only AirPlay lock-screen trace patch.' -ForegroundColor Green
