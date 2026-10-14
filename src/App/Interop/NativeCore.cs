@@ -454,6 +454,10 @@ internal sealed class NativeCore : IDisposable
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int im_session_set_window_rotation(ulong handle, nint hwnd,
         int quarterTurns);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int im_session_set_window_visual_rotation(ulong handle,
+        nint hwnd, float degrees, float canvasWidth, float canvasHeight,
+        float visualScale, int active);
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern nint im_last_error();
@@ -564,6 +568,13 @@ internal sealed class NativeCore : IDisposable
 
     internal static bool SetDeviceWindowRotation(ulong handle, nint hwnd, int turns) =>
         handle != 0 && hwnd != 0 && im_session_set_window_rotation(handle, hwnd, turns) == 0;
+
+    internal static bool SetDeviceWindowVisualRotation(ulong handle, nint hwnd,
+        float degrees, float canvasWidth, float canvasHeight, float scale,
+        bool active) =>
+        handle != 0 && hwnd != 0 &&
+        im_session_set_window_visual_rotation(handle, hwnd,
+            degrees, canvasWidth, canvasHeight, scale, active ? 1 : 0) == 0;
 
     internal static bool ForcePreviewRefresh()
     {
