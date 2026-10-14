@@ -184,9 +184,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void OnShellModeChanged(object sender, RoutedEventArgs e)
     {
-        // Only the shell overlay is toggled. Background selection remains independent.
-        // The selected shell mode is persisted alongside other output settings.
-        SaveShellPreferences();
+        // This toggle changes only the phone overlay. Background controls stay
+        // enabled; persistence is handled by the normal save/start actions.
     }
 
     private void UpdateRecommendedRecordingBitrate()
