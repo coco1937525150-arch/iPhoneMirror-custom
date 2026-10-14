@@ -357,14 +357,19 @@ void WirelessClientStream::reset_video_for_attach() noexcept {
     // format-change path below will clear it only when geometry really changes.
     // This is deliberately different from a new device connection, where no
     // frame exists yet and the counters should start from zero.
+    const auto now = std::chrono::steady_clock::now();
     if (!latest_frame_) {
         snapshot_.width = snapshot_.height = 0;
         snapshot_.fps = snapshot_.latency_ms = 0;
         snapshot_.video_frames = snapshot_.audio_packets = 0;
         snapshot_.audio_sample_rate = snapshot_.audio_channels = 0;
+        // A brand-new stream can start its own timestamp epoch. A stream
+        // retaining its last video frame MUST keep its original epoch:
+        // switching to a new epoch makes a live reconnect regress the
+        // timestamps seen by renderers and CFR recording metrics.
+        started_at_ = now;
     }
-    started_at_ = std::chrono::steady_clock::now();
-    fps_sample_time_ = started_at_;
+    fps_sample_time_ = now;
     fps_sample_frames_ = snapshot_.video_frames;
 }
 
