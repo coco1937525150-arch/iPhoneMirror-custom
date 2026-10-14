@@ -6,6 +6,7 @@ on:
     branches:
       - feature/airplay-idle-rotation-smooth-zoom
       - feature/airplay-1080p60-wifi-touch-v1
+      - experiment/airplay-teardown-close-c
     paths:
       - 'third_party/airplay-server/patches/Apply-AirPlayMirrorRecoveryPatch.ps1'
       - 'third_party/airplay-server/patches/Apply-AirPlayDisconnectTracePatch.ps1'
@@ -120,10 +121,28 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Configuration Release
 
+      - name: Stamp experiment C diagnostics
+        if: github.ref_name == 'experiment/airplay-teardown-close-c'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $PWD 'outputs\\iPhoneMirror'
+          $dlls = @(Get-ChildItem -LiteralPath $out -Filter 'airplay2dll.dll' -Recurse -File)
+          if ($dlls.Count -ne 1) { throw "Expected one packaged AirPlay DLL, found $($dlls.Count)" }
+          @(
+            "EXPERIMENT C: TEARDOWN / MIRROR SOCKET CLOSE DIAGNOSTICS"
+            "Not a verified fix for iOS idle disconnect"
+            "Based on A commit 357945f, NOT based on keepAliveLowPower B"
+            "Git commit: $env:GITHUB_SHA"
+            "Changes: only socket-close diagnostic output"
+            "Receiver DLL SHA256: $((Get-FileHash $dlls[0].FullName -Algorithm SHA256).Hash)"
+            "Preserve A1/B1/A2/B2 records; any C tests must be labeled C."
+          ) | Set-Content -LiteralPath (Join-Path $out 'EXPERIMENT-C-README.txt') -Encoding UTF8
+
       - name: Upload experimental portable build (single extraction)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.ref_name == 'feature/airplay-1080p60-wifi-touch-v1' && 'iPhoneMirror-AirPlay-LockTrace-1080p60-WiFiTouch-EXPERIMENTAL' || 'iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL' }}
+          name: ${{ github.ref_name == 'experiment/airplay-teardown-close-c' && 'iPhoneMirror-AirPlay-TeardownClose-C-DIAGNOSTIC' || github.ref_name == 'feature/airplay-1080p60-wifi-touch-v1' && 'iPhoneMirror-AirPlay-LockTrace-1080p60-WiFiTouch-EXPERIMENTAL' || 'iPhoneMirror-AirPlay-lock-screen-EXPERIMENTAL' }}
           path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14
