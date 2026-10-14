@@ -4351,6 +4351,16 @@ foreach (var (canvasW, canvasH) in new[]
     }
 }
 
+// The default recording layout should occupy almost all available vertical
+// space without stretching/cropping a complete 994x2048 shell. The 9:16
+// white canvas may still have horizontal margins: their aspect ratios differ.
+var maximizedPortraitShell = PhoneShellMediaComposer.FitInsideCanvas(
+    1080, 1920, 994.0 / 2048.0, 0.5, 0.5, 1.0).Bounds;
+Equal(true, maximizedPortraitShell.Height >= 1880 &&
+    maximizedPortraitShell.Top >= 5 &&
+    maximizedPortraitShell.Bottom <= 1915,
+    "default full-height shell minimizes avoidable white bands without clipping");
+
 // Imported phone image may have a solid-black display. Verify that the
 // imported asset gains a truly transparent aperture without modifying the
 // user's active shell file under LocalAppData.
