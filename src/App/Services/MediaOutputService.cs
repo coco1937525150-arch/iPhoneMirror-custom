@@ -223,7 +223,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 if (measured < request.FrameRate * 0.90)
                     throw new InvalidOperationException(
                         $"无法启动真实 {request.FrameRate}fps 录制：实际输入约 {measured:F1}fps。" +
-                        " 请改用 60fps，或先确认 iPhone 视频流确实输出 120 帧/秒。");
+                        " 请改用 60fps，或确认 iPhone 视频流确实达到所选帧率。");
             }
             _lastError = string.Empty;
             lock (_stderrGate) _stderrTail.Clear();

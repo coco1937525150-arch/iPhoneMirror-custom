@@ -4254,6 +4254,10 @@ Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordin
     "output settings cannot replace the bundled phone shell");
 Equal(true, outputSettingsXaml.Contains("OnUseDefaultWhiteBackgroundClick", StringComparison.Ordinal),
     "output settings expose the default file-free whiteboard");
+Equal(true, outputSettingsXaml.Contains("RecordResolutionPresetBox", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("RecordFpsPresetBox", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("RecordBitratePresetBox", StringComparison.Ordinal),
+    "recording offers resolution, FPS, and bitrate presets without removing custom values");
 
 // The editor must follow the chosen output canvas dimensions, not the
 // resolution of a tiny backdrop picture.

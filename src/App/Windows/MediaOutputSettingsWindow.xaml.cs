@@ -165,6 +165,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         {
             RecordWidthBox.Text = "1080";
             RecordHeightBox.Text = "1920";
+            if (RecordResolutionPresetBox is not null)
+                RecordResolutionPresetBox.SelectedIndex = 2;
         }
         ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
     }
@@ -186,6 +188,59 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
     }
 
+    private void UpdateRecommendedRecordingBitrate()
+    {
+        if (RecordBitratePresetBox?.SelectedItem is not ComboBoxItem { Tag: "recommend" })
+            return;
+        if (!uint.TryParse(RecordWidthBox?.Text, out var width) ||
+            !uint.TryParse(RecordHeightBox?.Text, out var height) ||
+            !int.TryParse(RecordFpsBox?.Text, out var fps))
+            return;
+        var pixels = (ulong)width * height;
+        var baseKbps = pixels <= 921600 ? 6000 :
+            pixels <= 2073600 ? 12000 : pixels <= 3686400 ? 24000 : 50000;
+        var chosen = (int)Math.Clamp(
+            Math.Round(baseKbps * Math.Max(1d, fps / 60d) / 500d) * 500d,
+            500d, 150000d);
+        RecordBitrateBox.Text = chosen.ToString();
+    }
+
+    private void OnRecordResolutionPresetChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (RecordWidthBox is null || RecordHeightBox is null ||
+            RecordResolutionPresetBox?.SelectedItem is not ComboBoxItem { Tag: string value } ||
+            value == "custom") return;
+        var dimensions = value.Split('x');
+        if (dimensions.Length != 2 ||
+            !uint.TryParse(dimensions[0], out var width) ||
+            !uint.TryParse(dimensions[1], out var height)) return;
+        if (uint.TryParse(RecordWidthBox.Text, out var oldWidth) &&
+            uint.TryParse(RecordHeightBox.Text, out var oldHeight) &&
+            oldWidth > oldHeight)
+            (width, height) = (height, width);
+        RecordWidthBox.Text = width.ToString();
+        RecordHeightBox.Text = height.ToString();
+        UpdateRecommendedRecordingBitrate();
+    }
+
+    private void OnRecordFpsPresetChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (RecordFpsBox is null || RecordFpsPresetBox?.SelectedItem
+            is not ComboBoxItem { Tag: string value } || value == "custom") return;
+        RecordFpsBox.Text = value;
+        UpdateRecommendedRecordingBitrate();
+    }
+
+    private void OnRecordBitratePresetChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (RecordBitrateBox is null ||
+            RecordBitratePresetBox?.SelectedItem is not ComboBoxItem { Tag: string value })
+            return;
+        if (value == "recommend") UpdateRecommendedRecordingBitrate();
+        else if (int.TryParse(value, out var kbps))
+            RecordBitrateBox.Text = kbps.ToString();
+    }
+
     private string SelectedBackgroundPath =>
         _useDefaultWhiteBackground ? string.Empty : _customBackgroundPath;
 
@@ -196,6 +251,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         BackgroundImageBox.Text = "默认白板（9:16）";
         RecordWidthBox.Text = "1080";
         RecordHeightBox.Text = "1920";
+        RecordResolutionPresetBox.SelectedIndex = 2;
         SaveShellPreferences();
     }
 
@@ -460,7 +516,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             int.TryParse(bitrateBox.Text, out bitrate) &&
             width is >= 160 and <= 4096 && height is >= 160 and <= 4096 &&
             fps >= 10 && fps <= (ReferenceEquals(fpsBox, RecordFpsBox) ? 120 : 60) &&
-            bitrate is >= 500 and <= 50000)
+            bitrate is >= 500 and <= 150000)
         {
             var oldW = width;
             var oldH = height;
