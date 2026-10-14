@@ -70,6 +70,10 @@
     <Compile Include="..\App\Updater\UpdateInstallerLauncher.cs" Link="Updater\UpdateInstallerLauncher.cs" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Logic tests link the same shell asset store source; make the embedded
+         shell available in the test assembly under the production name. -->
+    <EmbeddedResource Include="..\App\Assets\iphone16_pro_max_shell.png"
+                      LogicalName="IPhoneMirror.Shell.IPhone16ProMax" />
     <EmbeddedResource Include="..\App\tools\updater\Apply-ZipUpdate.ps1"
                       LogicalName="IPhoneMirror.App.Updater.Apply-ZipUpdate.ps1" />
   </ItemGroup>
