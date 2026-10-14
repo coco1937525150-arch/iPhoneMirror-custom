@@ -13,13 +13,17 @@ namespace IPhoneMirror.App.Services;
 internal sealed record PhoneShellComposition(
     string ShellFile, string? BackgroundFile, int ScreenX, int ScreenY,
     int ScreenWidth, int ScreenHeight, int OutputWidth, int OutputHeight,
-    int VideoRotationDegrees = 0)
+    int VideoRotationDegrees = 0, string? ApertureMaskFile = null)
 {
     internal void Cleanup()
     {
-        try { File.Delete(ShellFile); }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        foreach (var file in new[] { ShellFile, ApertureMaskFile })
+        {
+            if (string.IsNullOrEmpty(file)) continue;
+            try { File.Delete(file); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }
 
@@ -171,33 +175,71 @@ internal static class PhoneShellMediaComposer
         var screenY = (int)outer.Y + coveredScreen.Y;
         var filename = Path.Combine(Path.GetTempPath(),
             "iphoneMirror-shell-" + Guid.NewGuid().ToString("N") + ".png");
+        var maskFilename = Path.Combine(Path.GetTempPath(),
+            "iphoneMirror-aperture-" + Guid.NewGuid().ToString("N") + ".png");
         try
         {
             void Render()
             {
-                var visual = new DrawingVisual();
-                using (var context = visual.RenderOpen())
+                var source = new BitmapImage();
+                source.BeginInit();
+                source.CacheOption = BitmapCacheOption.OnLoad;
+                source.UriSource = new Uri(Path.GetFullPath(bundledShell), UriKind.Absolute);
+                source.EndInit();
+                source.Freeze();
+                var aperture = PhoneShellApertureMask.FromShell(source);
+                var portraitOuter = sideways
+                    ? new Rect(outer.X + (outer.Width - outer.Height) / 2,
+                        outer.Y + (outer.Height - outer.Width) / 2,
+                        outer.Height, outer.Width)
+                    : outer;
+                var rotation = new RotateTransform(degrees,
+                    outer.X + outer.Width / 2, outer.Y + outer.Height / 2);
+
+                // The foreground is the exact untouched original shell.
+                var shellVisual = new DrawingVisual();
+                using (var context = shellVisual.RenderOpen())
                 {
-                    // Render the complete shell as one rotated unit. The
-                    // video screen rectangle uses the same profile rotation.
-                    var portraitOuter = sideways
-                        ? new Rect(outer.X + (outer.Width - outer.Height) / 2,
-                            outer.Y + (outer.Height - outer.Width) / 2,
-                            outer.Height, outer.Width)
-                        : outer;
-                    if (degrees != 0)
-                        context.PushTransform(new RotateTransform(degrees,
-                            outer.X + outer.Width / 2, outer.Y + outer.Height / 2));
-                    DrawImportedShell(context, bundledShell, portraitOuter);
+                    if (degrees != 0) context.PushTransform(rotation);
+                    context.DrawImage(source, portraitOuter);
                     if (degrees != 0) context.Pop();
                 }
-                var bitmap = new RenderTargetBitmap(canvasWidth, canvasHeight,
+                var shellBitmap = new RenderTargetBitmap(canvasWidth, canvasHeight,
                     96, 96, PixelFormats.Pbgra32);
-                bitmap.Render(visual);
-                using var output = File.Create(filename);
-                var encoder = new PngBitmapEncoder();
-                encoder.Frames.Add(BitmapFrame.Create(bitmap));
-                encoder.Save(output);
+                shellBitmap.Render(shellVisual);
+                using (var output = File.Create(filename))
+                {
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(shellBitmap));
+                    encoder.Save(output);
+                }
+
+                // Generate a separate grayscale alpha matte from the central
+                // TRANSPARENT aperture, not all transparency of the PNG.
+                // The outer corners are transparent too and must stay masked.
+                // Coordinates are cropped to the overscanned video dimensions,
+                // so FFmpeg's alphamerge receives equal-sized inputs.
+                var maskVisual = new DrawingVisual();
+                using (var context = maskVisual.RenderOpen())
+                {
+                    context.DrawRectangle(Brushes.Black, null,
+                        new Rect(0, 0, coveredScreen.Width, coveredScreen.Height));
+                    context.PushTransform(new TranslateTransform(-screenX, -screenY));
+                    if (degrees != 0) context.PushTransform(rotation);
+                    context.DrawImage(aperture, portraitOuter);
+                    if (degrees != 0) context.Pop();
+                    context.Pop();
+                }
+                var maskBitmap = new RenderTargetBitmap(
+                    coveredScreen.Width, coveredScreen.Height, 96, 96,
+                    PixelFormats.Pbgra32);
+                maskBitmap.Render(maskVisual);
+                using (var output = File.Create(maskFilename))
+                {
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(maskBitmap));
+                    encoder.Save(output);
+                }
             }
             var dispatcher = Application.Current?.Dispatcher ??
                 throw new InvalidOperationException("The phone-shell output requires the WPF application.");
@@ -206,11 +248,12 @@ internal static class PhoneShellMediaComposer
             return new(filename, backgroundFile, screenX, screenY,
                 coveredScreen.Width, coveredScreen.Height,
                 canvasWidth, canvasHeight,
-                VideoRotation(degrees, landscape));
+                VideoRotation(degrees, landscape), maskFilename);
         }
         catch
         {
             try { File.Delete(filename); } catch (IOException) { }
+            try { File.Delete(maskFilename); } catch (IOException) { }
             throw;
         }
     }
