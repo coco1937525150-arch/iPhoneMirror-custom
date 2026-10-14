@@ -12,6 +12,9 @@ namespace IPhoneMirror.App.Services;
 internal static class PhoneShellAssetStore
 {
     internal const string AssetName = "iphone16_pro_max_shell.png";
+    // Exact original asset; reject stale low-resolution placeholders at runtime.
+    internal const string OriginalAssetSha256 =
+        "0539067df832d4ec3da82baaf7e690ff51c584b7dae664e16062b236eea813b4";
 
     private const string ResourceName = "IPhoneMirror.Shell.IPhone16ProMax";
     private static readonly Lazy<string> BundledAsset = new(ExtractBundledAsset);
@@ -36,6 +39,10 @@ internal static class PhoneShellAssetStore
             throw new InvalidDataException("内置手机壳 PNG 数据无效。");
 
         var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (bytes.Length != 317240 || !string.Equals(digest, OriginalAssetSha256,
+                StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "安装包中的手机壳不是指定的 994×2048 原始 PNG，请安装正确的 pre6 构建。");
         var destination = Path.Combine(Path.GetTempPath(), "iPhoneMirror",
             "bundled-phone-shell", digest, AssetName);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
