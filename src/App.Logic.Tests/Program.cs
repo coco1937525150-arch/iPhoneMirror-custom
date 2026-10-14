@@ -4263,6 +4263,25 @@ Equal(true, appProjectFile.Contains(
     "phone shell is embedded inside the executable, not distributed as a loose image");
 Equal(true, File.Exists(PhoneShellAssetStore.ActivePath),
     "embedded phone shell is extracted to a content-addressed runtime cache");
+var originalShellBitmap = new BitmapImage();
+originalShellBitmap.BeginInit();
+originalShellBitmap.CacheOption = BitmapCacheOption.OnLoad;
+originalShellBitmap.UriSource = new Uri(PhoneShellAssetStore.ActivePath, UriKind.Absolute);
+originalShellBitmap.EndInit();
+var alphaOpening = PhoneShellApertureMask.FromShell(originalShellBitmap);
+var alphaPixels = new byte[checked(alphaOpening.PixelWidth * alphaOpening.PixelHeight * 4)];
+alphaOpening.CopyPixels(alphaPixels, alphaOpening.PixelWidth * 4, 0);
+byte ScreenAlphaAt(int x, int y) =>
+    alphaPixels[(y * alphaOpening.PixelWidth + x) * 4];
+Equal((byte)255, ScreenAlphaAt(500, 1024),
+    "video remains visible at the true center of the reference display aperture");
+Equal((byte)0, ScreenAlphaAt(0, 1024),
+    "video is clipped outside the metal frame despite transparent PNG exterior");
+Equal((byte)0, ScreenAlphaAt(50, 50),
+    "video does not leak past the curved top-left metallic corner");
+Equal((byte)0, ScreenAlphaAt(500, 0),
+    "video does not leak through the transparent space above the phone shell");
+
 var startupSource = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "App.xaml.cs"));
 var nativeRendererSource = File.ReadAllText(Path.Combine(sourceDirectory,
@@ -4450,18 +4469,23 @@ var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
     IncludePhoneShell: true, BackgroundImage: "custom-background.png",
     PhoneShellImage: "iphone16promax.png");
 var shellComposition = new PhoneShellComposition(
-    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770, 1280, 1440);
+    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770, 1280, 1440,
+    ApertureMaskFile: "aperture-mask.png");
 var shellArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
     composition: shellComposition);
 Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
     shellArgs.Contains("[composited]", StringComparer.Ordinal) &&
     shellArgs.Contains("custom-background.png", StringComparer.Ordinal) &&
     shellArgs.Contains("transparent-shell.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("aperture-mask.png", StringComparer.Ordinal) &&
     shellArgs.Contains("0:a:0", StringComparer.Ordinal),
     "recording composites custom backdrop, decoded screen, transparent phone frame and audio");
 Equal(true, shellArgs.Any(x => x.Contains(
-        "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)),
-    "phone shell overlays the full-rate video after background composition");
+        "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)) &&
+    shellArgs.Any(x => x.Contains("[4:v]format=gray[phone_mask]", StringComparison.Ordinal)) &&
+    shellArgs.Any(x => x.Contains("[phone_video_rgba][phone_mask]alphamerge[phone_video]",
+        StringComparison.Ordinal)),
+    "recording applies true connected-aperture alpha before overlaying the original bezel");
 Equal(true, shellArgs.Any(arg => arg.Contains(
         "[2:v]scale=1280:1440:force_original_aspect_ratio=increase,crop=1280:1440,setsar=1[phone_bg]", StringComparison.Ordinal)) &&
     shellArgs.Any(arg => arg.Contains(
@@ -4481,6 +4505,8 @@ var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapab
     audioPipePath: null, includeAudio: false, composition: shellComposition);
 Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
     shellSilentArgs.Any(x => x.Contains("[phone_screen][2:v]overlay=0:0",
+        StringComparison.Ordinal)) &&
+    shellSilentArgs.Any(x => x.Contains("[3:v]format=gray[phone_mask]",
         StringComparison.Ordinal)) && shellSilentArgs.Contains("-an", StringComparer.Ordinal),
     "video-only shell output maintains correct input indices without PCM audio");
 var backgroundOnlyOutput = shellOutput with
@@ -4494,6 +4520,7 @@ Equal(true,
     backgroundOnlyArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
     backgroundOnlyArgs.Contains("custom-background.png", StringComparer.Ordinal) &&
     !backgroundOnlyArgs.Contains("transparent-shell.png", StringComparer.Ordinal) &&
+    !backgroundOnlyArgs.Contains("aperture-mask.png", StringComparer.Ordinal) &&
     backgroundOnlyArgs.Any(arg => arg.Contains(
         "[phone_screen]format=nv12[composited]", StringComparison.Ordinal)) &&
     backgroundOnlyArgs.All(arg => !arg.Contains(
