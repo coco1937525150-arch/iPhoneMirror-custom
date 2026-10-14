@@ -1433,6 +1433,9 @@ internal sealed class NativePreviewWindow : IDisposable
             info.WorkArea.Left, Math.Max(info.WorkArea.Left, info.WorkArea.Right - outerSideW));
         var stageY = (int)Math.Clamp(centerY - outerSideH / 2L,
             info.WorkArea.Top, Math.Max(info.WorkArea.Top, info.WorkArea.Bottom - outerSideH));
+        // A reflow queued BEFORE the animation may otherwise wake up just
+        // after the final geometry is committed, inflating the phone shell.
+        _aspectController.CancelQueuedResize();
         // Set the animation guard BEFORE SetWindowPos dispatches synchronous
         // WM_SIZE/WM_WINDOWPOSCHANGED. A queued aspect-controller reflow used
         // to resize the temporary square while the device was mid-turn.
@@ -1535,6 +1538,7 @@ internal sealed class NativePreviewWindow : IDisposable
         }
         _rotation = nextRotation;
         _rotationAnimating = false;
+        _aspectController.CancelQueuedResize();
         _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
             0, 0, 0, 1, false);
         ApplyRotatedDimensions(reflow: false);
@@ -1548,6 +1552,7 @@ internal sealed class NativePreviewWindow : IDisposable
         if (!_rotationAnimating) return;
         _rotationTimer.Stop();
         _rotationAnimating = false;
+        _aspectController.CancelQueuedResize();
         // Restore the unrotated HWND first; only then release DComp resize
         // protection. An early transform reset while still in the square
         // stage is visibly off-center and can briefly expose a giant bezel.
