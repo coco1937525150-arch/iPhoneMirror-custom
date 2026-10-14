@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.Cryptography;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
@@ -12,8 +13,45 @@ internal static class PhoneShellAssetStore
 {
     internal const string AssetName = "iphone16_pro_max_shell.png";
 
-    internal static string ActivePath =>
-        Path.Combine(AppContext.BaseDirectory, "Assets", AssetName);
+    private const string ResourceName = "IPhoneMirror.Shell.IPhone16ProMax";
+    private static readonly Lazy<string> BundledAsset = new(ExtractBundledAsset);
+
+    // FFmpeg and the independent compositor require a file path. The source
+    // bytes are embedded in the executable and extracted by content hash;
+    // neither app settings nor a neighboring Assets folder can override them.
+    internal static string ActivePath => BundledAsset.Value;
+
+    private static string ExtractBundledAsset()
+    {
+        using var resource = typeof(PhoneShellAssetStore).Assembly
+            .GetManifestResourceStream(ResourceName) ??
+            throw new FileNotFoundException(
+                "内置 iPhone 16 Pro Max 手机壳资源缺失，请重新安装完整版本。", ResourceName);
+        using var data = new MemoryStream();
+        resource.CopyTo(data);
+        var bytes = data.ToArray();
+        if (bytes.Length < 2000 ||
+            !bytes.AsSpan(0, 8).SequenceEqual(
+                new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+            throw new InvalidDataException("内置手机壳 PNG 数据无效。");
+
+        var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var destination = Path.Combine(Path.GetTempPath(), "iPhoneMirror",
+            "bundled-phone-shell", digest, AssetName);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        if (File.Exists(destination) &&
+            File.ReadAllBytes(destination).AsSpan().SequenceEqual(bytes))
+            return destination;
+
+        var staged = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllBytes(staged, bytes);
+            File.Move(staged, destination, overwrite: true);
+        }
+        finally { if (File.Exists(staged)) File.Delete(staged); }
+        return destination;
+    }
 
     // Build/test normalization helper; no user override is installed.
     internal static void Install(string file, string destinationPath)
