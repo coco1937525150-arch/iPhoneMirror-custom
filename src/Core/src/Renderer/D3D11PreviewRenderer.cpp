@@ -1800,22 +1800,29 @@ struct D3D11PreviewRenderer::Impl {
             viewport.Height = viewport.Width / source_aspect;
             viewport.TopLeftY += (screen_area.height - viewport.Height) * 0.5F;
         }
-        // The native window controller preserves the source/device-frame aspect
-        // in integer client pixels. Fill only sub-pixel rounding gaps inside
-        // the physical screen rectangle; genuine letterboxing remains intact.
-        const float horizontal_gap = screen_area.width - viewport.Width;
-        const float vertical_gap = screen_area.height - viewport.Height;
+        // For a genuinely matching iPhone source, extend video 1.5 physical
+        // pixels beneath the PNG's antialiased aperture edge. The central-hole
+        // alpha mask clips the overscan; no metal-frame/background pixels leak
+        // through the rounded corners. Touch coordinates still use the EXACT
+        // unexpanded device_screen_rect above. Do not apply this to 16:9,
+        // 9:16 or other aspect-mismatched sources: they must not lose content.
         const float aspect_error = std::abs(target_aspect - source_aspect) /
             std::max(source_aspect, 0.000001F);
-        const float pixel_error_limit = 1.0F /
-            static_cast<float>(std::max(target_width, target_height));
-        if (horizontal_gap >= 0.0F && horizontal_gap < 1.0F &&
-            vertical_gap >= 0.0F && vertical_gap < 1.0F &&
-            aspect_error <= pixel_error_limit) {
-            viewport.TopLeftX = screen_area.x;
-            viewport.TopLeftY = screen_area.y;
-            viewport.Width = screen_area.width;
-            viewport.Height = screen_area.height;
+        if (framed && reference_aperture_view &&
+            use_reference_shell(frame_profile) && aspect_error <= 0.005F) {
+            constexpr float edge_bleed_pixels = 1.5F;
+            viewport.TopLeftX = std::max(0.0F,
+                screen_area.x - edge_bleed_pixels);
+            viewport.TopLeftY = std::max(0.0F,
+                screen_area.y - edge_bleed_pixels);
+            viewport.Width = std::min(
+                static_cast<float>(target_width) - viewport.TopLeftX,
+                screen_area.x + screen_area.width + edge_bleed_pixels -
+                    viewport.TopLeftX);
+            viewport.Height = std::min(
+                static_cast<float>(target_height) - viewport.TopLeftY,
+                screen_area.y + screen_area.height + edge_bleed_pixels -
+                    viewport.TopLeftY);
         }
         viewport.MinDepth = 0;
         viewport.MaxDepth = 1;
