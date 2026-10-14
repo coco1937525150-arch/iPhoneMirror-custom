@@ -482,10 +482,15 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     frame->received_at = received_at;
 
     std::scoped_lock lock(mutex_);
-    // The hub can observe a frame concurrently with a disconnect callback.
-    // Re-check the connection while holding the stream lock so a late frame
-    // cannot repopulate a device that was just cleared.
-    if (!connected_) return;
+    // A valid decoded video packet from the SAME authenticated receiver IPC
+    // is positive evidence that AirPlay media is still flowing. The vendor
+    // callback can report Disconnected while the iPhone keeps mirroring;
+    // permanently filtering Video through find_connected() made that state
+    // irreversible unless a fresh Connected callback happened to arrive.
+    // Invalid/truncated packets never recover the connection: conversion
+    // already succeeded above before acquiring this lock.
+    const bool recovered_after_disconnect = !connected_;
+    if (recovered_after_disconnect) connected_ = true;
     const bool format_changed = snapshot_.width != 0 && snapshot_.height != 0 &&
         (snapshot_.width != header.width || snapshot_.height != header.height);
     if (format_changed) {
@@ -515,6 +520,11 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     }
     snapshot_.latency_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - received_at).count();
+    if (recovered_after_disconnect)
+        logging::write(std::format(
+            "wireless_hub valid_video_recovered_connection id_fp={} size={}x{} "
+            "note=sender_remained_active_after_disconnect_callback",
+            anonymous_label(id_), frame->width, frame->height));
     if (snapshot_.video_frames == 1)
         logging::write(std::format("wireless_video published device_fp={} size={}x{} stride={} bytes={}",
             anonymous_label(id_), frame->width, frame->height, frame->stride, frame->nv12.size()));
@@ -937,7 +947,12 @@ void WirelessReceiverHub::handle_message(const wireless::MessageHeader& header,
         break;
     }
     case wireless::MessageType::Video:
-        if (const auto stream = find_connected(header)) stream->publish_video(header, payload);
+        // Do not require a prior Connected callback here. publish_video()
+        // validates the I420 payload BEFORE restoring a disconnected sender,
+        // so subsequent genuine video can recover a false-disconnect without
+        // asking the iPhone user to toggle mirroring off and on.
+        if (const auto stream = get_or_create(header, false))
+            stream->publish_video(header, payload);
         break;
     case wireless::MessageType::Audio:
         // Some RAOP-only senders begin publishing PCM without invoking the
