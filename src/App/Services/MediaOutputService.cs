@@ -25,7 +25,8 @@ internal sealed record MediaOutputRequest(
     string Authorization = "",
     bool IncludePhoneShell = false,
     string? BackgroundImage = null,
-    string? PhoneShellImage = null);
+    string? PhoneShellImage = null,
+    bool UseBackgroundCanvas = false);
 
 internal sealed record MediaOutputCapabilities(
     bool FfmpegAvailable,
@@ -250,7 +251,9 @@ internal sealed class MediaOutputService : IAsyncDisposable
             PhoneShellComposition? composition = null;
             try
             {
-                if (request.IncludePhoneShell)
+                // Canvas/background and visible phone bezel are independent
+                // choices. The canvas still renders when the bezel is hidden.
+                if (request.IncludePhoneShell || request.UseBackgroundCanvas)
                     composition = _compositionFactory(request.Width, request.Height,
                         request.BackgroundImage, request.PhoneShellImage);
                 // The encoder sees the final composited canvas, not the phone
@@ -1189,8 +1192,9 @@ internal sealed class MediaOutputService : IAsyncDisposable
             else
                 args.AddRange(["-f", "lavfi", "-i",
                     $"color=c=white:s={composition.OutputWidth}x{composition.OutputHeight}:r={request.FrameRate}"]);
-            args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
-                "-i", composition.ShellFile]);
+            if (request.IncludePhoneShell)
+                args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
+                    "-i", composition.ShellFile]);
             var videoIndex = includeAudio ? 1 : 0;
             var bgIndex = videoIndex + 1;
             var shellIndex = videoIndex + 2;
@@ -1214,8 +1218,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 // the background canvas or stretch it to the phone dimensions.
                 $"[phone_bg][phone_video]overlay={composition.ScreenX}:{composition.ScreenY}:" +
                 "shortest=1:eof_action=endall:format=auto[phone_screen];" +
-                $"[phone_screen][{shellIndex}:v]overlay=0:0:shortest=1," +
-                "format=nv12[composited]"]);
+                (request.IncludePhoneShell
+                    ? $"[phone_screen][{shellIndex}:v]overlay=0:0:shortest=1," +
+                      "format=nv12[composited]"
+                    : "[phone_screen]format=nv12[composited]")]);
             args.AddRange(["-map", "[composited]"]);
             if (includeAudio) args.AddRange(["-map", "0:a:0"]);
             else args.Add("-an");
