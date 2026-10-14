@@ -5612,7 +5612,17 @@ var concurrentSession = new DeviceCaptureState
     Udid = "concurrent-stop-device",
     Handle = new NativeSessionHandle(77, ownsHandle: false),
 };
+sessionManager.Set(concurrentSession);
+Equal(true, ReferenceEquals(concurrentSession.Handle,
+    sessionManager.FindLiveHandle(77)),
+    "media readers resolve a live SafeHandle under session-manager synchronization");
+Equal<NativeSessionHandle?>(null, sessionManager.FindLiveHandle(0),
+    "media readers reject an invalid raw session identity");
+Equal<NativeSessionHandle?>(null, sessionManager.FindLiveHandle(78),
+    "media readers do not accidentally bind an unrelated wireless device");
 var firstTeardown = sessionManager.StopAndDestroyAsync(concurrentSession);
+Equal<NativeSessionHandle?>(null, sessionManager.FindLiveHandle(77),
+    "media readers cannot resurrect an immediately revoked AirPlay session");
 await teardownEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 var secondTeardown = sessionManager.StopAndDestroyAsync(concurrentSession);
 Equal(true, ReferenceEquals(firstTeardown, secondTeardown),
