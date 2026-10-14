@@ -87,7 +87,12 @@
 
         <TabControl Grid.Row="3" Style="{StaticResource SubWindowTabControl}">
             <TabItem Header="{DynamicResource RecordTab}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                     <Border Style="{StaticResource SectionCard}">
                         <StackPanel>
                             <TextBlock Text="{DynamicResource RecordDescription}" TextWrapping="Wrap"
@@ -151,8 +156,6 @@
                                     <TextBox x:Name="RecordBitrateBox" Style="{StaticResource RoundedTextBox}" Height="36"/>
                                 </StackPanel>
                             </Grid>
-                            <TextBlock Text="高于 60fps 的录制需检测真实源帧率；不能使用重复帧冒充高帧率。" FontSize="10"
-                                       TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,6,0,0"/>
                             <TextBlock Text="默认视频保存位置" Style="{StaticResource DetailLabel}" Margin="0,12,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -169,13 +172,18 @@
                             <Button x:Name="EditRecordingLayoutButton" Content="编辑录制布局（拖动 / 缩放手机）"
                                     Style="{StaticResource ToolButton}" Margin="0,10,0,0"
                                     Click="OnEditRecordingLayoutClick"/>
-                            <Button x:Name="StartRecordingButton"
-                                    Content="{DynamicResource StartRecording}" Click="OnStartRecordingClick"
-                                    IsEnabled="False"
-                                    Style="{StaticResource PrimaryButton}" Margin="0,18,0,0"/>
                         </StackPanel>
                     </Border>
-                </ScrollViewer>
+                    </ScrollViewer>
+                    <!-- Keep the primary action visible without scrolling, including high-DPI windows. -->
+                    <Border Grid.Row="1" Background="{DynamicResource AppBackgroundBrush}"
+                            Padding="12,8,12,10">
+                        <Button x:Name="StartRecordingButton"
+                                Content="{DynamicResource StartRecording}" Click="OnStartRecordingClick"
+                                IsEnabled="False" MinHeight="40"
+                                Style="{StaticResource PrimaryButton}"/>
+                    </Border>
+                </Grid>
             </TabItem>
 
             <TabItem Header="{DynamicResource StreamTab}">
