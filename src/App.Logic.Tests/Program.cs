@@ -4328,8 +4328,17 @@ Equal(true,
     nativeRendererSource.Contains("turns, true);", StringComparison.Ordinal),
     "D3D11 preview uses the same connected-hole matte in direct and limited render passes");
 Equal(true,
-    nativeRendererSource.Contains("float2(1.0 - uv.y, uv.x) : uv;", StringComparison.Ordinal),
-    "landscape shell turns left with the original silver reference image");
+    nativeRendererSource.Contains("if (turns == 1) return float2(uv.y, 1.0 - uv.x);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("if (turns == 3) return float2(1.0 - uv.y, uv.x);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("return rotateUvByTurns(uv, apertureControl.y);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("referenceShell.Sample(linearSampler, rotateShellUv(uv))",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("sourceUv = rotateShellUv(sourceUv);",
+        StringComparison.Ordinal),
+    "clockwise and counterclockwise shell PNG and aperture share the quarter-turn UV transform");
 
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
