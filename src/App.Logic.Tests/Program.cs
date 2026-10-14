@@ -4329,6 +4329,21 @@ var startupSource = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "App.xaml.cs"));
 var nativeRendererSource = File.ReadAllText(Path.Combine(sourceDirectory,
     "Core", "src", "Renderer", "D3D11PreviewRenderer.cpp"));
+var wirelessHostIpcSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "WirelessHost", "WirelessHost.cpp"));
+Equal(true,
+    wirelessHostIpcSource.Contains("const auto superseded_by_rotation",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("queued.header.width != message.header.width",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("queued.header.height != message.header.height",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("replaced_video_frames_.fetch_add(1",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("MaxQueuedBytes", StringComparison.Ordinal) &&
+    !wirelessHostIpcSource.Contains("writing_same_geometry", StringComparison.Ordinal) &&
+    !wirelessHostIpcSource.Contains("queued_same_geometry", StringComparison.Ordinal),
+    "AirPlay IPC retains one latest pending frame and only skips obsolete orientation; equal frame sizes are not duplicates");
 Equal(true,
     startupSource.Contains("IPHONE_MIRROR_BUNDLED_SHELL", StringComparison.Ordinal) &&
     startupSource.IndexOf("PhoneShellAssetStore.ActivePath", StringComparison.Ordinal) <
