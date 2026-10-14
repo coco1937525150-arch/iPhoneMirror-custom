@@ -4904,6 +4904,7 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
     Directory.CreateDirectory(shellTestRoot);
     var shellTestBackground = Path.Combine(shellTestRoot, "background.png");
     var shellTestOverlay = Path.Combine(shellTestRoot, "overlay.png");
+    var shellTestMask = Path.Combine(shellTestRoot, "aperture-mask.png");
     var shellTestOutput = Path.Combine(shellTestRoot, "capture.mp4");
     // Distinctive colours expose errors that a black-on-black smoke test
     // cannot: background=blue, shell rim=red, phone video=white.
@@ -4933,6 +4934,26 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
     }
     SaveTestBitmap(shellTestBackground, backgroundPixels);
     SaveTestBitmap(shellTestOverlay, shellPixels);
+    // This mask is in the video's local 144x208 coordinates. Rounded
+    // transparent corners must reveal the blue background, not a white
+    // rectangular video layer extending beyond the phone opening.
+    var mattePixels = new byte[144 * 208 * 4];
+    for (var y = 0; y < 208; y++)
+    for (var x = 0; x < 144; x++)
+    {
+        var ix = (y * 144 + x) * 4;
+        var cornerX = x < 28 ? 28 - x : x >= 116 ? x - 115 : 0;
+        var cornerY = y < 28 ? 28 - y : y >= 180 ? y - 179 : 0;
+        var inside = cornerX * cornerX + cornerY * cornerY <= 28 * 28;
+        var shade = inside ? (byte)255 : (byte)0;
+        mattePixels[ix] = mattePixels[ix + 1] = mattePixels[ix + 2] = shade;
+        mattePixels[ix + 3] = 255;
+    }
+    var matteBitmap = BitmapSource.Create(144, 208, 96, 96,
+        PixelFormats.Bgra32, null, mattePixels, 144 * 4);
+    var matteEncoder = new PngBitmapEncoder();
+    matteEncoder.Frames.Add(BitmapFrame.Create(matteBitmap));
+    using (var matteOutput = File.Create(shellTestMask)) matteEncoder.Save(matteOutput);
     long shellFrameTime = 0;
     string? shellFailure = null;
     await using (var shellRecorder = new MediaOutputService(
@@ -4947,7 +4968,8 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
         },
         (_, _) => null,
         (_, _, bg, _) => new PhoneShellComposition(
-            shellTestOverlay, bg, 24, 16, 144, 208, 320, 240)))
+            shellTestOverlay, bg, 24, 16, 144, 208, 320, 240,
+            ApertureMaskFile: shellTestMask)))
     {
         shellRecorder.StatusChanged += (message, failed) =>
         {
@@ -5000,6 +5022,10 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
         var screenColor = RgbAt(decoded, 96, 120);
         var backgroundColor = RgbAt(decoded, 240, 120);
         var frameColor = RgbAt(decoded, 2, 120);
+        var maskedCornerColor = RgbAt(decoded, 26, 18);
+        Equal(true, maskedCornerColor.B > maskedCornerColor.R + 75 &&
+            maskedCornerColor.B > maskedCornerColor.G + 75,
+            "real MP4 alpha mask exposes the background outside curved screen corners");
         Equal(true, screenColor.R > 165 && screenColor.G > 165 &&
             screenColor.B > 165,
             "recorded phone screen is not obscured by the PNG bezel");
