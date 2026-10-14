@@ -114,6 +114,11 @@ jobs:
         shell: pwsh
         run: python scripts/test_pre6_shell_asset.py
 
+      - name: Compile native D3D11 preview HLSL with Windows D3DCompiler
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
+        shell: pwsh
+        run: python scripts/test_pre6_preview_shaders.py
+
       - name: Verify Simplified Chinese and English resources
         shell: pwsh
         run: ./scripts/verify_localization.ps1
