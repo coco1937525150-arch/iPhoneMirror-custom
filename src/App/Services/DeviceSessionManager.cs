@@ -44,6 +44,29 @@ internal sealed class DeviceSessionManager
         get { lock (_gate) return _states.Values.Any(state => state.HasSession); }
     }
 
+    /// <summary>
+    /// Resolve a raw session identity under the SAME lock used to revoke its
+    /// handle during teardown. Recording and virtual-camera reader threads
+    /// must never enumerate mutable device states without this synchronization.
+    /// NativeCore's SafeHandle DangerousAddRef protects the subsequent P/Invoke.
+    /// </summary>
+    internal NativeSessionHandle? FindLiveHandle(ulong rawHandle)
+    {
+        if (rawHandle == 0) return null;
+        lock (_gate)
+        {
+            foreach (var state in _states.Values)
+            {
+                if (state.IsStopping) continue;
+                var handle = state.Handle;
+                if (handle is not null && !handle.IsInvalid && !handle.IsClosed &&
+                    handle.RawHandle == rawHandle)
+                    return handle;
+            }
+        }
+        return null;
+    }
+
     internal DeviceCaptureState? Get(string? udid)
     {
         if (string.IsNullOrWhiteSpace(udid)) return null;
