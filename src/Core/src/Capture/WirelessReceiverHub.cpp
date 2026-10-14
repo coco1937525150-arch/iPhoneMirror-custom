@@ -489,20 +489,14 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     const bool format_changed = snapshot_.width != 0 && snapshot_.height != 0 &&
         (snapshot_.width != header.width || snapshot_.height != header.height);
     if (format_changed) {
-        // A rotation is delivered by AirPlay as a new SPS/PPS and therefore a
-        // new frame geometry. Do not let frames from the previous orientation
-        // survive the switch: at original quality they can retain tens of MB
-        // of NV12 data and the renderer may otherwise consume a stale-sized
-        // frame after its output buffers have been resized.
-        // Do not let the renderer hold on to a frame from the previous
-        // orientation while the new decoder geometry is being uploaded. This
-        // matters most for the maximum/original profile where a rotated frame
-        // can be several megabytes and texture recreation is asynchronous.
+        // On a decoded frame-size change, release the old latest frame
+        // before publishing new geometry. Individual renderers retain their
+        // previous texture until their next orientation-aware update.
         latest_frame_.reset();
         fps_sample_frames_ = snapshot_.video_frames;
         fps_sample_time_ = received_at;
         logging::write(std::format(
-            "wireless_video format_changed device_fp={} from={}x{} to={}x{} queue_reset=true",
+            "wireless_video format_changed device_fp={} from={}x{} to={}x{} latest_reset=true",
             anonymous_label(id_), snapshot_.width, snapshot_.height,
             header.width, header.height));
     }
