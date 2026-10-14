@@ -109,6 +109,11 @@ jobs:
             throw 'Could not restore libusb-1.0.dll'
           }
 
+      - name: Validate original pre6 shell resource and aperture geometry
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
+        shell: pwsh
+        run: python scripts/test_pre6_shell_asset.py
+
       - name: Verify Simplified Chinese and English resources
         shell: pwsh
         run: ./scripts/verify_localization.ps1
