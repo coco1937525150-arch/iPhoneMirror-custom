@@ -5161,6 +5161,74 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
 
     }
 
+    // Reproduce the user's real 1080x1920, 60fps, 6000kbps capture
+    // including AAC, transparent shell, aperture mask and background. A
+    // nominal-FPS/unit-test-only check cannot detect FFmpeg EOF/mux errors.
+    var fullHdCapture = Path.Combine(shellTestRoot, "fullhd-60fps-aac.mp4");
+    var fullHdPcm = new byte[3840];
+    var fullHdPixels = new byte[1080 * 1920 * 3 / 2];
+    Array.Fill(fullHdPixels, (byte)16, 0, 1080 * 1920);
+    Array.Fill(fullHdPixels, (byte)128, 1080 * 1920,
+        fullHdPixels.Length - 1080 * 1920);
+    long fullHdPts = 0;
+    long fullHdAudioNext = 0;
+    long fullHdAudioSequence = 0;
+    string? fullHdFailure = null;
+    await using (var fullHdRecorder = new MediaOutputService(
+        (_, w, h) => new Nv12VideoFrame(w, h, w,
+            Interlocked.Add(ref fullHdPts, 166_667), fullHdPixels),
+        (_, _) =>
+        {
+            var now = Environment.TickCount64;
+            if (now < Interlocked.Read(ref fullHdAudioNext)) return null;
+            Interlocked.Exchange(ref fullHdAudioNext, now + 20);
+            return new AudioPacket(
+                (ulong)Interlocked.Increment(ref fullHdAudioSequence),
+                48000, 2, 16, fullHdPcm);
+        },
+        (_, _, bg, _) => new PhoneShellComposition(
+            shellTestOverlay, bg, 24, 16, 144, 208, 1080, 1920,
+            ApertureMaskFile: shellTestMask)))
+    {
+        fullHdRecorder.StatusChanged += (message, failed) =>
+        {
+            if (failed) fullHdFailure = message;
+        };
+        using var startDeadline = new CancellationTokenSource(
+            TimeSpan.FromSeconds(20));
+        await fullHdRecorder.StartAsync(1,
+            new MediaOutputRequest(MediaOutputKind.Recording,
+                fullHdCapture, 1080, 1920, 60, 6000,
+                IncludePhoneShell: true, BackgroundImage: shellTestBackground),
+            installedFfmpegCapabilities, startDeadline.Token);
+        await Task.Delay(1100);
+        await fullHdRecorder.StopAsync();
+        if (fullHdFailure is not null)
+            throw new InvalidOperationException(
+                "1080p60 shell/AAC recording failed: " + fullHdFailure);
+        var finalMp4 = File.ReadAllBytes(fullHdCapture);
+        Equal(true, finalMp4.AsSpan().IndexOf("ftyp"u8) >= 0 &&
+            finalMp4.AsSpan().IndexOf("moov"u8) >= 0 &&
+            finalMp4.AsSpan().IndexOf("soun"u8) >= 0,
+            "1080x1920 60fps 6000kbps shell/background/AAC recording finalizes real MP4");
+        var decodeStart = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = installedFfmpegCapabilities.FfmpegPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var item in new[] { "-hide_banner", "-v", "error",
+            "-i", fullHdCapture, "-frames:v", "1", "-f", "null", "-" })
+            decodeStart.ArgumentList.Add(item);
+        using var decodeProcess = System.Diagnostics.Process.Start(decodeStart) ??
+            throw new InvalidOperationException(
+                "Unable to start 1080p60 MP4 decode validation");
+        await decodeProcess.WaitForExitAsync().WaitAsync(
+            TimeSpan.FromSeconds(45));
+        Equal(0, decodeProcess.ExitCode,
+            "1080p60 AAC MP4 video can actually be decoded after finalization");
+    }
+
     var interruptedAudioPath = Path.Combine(Path.GetTempPath(),
         $"iphone-mirror-interrupted-audio-{Guid.NewGuid():N}.mp4");
     await using var interruptedAudioOutput = new MediaOutputService(
