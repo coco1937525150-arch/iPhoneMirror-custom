@@ -184,8 +184,9 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void OnShellModeChanged(object sender, RoutedEventArgs e)
     {
-        if (ShellOptionsPanel is not null)
-            // Background selection remains available when the phone shell is hidden.
+        // Only the shell overlay is toggled. Background selection remains independent.
+        // The selected shell mode is persisted alongside other output settings.
+        SaveShellPreferences();
     }
 
     private void UpdateRecommendedRecordingBitrate()
