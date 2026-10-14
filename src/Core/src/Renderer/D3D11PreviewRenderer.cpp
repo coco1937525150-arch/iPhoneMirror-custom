@@ -213,6 +213,7 @@ Texture2D<float> yPlane : register(t0);
 Texture2D<float2> uvPlane : register(t1);
 Texture2D<float4> image : register(t2);
 Texture2D<float4> referenceShell : register(t3);
+Texture2D<float4> referenceAperture : register(t4);
 SamplerState linearSampler : register(s0);
 
 cbuffer ShapeConstants : register(b0) {
@@ -221,7 +222,7 @@ cbuffer ShapeConstants : register(b0) {
     float cornerExponent;
     float cornerEnabled;
     float rotationQuarterTurns;
-    float2 shapePadding;
+    float2 apertureCanvasSize;
     float yOffset;
     float yScale;
     float chromaOffset;
@@ -235,7 +236,7 @@ cbuffer ShapeConstants : register(b0) {
     float hdrSurface;
     float preserveHdr;
     float sourcePeakNits;
-    float3 colorPadding;
+    float3 apertureControl;
     float brightness;
     float contrast;
     float saturation;
@@ -274,6 +275,15 @@ float cornerCoverage(float2 pixel) {
 
 float4 premultiplyForCorner(float3 rgb, float2 pixel) {
     float alpha = cornerCoverage(pixel);
+    if (frameEnabled > 0.5 && apertureControl.x > 0.5) {
+        // The same central-connected-hole mask is used by FFmpeg recording.
+        // Only the interior transparency is video: the outside corners of
+        // the silver reference shell are ALSO transparent and must stay clear.
+        float2 sourceUv = pixel / max(apertureCanvasSize, float2(1.0, 1.0));
+        if (apertureCanvasSize.x > apertureCanvasSize.y)
+            sourceUv = float2(1.0 - sourceUv.y, sourceUv.x);
+        alpha = saturate(referenceAperture.Sample(linearSampler, sourceUv).r);
+    }
     return float4(rgb * alpha, alpha);
 }
 
@@ -570,6 +580,8 @@ struct D3D11PreviewRenderer::Impl {
     ComPtr<ID3D11PixelShader> reference_shell_shader;
     ComPtr<ID3D11Texture2D> reference_shell_texture;
     ComPtr<ID3D11ShaderResourceView> reference_shell_view;
+    ComPtr<ID3D11Texture2D> reference_aperture_texture;
+    ComPtr<ID3D11ShaderResourceView> reference_aperture_view;
     ComPtr<ID3D11PixelShader> cutout_pixel_shader;
     ComPtr<ID3D11BlendState> premultiplied_blend_state;
     ComPtr<ID3D11Buffer> shape_constants;
@@ -863,6 +875,8 @@ struct D3D11PreviewRenderer::Impl {
         sampler.Reset();
         shape_constants.Reset();
         premultiplied_blend_state.Reset();
+        reference_aperture_view.Reset();
+        reference_aperture_texture.Reset();
         reference_shell_view.Reset();
         reference_shell_texture.Reset();
         reference_shell_shader.Reset();
@@ -1139,7 +1153,8 @@ struct D3D11PreviewRenderer::Impl {
 
     void update_shape_constants(UINT width, UINT height, bool enabled, int rotation = 0,
         const media::DecodedFrame* frame = nullptr, float origin_x = 0.0F,
-        float origin_y = 0.0F, const DeviceFrameProfileData* frame_profile_override = nullptr) {
+        float origin_y = 0.0F, const DeviceFrameProfileData* frame_profile_override = nullptr,
+        bool allow_aperture = true) {
         ShapeConstantData values{};
         values.output_width = static_cast<float>(width);
         values.output_height = static_cast<float>(height);
@@ -1154,10 +1169,14 @@ struct D3D11PreviewRenderer::Impl {
         values.corner_exponent = curve_exponent;
         values.corner_enabled = enabled && normalized_radius > 0.0F ? 1.0F : 0.0F;
         values.rotation_quarter_turns = static_cast<float>(rotation);
+        values.padding[0] = static_cast<float>(target_width);
+        values.padding[1] = static_cast<float>(target_height);
         values.hdr_surface = hdr_surface_active() ? 1.0F : 0.0F;
         const auto local_frame_profile = frame_profile_override
             ? *frame_profile_override : device_frame_snapshot();
         const auto framed = device_frame_enabled(local_frame_profile);
+        values.color_padding[0] = allow_aperture && framed &&
+            reference_aperture_view && use_reference_shell(local_frame_profile) ? 1.0F : 0.0F;
         const auto screen = device_screen_rect(local_frame_profile);
         const auto display_short_edge = std::min(screen.width, screen.height);
         values.frame_enabled = framed ? 1.0F : 0.0F;
@@ -1300,6 +1319,51 @@ struct D3D11PreviewRenderer::Impl {
         }
         logging::write(std::format("d3d_preview reference_shell_loaded={}x{}",
             width, height));
+        // Decode the separately verified mask exported by WPF at startup.
+        // A different mask size is rejected rather than producing misaligned
+        // alpha in the display. It is never fetched from a stale user cache.
+        wchar_t mask_path[32768]{};
+        const auto mask_length = GetEnvironmentVariableW(
+            L"IPHONE_MIRROR_BUNDLED_APERTURE", mask_path,
+            static_cast<DWORD>(std::size(mask_path)));
+        if (!mask_length || mask_length >= std::size(mask_path) ||
+            !std::filesystem::is_regular_file(std::filesystem::path(mask_path))) {
+            logging::write("d3d_preview reference_aperture_file_missing");
+            return;
+        }
+        ComPtr<IWICBitmapDecoder> mask_decoder;
+        if (FAILED(imaging->CreateDecoderFromFilename(mask_path, nullptr,
+                GENERIC_READ, WICDecodeMetadataCacheOnLoad, &mask_decoder))) return;
+        ComPtr<IWICBitmapFrameDecode> mask_frame;
+        if (FAILED(mask_decoder->GetFrame(0, &mask_frame))) return;
+        ComPtr<IWICFormatConverter> mask_converter;
+        if (FAILED(imaging->CreateFormatConverter(&mask_converter)) ||
+            FAILED(mask_converter->Initialize(mask_frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone, nullptr, 0.0,
+                WICBitmapPaletteTypeCustom))) return;
+        UINT mask_width{}, mask_height{};
+        if (FAILED(mask_converter->GetSize(&mask_width, &mask_height)) ||
+            mask_width != width || mask_height != height) {
+            logging::write("d3d_preview reference_aperture_dimension_mismatch");
+            return;
+        }
+        std::vector<BYTE> mask_pixels(static_cast<std::size_t>(pitch) * height);
+        if (FAILED(mask_converter->CopyPixels(nullptr, pitch,
+                static_cast<UINT>(mask_pixels.size()), mask_pixels.data()))) return;
+        D3D11_SUBRESOURCE_DATA mask_initial{};
+        mask_initial.pSysMem = mask_pixels.data();
+        mask_initial.SysMemPitch = pitch;
+        if (FAILED(device->CreateTexture2D(&desc, &mask_initial,
+                &reference_aperture_texture)) ||
+            FAILED(device->CreateShaderResourceView(reference_aperture_texture.Get(),
+                nullptr, &reference_aperture_view))) {
+            reference_aperture_view.Reset();
+            reference_aperture_texture.Reset();
+            logging::write("d3d_preview reference_aperture_gpu_upload_failed");
+            return;
+        }
+        logging::write(std::format("d3d_preview reference_aperture_loaded={}x{}",
+            mask_width, mask_height));
     }
 
     bool use_reference_shell(const DeviceFrameProfileData& profile) const noexcept {
@@ -1790,13 +1854,17 @@ struct D3D11PreviewRenderer::Impl {
         const auto rounded = rounded_window_enabled();
         const auto draw_nv12 = [&](const D3D11_VIEWPORT& draw_viewport,
                                    UINT output_width, UINT output_height,
-                                   bool apply_corner, int rotation) {
+                                   bool apply_corner, int rotation,
+                                   bool apply_aperture) {
             context->RSSetViewports(1, &draw_viewport);
             context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context->VSSetShader(vertex_shader.Get(), nullptr, 0);
             context->PSSetShader(pixel_shader.Get(), nullptr, 0);
             update_shape_constants(output_width, output_height, apply_corner, rotation, &frame,
-                draw_viewport.TopLeftX, draw_viewport.TopLeftY, &frame_profile);
+                draw_viewport.TopLeftX, draw_viewport.TopLeftY,
+                &frame_profile, apply_aperture);
+            auto* mask_view = reference_aperture_view.Get();
+            context->PSSetShaderResources(4, 1, &mask_view);
             ID3D11ShaderResourceView* nv12_views[] = {
                 shared_gpu_frame ? shared_gpu_y_view.Get() : y_view.Get(),
                 shared_gpu_frame ? shared_gpu_uv_view.Get() : uv_view.Get()};
@@ -1804,6 +1872,8 @@ struct D3D11PreviewRenderer::Impl {
             context->PSSetSamplers(0, 1, sampler.GetAddressOf());
             context->Draw(3, 0);
             context->PSSetShaderResources(0, 3, empty);
+            ID3D11ShaderResourceView* cleared_mask = nullptr;
+            context->PSSetShaderResources(4, 1, &cleared_mask);
         };
 
         if (!use_limited_pass) {
@@ -1822,7 +1892,7 @@ struct D3D11PreviewRenderer::Impl {
             draw_nv12(viewport,
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
-                rounded, turns);
+                rounded, turns, true);
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             if (framed) draw_reference_shell(frame_profile);
@@ -1836,7 +1906,7 @@ struct D3D11PreviewRenderer::Impl {
             limited_viewport.Height = static_cast<float>(limited_height);
             limited_viewport.MinDepth = 0;
             limited_viewport.MaxDepth = 1;
-            draw_nv12(limited_viewport, limited_width, limited_height, false, turns);
+            draw_nv12(limited_viewport, limited_width, limited_height, false, turns, false);
 
             // A resource must not remain bound as an RTV when it becomes the
             // SRV for the copy pass; explicit unbinding avoids a driver-side
@@ -1856,6 +1926,8 @@ struct D3D11PreviewRenderer::Impl {
                 rounded, 0, nullptr, viewport.TopLeftX, viewport.TopLeftY, &frame_profile);
             ID3D11ShaderResourceView* copy_view = render_view.Get();
             context->PSSetShaderResources(2, 1, &copy_view);
+            auto* mask_view = reference_aperture_view.Get();
+            context->PSSetShaderResources(4, 1, &mask_view);
             constexpr float frame_blend[] = {0, 0, 0, 0};
             if (framed)
                 context->OMSetBlendState(premultiplied_blend_state.Get(),
@@ -1864,6 +1936,8 @@ struct D3D11PreviewRenderer::Impl {
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             context->PSSetShaderResources(0, 3, empty);
+            ID3D11ShaderResourceView* cleared_mask = nullptr;
+            context->PSSetShaderResources(4, 1, &cleared_mask);
             if (framed) draw_reference_shell(frame_profile);
             // Likewise leave the limited-render path's original pixels unobscured.
         }
