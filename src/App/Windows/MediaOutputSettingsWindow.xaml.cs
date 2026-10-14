@@ -15,6 +15,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     private readonly bool _previewOnly;
     private bool _savePromptOpen;
     private (uint Width, uint Height)? _lastDefaultSize;
+    private string _customBackgroundPath = string.Empty;
+    private bool _useDefaultWhiteBackground;
 
     internal MediaOutputSettingsWindow(MainViewModel viewModel, bool previewOnly = false)
     {
@@ -153,7 +155,16 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (Application.Current is not App app) return;
         var settings = app.UpdateSettings;
         IncludePhoneShellBox.IsChecked = settings.MediaOutputIncludePhoneShell;
-        BackgroundImageBox.Text = settings.MediaOutputBackgroundImagePath;
+        _customBackgroundPath = settings.MediaOutputBackgroundImagePath ?? string.Empty;
+        _useDefaultWhiteBackground = settings.MediaOutputUseDefaultWhiteBackground ??
+            string.IsNullOrWhiteSpace(_customBackgroundPath);
+        BackgroundImageBox.Text = _useDefaultWhiteBackground
+            ? "默认白板（9:16）" : _customBackgroundPath;
+        if (_useDefaultWhiteBackground)
+        {
+            RecordWidthBox.Text = "1080";
+            RecordHeightBox.Text = "1920";
+        }
         ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
     }
 
@@ -162,9 +173,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (_previewOnly || Application.Current is not App app) return;
         app.UpdateSettings.MediaOutputIncludePhoneShell =
             IncludePhoneShellBox.IsChecked == true;
-        app.UpdateSettings.MediaOutputBackgroundImagePath =
-            BackgroundImageBox.Text.Trim();
-        app.UpdateSettings.MediaOutputPhoneShellImagePath = string.Empty;
+        app.UpdateSettings.MediaOutputBackgroundImagePath = _customBackgroundPath;
+        app.UpdateSettings.MediaOutputUseDefaultWhiteBackground = _useDefaultWhiteBackground;
         app.UpdateSettings.MediaOutputRecordingDirectory = RecordingDirectoryBox.Text.Trim();
         _ = app.SaveUpdateSettings();
     }
@@ -175,8 +185,33 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
     }
 
-    private void OnChooseBackgroundClick(object sender, RoutedEventArgs e) =>
-        PickImage(BackgroundImageBox);
+    private string SelectedBackgroundPath =>
+        _useDefaultWhiteBackground ? string.Empty : _customBackgroundPath;
+
+    private void OnUseDefaultWhiteBackgroundClick(object sender, RoutedEventArgs e)
+    {
+        if (_previewOnly) return;
+        _useDefaultWhiteBackground = true;
+        BackgroundImageBox.Text = "默认白板（9:16）";
+        RecordWidthBox.Text = "1080";
+        RecordHeightBox.Text = "1920";
+        SaveShellPreferences();
+    }
+
+    private void OnChooseBackgroundClick(object sender, RoutedEventArgs e)
+    {
+        if (_previewOnly) return;
+        BackgroundImageBox.Text = _customBackgroundPath;
+        if (PickImage(BackgroundImageBox))
+        {
+            _customBackgroundPath = BackgroundImageBox.Text.Trim();
+            _useDefaultWhiteBackground = false;
+            SaveShellPreferences();
+        }
+        else
+            BackgroundImageBox.Text = _useDefaultWhiteBackground
+                ? "默认白板（9:16）" : _customBackgroundPath;
+    }
     private void OnChooseRecordingDirectoryClick(object sender, RoutedEventArgs e)
     {
         var picker = new OpenFolderDialog
@@ -193,52 +228,22 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         }
     }
 
-    private void OnImportGlobalShellClick(object sender, RoutedEventArgs e)
-    {
-        if (_previewOnly) return;
-        var dialog = new OpenFileDialog
-        {
-            Title = "导入全局 iPhone 16 Pro Max 手机壳",
-            Filter = "PNG 手机壳 (*.png)|*.png",
-            CheckFileExists = true,
-            Multiselect = false,
-        };
-        if (dialog.ShowDialog(this) != true) return;
-        try
-        {
-            PhoneShellAssetStore.Install(dialog.FileName);
-            DiagnosticLogger.Info("media_output", "global_shell_installed",
-                ("file", Path.GetFileName(PhoneShellAssetStore.CustomPath)));
-            MessageBox.Show(this,
-                "新手机壳已安装，录制、推流和布局编辑器将使用它。" +
-                " 为让已经创建的独立窗口重新载入 GPU 贴图，请重启软件。",
-                "手机壳更新完成", MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        catch (Exception error)
-        {
-            DiagnosticLogger.Exception("media_output", "global_shell_import_failed", error);
-            MessageBox.Show(this, error.Message, "导入手机壳失败",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
     private void OnEditRecordingLayoutClick(object sender, RoutedEventArgs e)
     {
         SaveShellPreferences();
         var hasWidth = uint.TryParse(RecordWidthBox.Text, out var width);
         var hasHeight = uint.TryParse(RecordHeightBox.Text, out var height);
-        var canvasWidth = hasWidth ? Math.Clamp(width & ~1U, 160U, 3840U) : 1280U;
-        var canvasHeight = hasHeight ? Math.Clamp(height & ~1U, 160U, 2160U) : 720U;
+        var canvasWidth = hasWidth ? Math.Clamp(width + (width & 1U), 160U, 4096U) : 1080U;
+        var canvasHeight = hasHeight ? Math.Clamp(height + (height & 1U), 160U, 4096U) : 1920U;
         var landscape = canvasWidth > canvasHeight;
         var editor = new RecordingLayoutEditorWindow(
-            BackgroundImageBox.Text.Trim(), landscape, canvasWidth, canvasHeight)
+            SelectedBackgroundPath, landscape, canvasWidth, canvasHeight)
             { Owner = this };
         if (editor.ShowDialog() == true) SaveShellPreferences();
     }
 
 
-    private void PickImage(TextBox target)
+    private bool PickImage(TextBox target)
     {
         var dialog = new OpenFileDialog
         {
@@ -248,9 +253,9 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         };
         if (File.Exists(target.Text))
             dialog.FileName = target.Text;
-        if (dialog.ShowDialog(this) != true) return;
+        if (dialog.ShowDialog(this) != true) return false;
         target.Text = dialog.FileName;
-        SaveShellPreferences();
+        return true;
     }
 
     private void OnStreamProtocolChanged(object sender, SelectionChangedEventArgs e) =>
@@ -299,7 +304,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         StopMediaOutputButton.Content = "完成录制";
         var result = await _viewModel.StartRecordingAsync(
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
-            BackgroundImageBox.Text.Trim(), string.Empty);
+            SelectedBackgroundPath, string.Empty);
         FeedbackText.Text = result.Message;
     }
 
@@ -319,7 +324,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         var result = await _viewModel.StartStreamingAsync(kind,
             StreamDestinationBox.Text.Trim(), StreamAuthorizationBox.Text.Trim(),
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
-            BackgroundImageBox.Text.Trim(), string.Empty);
+            SelectedBackgroundPath, string.Empty);
         FeedbackText.Text = result.Message;
     }
 
@@ -452,10 +457,22 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             uint.TryParse(heightBox.Text, out height) &&
             int.TryParse(fpsBox.Text, out fps) &&
             int.TryParse(bitrateBox.Text, out bitrate) &&
-            width >= 160 && height >= 160 &&
+            width is >= 160 and <= 4096 && height is >= 160 and <= 4096 &&
             fps >= 10 && fps <= (ReferenceEquals(fpsBox, RecordFpsBox) ? 120 : 60) &&
             bitrate is >= 500 and <= 50000)
+        {
+            var oldW = width;
+            var oldH = height;
+            width += width & 1U;
+            height += height & 1U;
+            if (width != oldW || height != oldH)
+            {
+                widthBox.Text = width.ToString();
+                heightBox.Text = height.ToString();
+                FeedbackText.Text = $"编码器要求偶数尺寸，已自动调整为 {width}×{height}。";
+            }
             return true;
+        }
         FeedbackText.Text = LocalizationService.Get("MediaOutputInvalidSettings");
         return false;
     }

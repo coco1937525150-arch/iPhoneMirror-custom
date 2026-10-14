@@ -4249,11 +4249,14 @@ Equal(true, bundledShellBytes.Length > 2000 &&
     "bundled user-reference phone shell has a valid PNG header");
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
-Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal),
-    "output settings no longer require picking an external phone shell");
+Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal) ||
+    outputSettingsXaml.Contains("OnImportGlobalShellClick", StringComparison.Ordinal),
+    "output settings cannot replace the bundled phone shell");
+Equal(true, outputSettingsXaml.Contains("OnUseDefaultWhiteBackgroundClick", StringComparison.Ordinal),
+    "output settings expose the default file-free whiteboard");
 
-// The editor must follow every selected background's native size, not a
-// fixed 1448x1440 preview. Test boundary placement after pixel rounding.
+// The editor must follow the chosen output canvas dimensions, not the
+// resolution of a tiny backdrop picture.
 foreach (var (canvasW, canvasH) in new[]
     { (1000, 2000), (1448, 1440), (1920, 1080), (1080, 1920) })
 {
@@ -4404,7 +4407,7 @@ Equal(true, shellArgs.Any(x => x.Contains(
         "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)),
     "phone shell overlays the full-rate video after background composition");
 Equal(true, shellArgs.Any(arg => arg.Contains(
-        "[2:v]setsar=1[phone_bg]", StringComparison.Ordinal)) &&
+        "[2:v]scale=1280:1440:force_original_aspect_ratio=increase,crop=1280:1440,setsar=1[phone_bg]", StringComparison.Ordinal)) &&
     shellArgs.Any(arg => arg.Contains(
         "force_original_aspect_ratio=increase,crop=984:1770",
         StringComparison.Ordinal)) &&

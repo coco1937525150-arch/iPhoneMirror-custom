@@ -67,24 +67,20 @@
                            TextWrapping="Wrap" FontSize="10"
                            Foreground="{DynamicResource MutedTextBrush}"/>
                 <Grid x:Name="ShellOptionsPanel" IsEnabled="False">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBox x:Name="BackgroundImageBox" Grid.Row="0" Grid.Column="0"
-                             Style="{StaticResource RoundedTextBox}" Height="34"
-                             ToolTip="{DynamicResource MediaOutputBackgroundHint}"/>
+                             Style="{StaticResource RoundedTextBox}" Height="34" IsReadOnly="True"
+                             ToolTip="默认白板无需选择文件；选择图片后使用自定义背景板。"/>
                     <Button Grid.Row="0" Grid.Column="2" Style="{StaticResource ToolButton}"
+                            Content="默认白板" Margin="0,0,8,0"
+                            ToolTip="启用纯白色 9:16 画布（1080×1920），无需选择背景图片"
+                            Click="OnUseDefaultWhiteBackgroundClick"/>
+                    <Button Grid.Row="0" Grid.Column="3" Style="{StaticResource ToolButton}"
                             Content="{DynamicResource MediaOutputChooseBackground}"
                             Click="OnChooseBackgroundClick"/>
-                    <!-- One replacement applies to the independent window,
-                         recording, streaming and the layout editor. -->
-                    <Button Grid.Row="1" Grid.ColumnSpan="3"
-                            Content="更换全局 iPhone 16 Pro Max 手机壳 PNG…"
-                            Margin="0,10,0,0"
-                            Style="{StaticResource ToolButton}"
-                            ToolTip="选择新的手机壳，导入后将自动处理屏幕透明区域；独立窗口需重启软件后刷新"
-                            Click="OnImportGlobalShellClick"/>
                 </Grid>
             </StackPanel>
         </Border>

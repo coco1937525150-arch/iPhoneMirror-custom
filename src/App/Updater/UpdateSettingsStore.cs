@@ -32,7 +32,8 @@ internal sealed class UpdateSettings
     public bool IndependentWindowAlwaysOnTop { get; set; }
     public bool MediaOutputIncludePhoneShell { get; set; } = true;
     public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
-    public string MediaOutputPhoneShellImagePath { get; set; } = string.Empty;
+    // Nullable for migrating existing background picture preferences.
+    public bool? MediaOutputUseDefaultWhiteBackground { get; set; }
     public string MediaOutputRecordingDirectory { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "iPhoneMirror");
     public double MediaOutputShellCenterX { get; set; } = 0.5;
@@ -119,7 +120,7 @@ internal sealed class UpdateSettings
         IndependentWindowAlwaysOnTop = IndependentWindowAlwaysOnTop,
         MediaOutputIncludePhoneShell = MediaOutputIncludePhoneShell,
         MediaOutputBackgroundImagePath = MediaOutputBackgroundImagePath,
-        MediaOutputPhoneShellImagePath = MediaOutputPhoneShellImagePath,
+        MediaOutputUseDefaultWhiteBackground = MediaOutputUseDefaultWhiteBackground,
         MediaOutputRecordingDirectory = MediaOutputRecordingDirectory,
         MediaOutputShellCenterX = MediaOutputShellCenterX,
         MediaOutputShellCenterY = MediaOutputShellCenterY,

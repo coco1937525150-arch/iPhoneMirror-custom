@@ -1195,9 +1195,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
             var bgIndex = videoIndex + 1;
             var shellIndex = videoIndex + 2;
             args.AddRange(["-filter_complex",
-                // Never center-crop a user-selected background: the MP4 canvas
-                // has already been chosen from its intrinsic pixel dimensions.
-                $"[{bgIndex}:v]setsar=1[phone_bg];" +
+                // Resize the backdrop to the chosen output dimensions, independently
+                // from the native source frame. Crop only the background overflow.
+                $"[{bgIndex}:v]scale={composition.OutputWidth}:{composition.OutputHeight}:" +
+                "force_original_aspect_ratio=increase," +
+                $"crop={composition.OutputWidth}:{composition.OutputHeight},setsar=1[phone_bg];" +
                 // Cover the entire shell viewport. 'decrease' + black pad
                 // exposed the background through the top/bottom of the bezel.
                 // Crop ONLY the phone video; the background stays untouched.

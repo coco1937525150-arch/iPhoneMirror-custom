@@ -96,23 +96,12 @@ internal static class PhoneShellMediaComposer
         if (!File.Exists(bundledShell))
             throw new FileNotFoundException("The built-in phone-shell image is missing.",
                 bundledShell);
-        // The FFmpeg source retains its capture dimensions; the composited
-        // canvas is instead the *full* background image at native pixel size.
+        // The encoder canvas is independent of the background image pixel size.
         var canvasWidth = (int)width;
         var canvasHeight = (int)height;
-        if (!string.IsNullOrWhiteSpace(backgroundFile))
-        {
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.UriSource = new Uri(Path.GetFullPath(backgroundFile));
-            image.EndInit();
-            canvasWidth = image.PixelWidth;
-            canvasHeight = image.PixelHeight;
-        }
         if (canvasWidth is < 160 or > 4096 || canvasHeight is < 160 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(backgroundFile),
-                "背景图原始尺寸需要在 160–4096 像素之间。");
+                "录制画布尺寸需要在 160–4096 像素之间。");
         if ((canvasWidth & 1) != 0 || (canvasHeight & 1) != 0)
             throw new InvalidOperationException(
                 "H.264 NV12 视频要求画布宽高为偶数。请将背景图调整为偶数像素尺寸后重试。");

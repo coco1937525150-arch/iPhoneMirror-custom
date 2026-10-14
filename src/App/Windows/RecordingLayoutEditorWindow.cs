@@ -11,14 +11,20 @@ namespace IPhoneMirror.App.Windows;
 
 /// <summary>
 /// A visual editor for the actual recording composition. The layout is
-/// normalized to the background image, not the preview-window pixel size.
-/// This keeps drag/zoom stable for arbitrary original-size backgrounds.
+/// normalized to the output canvas, not the imported background image pixels.
+/// This keeps tiny background pictures from degrading the phone image.
 /// </summary>
 internal sealed class RecordingLayoutEditorWindow : Window
 {
     private readonly Grid _preview = new();
     private readonly Canvas _overlay = new();
     private readonly Image _phone = new() { Stretch = Stretch.Fill, Cursor = Cursors.SizeAll };
+    private readonly Image _backgroundImage = new()
+    {
+        Stretch = Stretch.UniformToFill, ClipToBounds = true,
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center
+    };
     private readonly TextBlock _readout = new() { TextWrapping = TextWrapping.Wrap };
     private readonly BitmapSource _shell;
     private readonly bool _landscape;
@@ -57,20 +63,16 @@ internal sealed class RecordingLayoutEditorWindow : Window
                 ? Math.Clamp(settings.MediaOutputShellScale, .1, 4) : 1;
         }
 
-        var previewImage = new Image { Stretch = Stretch.Uniform };
+        _preview.Background = Brushes.LightGray;
         if (!string.IsNullOrWhiteSpace(backgroundPath) && File.Exists(backgroundPath))
         {
-            var background = LoadImage(backgroundPath);
-            _backgroundWidth = background.PixelWidth;
-            _backgroundHeight = background.PixelHeight;
-            previewImage.Source = background;
+            _backgroundImage.Source = LoadImage(backgroundPath);
+            _overlay.Background = Brushes.Transparent;
         }
         else
-        {
-            _preview.Background = Brushes.White;
-        }
+            _overlay.Background = Brushes.White;
         _preview.ClipToBounds = true;
-        _preview.Children.Add(previewImage);
+        _preview.Children.Add(_backgroundImage);
         _overlay.ClipToBounds = true;
         _overlay.IsHitTestVisible = true;
         _overlay.HorizontalAlignment = HorizontalAlignment.Center;
@@ -178,6 +180,8 @@ internal sealed class RecordingLayoutEditorWindow : Window
         var displayedHeight = _backgroundHeight * factor;
         _overlay.Width = displayedWidth;
         _overlay.Height = displayedHeight;
+        _backgroundImage.Width = displayedWidth;
+        _backgroundImage.Height = displayedHeight;
         _phone.Width = bounds.Width * factor;
         _phone.Height = bounds.Height * factor;
         Canvas.SetLeft(_phone, bounds.X * factor);

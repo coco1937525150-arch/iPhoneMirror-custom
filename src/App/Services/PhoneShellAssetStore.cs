@@ -5,25 +5,18 @@ using System.Windows.Media.Imaging;
 namespace IPhoneMirror.App.Services;
 
 /// <summary>
-/// A single on-disk phone-shell asset used by the recording compositor,
-/// WPF layout editor and the native independent-window renderer.
-/// The selected asset lives in LocalAppData so it works with read-only
-/// portable/package install directories.
+/// The immutable bundled phone shell shared by the editor and recording.
+/// Previous user overrides in LocalAppData are intentionally ignored.
 /// </summary>
 internal static class PhoneShellAssetStore
 {
     internal const string AssetName = "iphone16_pro_max_shell.png";
 
-    internal static string CustomPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "iPhoneMirror", "Assets", AssetName);
-
-    internal static bool HasCustomShell => File.Exists(CustomPath);
-
-    internal static string ActivePath => HasCustomShell ? CustomPath :
+    internal static string ActivePath =>
         Path.Combine(AppContext.BaseDirectory, "Assets", AssetName);
 
-    internal static void Install(string file, string? destinationPath = null)
+    // Build/test normalization helper; no user override is installed.
+    internal static void Install(string file, string destinationPath)
     {
         if (!File.Exists(file)) throw new FileNotFoundException(
             "手机壳 PNG 文件不存在。", file);
@@ -86,7 +79,7 @@ internal static class PhoneShellAssetStore
             PixelFormats.Bgra32, null, pixels, pitch);
         var png = new PngBitmapEncoder();
         png.Frames.Add(BitmapFrame.Create(corrected));
-        var destination = destinationPath ?? CustomPath;
+        var destination = destinationPath;
         var folder = Path.GetDirectoryName(destination)!;
         Directory.CreateDirectory(folder);
         var staging = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
