@@ -1837,6 +1837,7 @@ void test_wireless_multi_stream_isolation() {
     check(first->latest_frame() && first->latest_frame()->nv12.front() == 200,
         "wireless session recovery accepts a replacement frame without reconnecting");
 
+    const auto frames_before_disconnect = first->snapshot().video_frames;
     first->set_identity(L"First iPhone", false);
     check(first->snapshot().width == 0 && second->snapshot().width == 2,
         "disconnect clears only the matching wireless client");
@@ -1846,7 +1847,7 @@ void test_wireless_multi_stream_isolation() {
     first->publish_video(first_header, first_i420);
     check(first->connected() && first->latest_frame() != nullptr &&
             first->snapshot().width == 4 &&
-            first->snapshot().video_frames == 1 &&
+            first->snapshot().video_frames == frames_before_disconnect + 1 &&
             second->snapshot().width == 2,
         "fresh valid video after premature disconnect restores only its client");
     first->detach();
