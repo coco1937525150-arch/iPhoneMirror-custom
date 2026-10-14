@@ -26,7 +26,7 @@ def verify() -> None:
     digest = hashlib.sha256(data).hexdigest()
     assert len(data) == EXPECTED_LENGTH, f"Wrong shell byte length: {len(data)}"
     assert digest == EXPECTED_SHA256, f"Incorrect original shell SHA256: {digest}"
-    assert data[:8] == b"\\x89PNG\\r\\n\\x1a\\n", "Missing PNG signature"
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "Missing PNG signature"
     assert data[12:16] == b"IHDR", "Missing PNG IHDR"
     width, height, depth, color_type = struct.unpack(">IIBB", data[16:26])
     assert (width, height, depth, color_type) == (994, 2048, 8, 6), (
@@ -36,16 +36,16 @@ def verify() -> None:
 
     project = PROJECT.read_text(encoding="utf-8")
     assert re.search(
-        r'<EmbeddedResource\\s+Include="Assets\\\\iphone16_pro_max_shell.png"'
-        r'\\s+LogicalName="IPhoneMirror.Shell.IPhone16ProMax"\\s*/>',
+        r'<EmbeddedResource\s+Include="Assets\\iphone16_pro_max_shell.png"'
+        r'\s+LogicalName="IPhoneMirror.Shell.IPhone16ProMax"\s*/>',
         project,
     ), "The original shell is no longer embedded in the WPF executable"
 
     profile = PROFILE.read_text(encoding="utf-8")
     match = re.search(
-        r'IPhoneImportedShell\\s*=\\s*new\\s*\\(\\s*'
-        r'"iphone-dynamic-island-custom-shell"\\s*,\\s*true\\s*,\\s*'
-        r'([0-9.]+)\\s*,\\s*([0-9.]+)\\s*,\\s*([0-9.]+)',
+        r'IPhoneImportedShell\s*=\s*new\s*\(\s*'
+        r'"iphone-dynamic-island-custom-shell"\s*,\s*true\s*,\s*'
+        r'([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)',
         profile,
     )
     assert match, "Cannot locate the shared iPhone shell viewport profile"
