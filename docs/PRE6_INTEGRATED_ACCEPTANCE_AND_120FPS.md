@@ -123,3 +123,81 @@ must be verified before providing a download link.
 **Completion count:** 0/7 original P0 items have comprehensive final
 hardware acceptance. One of seven (P0-1) has visible partial hardware proof.
 CI passing, implementation status, and Windows+iPhone acceptance are separate.
+
+## 2026-10-14 night: NEW P0-1 connection integrity and P0-2 whole-phone rotation
+
+The screenshot/MP4 geometry issues remain open. **The newest user-reported
+regression takes precedence:** the iPhone still displays an active AirPlay
+screen-mirror session while the Windows iPhoneMirror UI says disconnected.
+This is a failure of reported receiver state or transport, not proof of an
+iOS teardown. Never treat no new decoded frames as proof of a closed AirPlay
+transport.
+
+### P0-1: preserve/recover true receiver state
+
+The receiver used to handle `Disconnected` by clearing the source, then
+`find_connected()` silently discarded all later Video packets for that same
+identity. A valid video packet arriving after a transient/stale disconnect
+callback could **never** recover the connection unless the host also emitted
+another `Connected` callback.
+
+This patch routes video through `get_or_create(..., false)`; its decoder
+validates the I420 payload before `publish_video()` re-arms `connected_`
+and restores a real streaming snapshot. Invalid/truncated input remains
+disconnected. Audio already has a valid-packet recovery path. New regression
+tests cover Connected -> Disconnected -> corrupt video (not connected) ->
+valid video (stream resumes) -> Disconnected again. Logs include
+`wireless_hub valid_video_recovered_connection` and the host already logs
+`callback disconnected`, `wait_end`, and summary counters.
+
+**This proves a code defect and repairs its irreversible state transition.
+It does NOT prove this was the only root cause of the user's specific
+disconnection.** On Windows + iPhone 16 Pro Max, capture both host callback
+and hub logs, differentiate explicit remote teardown, IPC host exit,
+render stall, and native capture teardown. AirPlay may legitimately have
+disconnected even while iOS Control Center still briefly shows a target.
+Compare the earlier stable candidate with the current one. Do not clear
+the decoder on mere frame inactivity, fabricate frames, restart endlessly,
+or claim device acceptance without a 30-minute hardware test.
+
+### P0-2: independent-window phone-body clockwise/counterclockwise animation
+
+The uploaded HTML provides the motion reference only. The application
+still uses the *existing* embedded 994x2048 shell asset and its central
+aperture mask, not the separate 1200x2471 reference mockup.
+
+- Existing right-click Rotate Left / Rotate Right commands and new Ctrl+Left /
+  Ctrl+Right act on the detached phone preview.
+- `PhoneRotationTimeline` reproduces 1000ms cubic-bezier(.76,0,.24,1), with
+  midflight retargeting from the current interpolated angle.
+- Native `D3D11PreviewRenderer` now provides one DirectComposition visual
+  transform, applied AFTER its original video/shell/aperture composition.
+  This means **the real AirPlay image and PNG turn together**, while its
+  internal UI layout/video content is not separately cross-faded,
+  redrawn or rotated by a different matrix.
+- The HWND expands once to a square diagonal-safe animation stage. The
+  renderer holds the ORIGINAL swap-chain size throughout the movement,
+  applies a uniform fit scale when work-area constraints require one, then
+  the app swaps the final window dimensions and commits the discrete source
+  rotation before clearing the temporary DComp transform.
+- No new AirPlay session or iOS orientation negotiation is performed.
+  Reverse control pointer mapping is suppressed while moving; afterwards
+  its existing integer 90-degree mapping resumes.
+- Respect reduced motion, prevent menu/keyboard duplication, release
+  animation state on window close/rebind/fullscreen.
+
+**Pending hardware acceptance**: check animated PNG+video alignment every
+quarter-second; no clipping at 45 degrees; 0/90/180/270 states; repeated
+mid-flight reversal; running 60fps video during rotation; high DPI,
+multiple monitors, minimized window, fullscreen transition, active audio,
+and receiver reconnection while animation is underway. Inspect native
+DirectComposition output instead of assuming tests of easing prove visual
+correctness.
+
+### pre6 integration gate
+
+P0-1 and P0-2 join all previously specified P0 items **inside the same
+pre6 version**, not a follow-up release. No new pre6 candidate may be
+delivered until Windows CI passes; all files are uniquely identified by
+workflow run, attempt, and source SHA, and are still `CI-UNVERIFIED`
+until hardware acceptance.
