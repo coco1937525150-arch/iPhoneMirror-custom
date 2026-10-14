@@ -1809,15 +1809,17 @@ Equal(true,
     mainViewModelSource.Contains("private void NotifyCaptureSessionChanged()", StringComparison.Ordinal),
     "Bluetooth action availability refreshes for busy, media-source, and capture-session changes");
 Equal(true,
-    previewRendererCode.Contains("horizontal_gap >= 0.0F && horizontal_gap < 1.0F",
+    previewRendererCode.Contains("edge_bleed_pixels = 1.5F",
         StringComparison.Ordinal) &&
-    previewRendererCode.Contains("vertical_gap >= 0.0F && vertical_gap < 1.0F",
+    previewRendererCode.Contains("reference_aperture_view &&",
         StringComparison.Ordinal) &&
-    previewRendererCode.Contains("aspect_error <= pixel_error_limit",
+    previewRendererCode.Contains("use_reference_shell(frame_profile) && aspect_error <= 0.005F",
         StringComparison.Ordinal) &&
-    previewRendererCode.Contains("viewport.Height = static_cast<float>(target_height);",
+    previewRendererCode.Contains("screen_area.x - edge_bleed_pixels",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("screen_area.y - edge_bleed_pixels",
         StringComparison.Ordinal),
-    "native preview removes only sub-pixel aspect-rounding bars");
+    "native preview bleeds under PNG aperture only for matched source aspect");
 var themeServiceText = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "ThemeService.cs"));
 Equal(true,
