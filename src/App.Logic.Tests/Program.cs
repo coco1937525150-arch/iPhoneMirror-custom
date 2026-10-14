@@ -4363,6 +4363,25 @@ Equal(true, maximizedPortraitShell.Height >= 1880 &&
     maximizedPortraitShell.Bottom <= 1915,
     "default full-height shell minimizes avoidable white bands without clipping");
 
+// Whole-phone DirectComposition animation uses CSS cubic-bezier(.76,0,.24,1)
+// over 1000ms, and retargeting must preserve the current eased visual angle.
+var rotationMotion = new PhoneRotationTimeline();
+rotationMotion.Retarget(90, TimeSpan.Zero);
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(500)) - 45) < .05,
+    "phone shell and video rotate halfway together at cubic-bezier temporal midpoint");
+rotationMotion.Retarget(-90, TimeSpan.FromMilliseconds(500));
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(500)) - 45) < .05,
+    "reversing phone rotation keeps the exact current angle without snapping");
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(1000)) - 22.5) < .05,
+    "reverse rotation continues smoothly through its new midpoint");
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(1500))) < .001 &&
+    rotationMotion.Finished(TimeSpan.FromMilliseconds(1500)),
+    "90 degree turn reversed midway returns to portrait in one second");
+rotationMotion = new PhoneRotationTimeline();
+rotationMotion.Retarget(-90, TimeSpan.Zero);
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(1000)) + 90) < .001,
+    "left rotation ends at -90 degrees without bounce or overshoot");
+
 // Imported phone image may have a solid-black display. Verify that the
 // imported asset gains a truly transparent aperture without modifying the
 // user's active shell file under LocalAppData.
