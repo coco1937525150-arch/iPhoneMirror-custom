@@ -85,6 +85,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
     private CancellationTokenSource? _runCancellation;
     private Process? _process;
     private Task? _runTask;
+    private MediaOutputKind? _activeKind;
     private string _lastError = string.Empty;
 
     internal event Action<string, bool>? StatusChanged;
@@ -323,6 +324,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var activeRecordingStagingPath = recordingStagingPath;
                 var activeComposition = composition;
                 _process = activeProcess;
+                _activeKind = request.Kind;
                 SessionHandle = sessionHandle;
                 _runCancellation = runCancellation;
                 _runTask = Task.Run(() => PumpAsync(activeProcess,
@@ -359,7 +361,16 @@ internal sealed class MediaOutputService : IAsyncDisposable
     {
         lock (_stderrGate)
         {
-            _lastError = line;
+            // FFmpeg's "Guessed Channel Layout: stereo" is a harmless input
+            // warning, not a diagnosis for an encoder abort. Keep the full
+            // stderr tail, but prefer lines that actually describe a failure.
+            if (line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("invalid", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("could not", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("unable to", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("not found", StringComparison.OrdinalIgnoreCase))
+                _lastError = line;
             _stderrTail.Enqueue(line);
             while (_stderrTail.Count > 24) _stderrTail.Dequeue();
         }
@@ -406,18 +417,26 @@ internal sealed class MediaOutputService : IAsyncDisposable
     {
         Task? task;
         Process? process;
+        MediaOutputKind? activeKind;
         await _lifecycleGate.WaitAsync();
         try
         {
             _runCancellation?.Cancel();
             task = _runTask;
             process = _process;
+            activeKind = _activeKind;
         }
         finally { _lifecycleGate.Release(); }
         if (task is null) return;
         DiagnosticLogger.Info("media_output", "stop_requested",
             ("session_handle", SessionHandle));
-        try { await task.WaitAsync(UserStopTimeout); }
+        // Recording needs time to drain pending raw video and write the MP4
+        // index/faststart atom. The old 20-second UI timeout killed FFmpeg
+        // BEFORE the 2-minute finalization window used by PumpAsync.
+        var stopTimeout = activeKind == MediaOutputKind.Recording
+            ? RecordingFinalizationTimeout + PumpTaskShutdownTimeout + TimeSpan.FromSeconds(15)
+            : UserStopTimeout;
+        try { await task.WaitAsync(stopTimeout); }
         catch (OperationCanceledException) { }
         catch (TimeoutException error) when (!task.IsCompleted)
         {
@@ -426,7 +445,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             // Do not block the UI forever when a native GPU readback cannot
             // observe cancellation. Preserve the diagnostic for the next run.
             throw new TimeoutException(
-                "Media output did not finish stopping within 20 seconds; FFmpeg was terminated.",
+                $"Media output did not finish stopping within {stopTimeout.TotalSeconds:F0} seconds; FFmpeg was terminated.",
                 error);
         }
     }
@@ -460,6 +479,14 @@ internal sealed class MediaOutputService : IAsyncDisposable
         {
             failure = await ExplainPipeFailureAsync(process, error);
         }
+        catch (IOException) when (cancellationToken.IsCancellationRequested)
+        {
+            // FFmpeg may close a named pipe concurrently with an intentional
+            // user stop. An expected pipe closure is not a failed recording.
+        }
+        catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
         catch (Exception error)
         {
             failure = error;
@@ -467,6 +494,30 @@ internal sealed class MediaOutputService : IAsyncDisposable
         finally
         {
             pumpCancellation.Cancel();
+            // Wait for both producers to acknowledge cancellation BEFORE
+            // closing their destination streams. Previously closing stdin
+            // and the PCM pipe first raised spurious IOException /
+            // ObjectDisposedException during a normal "完成录制" action.
+            var pumps = Task.WhenAll(videoTask ?? Task.CompletedTask,
+                audioTask ?? Task.CompletedTask);
+            try
+            {
+                await pumps.WaitAsync(PumpTaskShutdownTimeout);
+            }
+            catch (OperationCanceledException) { }
+            catch (IOException) when (cancellationToken.IsCancellationRequested) { }
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested) { }
+            catch (TimeoutException error) when (!pumps.IsCompleted)
+            {
+                failure ??= new TimeoutException(
+                    "A media input task did not stop within 8 seconds.", error);
+                DiagnosticLogger.Exception("media_output", "pump_shutdown_timeout", error,
+                    ("kind", request.Kind));
+                await KillProcessAsync(process);
+            }
+            catch (Exception error) { failure ??= error; }
+            // EOF on both FFmpeg inputs is what finalizes MP4. Only signal
+            // it AFTER the tasks have released all normal write operations.
             try { process.StandardInput.Close(); }
             catch (Exception error)
             {
@@ -479,22 +530,6 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 DiagnosticLogger.ExceptionOnce("media-audio-pipe-dispose", "media_output",
                     "audio_pipe_dispose_failed", error);
             }
-            var pumps = Task.WhenAll(videoTask ?? Task.CompletedTask,
-                audioTask ?? Task.CompletedTask);
-            try
-            {
-                await pumps.WaitAsync(PumpTaskShutdownTimeout);
-            }
-            catch (OperationCanceledException) { }
-            catch (TimeoutException error) when (!pumps.IsCompleted)
-            {
-                failure ??= new TimeoutException(
-                    "A media input task did not stop within 8 seconds.", error);
-                DiagnosticLogger.Exception("media_output", "pump_shutdown_timeout", error,
-                    ("kind", request.Kind));
-                await KillProcessAsync(process);
-            }
-            catch (Exception error) { failure ??= error; }
             var shutdownTimeout = request.Kind == MediaOutputKind.Recording
                 ? RecordingFinalizationTimeout : StreamShutdownTimeout;
             try
@@ -517,9 +552,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
             if (TryGetExitCode(process, out var exitCode) && exitCode != 0)
             {
                 failure ??= new InvalidOperationException(
-                    string.IsNullOrWhiteSpace(_lastError)
-                        ? $"FFmpeg exited with code {exitCode} while finalizing output."
-                        : _lastError);
+                    $"FFmpeg exited with code {exitCode} while finalizing output." +
+                    (string.IsNullOrWhiteSpace(_lastError)
+                        ? " No explicit FFmpeg error was reported. Recent stderr: " +
+                            GetFfmpegErrorTail()
+                        : " " + _lastError));
             }
             if (recordingStagingPath is not null)
             {
@@ -555,6 +592,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 {
                     _process = null;
                     _runTask = null;
+                    _activeKind = null;
                     _runCancellation?.Dispose();
                     _runCancellation = null;
                     SessionHandle = 0;
