@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
@@ -11,6 +12,34 @@ namespace IPhoneMirror.App.Services;
 /// </summary>
 internal static class PhoneShellApertureMask
 {
+    internal static string ExportVerifiedAperture(string verifiedShellPath)
+    {
+        // The source is a SHA256-verified image extracted from the assembly.
+        // Regenerate each launch rather than trusting an old user-writable mask.
+        var image = new BitmapImage();
+        image.BeginInit();
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.UriSource = new Uri(Path.GetFullPath(verifiedShellPath), UriKind.Absolute);
+        image.EndInit();
+        image.Freeze();
+        var aperture = FromShell(image);
+        var destination = Path.Combine(Path.GetDirectoryName(verifiedShellPath)!,
+            "iphone16_pro_max_shell.aperture-v1.png");
+        var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(aperture));
+            using (var stream = File.Create(temporary)) encoder.Save(stream);
+            File.Move(temporary, destination, overwrite: true);
+            return destination;
+        }
+        finally
+        {
+            try { File.Delete(temporary); } catch (IOException) { }
+        }
+    }
+
     internal static BitmapSource FromShell(BitmapSource shell)
     {
         var source = new FormatConvertedBitmap(shell, PixelFormats.Bgra32, null, 0);
