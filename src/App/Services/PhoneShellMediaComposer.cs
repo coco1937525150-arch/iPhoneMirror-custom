@@ -80,8 +80,12 @@ internal static class PhoneShellMediaComposer
             !double.IsFinite(aspect) || aspect <= 0)
             throw new ArgumentOutOfRangeException(nameof(canvasWidth));
         const double margin = 5;
-        var baseHeight = Math.Min(canvasHeight * .94,
-            canvasWidth * .94 / aspect);
+        // Fill the available canvas height as far as the shell's native
+        // aspect permits. The previous 94% default introduced avoidable
+        // top/bottom white bands even when the user selected 100% zoom.
+        // Keep the 5px safety margin and never stretch/crop the bezel.
+        var baseHeight = Math.Min(canvasHeight * .99,
+            canvasWidth * .99 / aspect);
         var baseWidth = baseHeight * aspect;
         var maxScale = Math.Min(4, Math.Min(
             (canvasWidth - 2 * margin) / baseWidth,
