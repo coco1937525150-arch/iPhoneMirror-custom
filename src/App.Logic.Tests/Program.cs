@@ -4276,7 +4276,7 @@ Equal(true,
     nativeRendererSource.Contains("GetEnvironmentVariableW(", StringComparison.Ordinal) &&
     nativeRendererSource.Contains("IPHONE_MIRROR_BUNDLED_SHELL", StringComparison.Ordinal) &&
     nativeRendererSource.Contains("profile.side_inset - 0.048F", StringComparison.Ordinal) &&
-    !nativeRendererSource.Contains("GetEnvironmentVariableW(L\\\"LOCALAPPDATA\\\"", StringComparison.Ordinal),
+    !nativeRendererSource.Contains("local_app_data[", StringComparison.Ordinal),
     "native D3D uses the bundled PNG with the calibrated profile, not the legacy user override");
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
