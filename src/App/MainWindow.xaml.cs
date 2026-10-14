@@ -1145,6 +1145,26 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // event. Restore the main preview even when reverse control was
         // disabled first and its active-route fields have already been cleared.
         QueueMainPreviewHostSync();
+        // The independent HWND and its D3D session have just been torn down.
+        // Retry the main preview handoff only after WPF has made its HwndHost
+        // visible and measured. This also repairs a failed first attach when
+        // the previous window's native swapchain releases one dispatcher turn
+        // later. Never create a new AirPlay session or disconnect the device.
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            SynchronizeMainPreviewHost();
+            if (DeviceViewModel.UdidEquals(_viewModel.SelectedDevice?.Udid, udid) &&
+                _viewModel.CurrentSessionHandle != 0 &&
+                _viewModel.IsCapturing && !_viewModel.IsVideoProtected &&
+                !_viewModel.IsAudioOnlyAirPlay)
+            {
+                var refreshed = MainPreviewHost.ForceRefresh();
+                _viewModel.AddDiagnosticLog(AppLog.Event(
+                    "independent_close_main_preview_restored",
+                    ("device", AppLog.Device(udid)), ("refresh_success", refreshed),
+                    ("handle", AppLog.Handle(_viewModel.CurrentSessionHandle))));
+            }
+        });
         Interlocked.Exchange(ref _bluetoothRouteChanging, 1);
         await _bluetoothRouteGate.WaitAsync();
         var closingActiveControlWindow = false;
@@ -6355,9 +6375,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _viewModel.IsCapturing && !_viewModel.IsAudioOnlyAirPlay &&
             !_viewModel.IsVideoProtected &&
             _viewModel.CurrentSessionHandle != 0 && !independentOnMain;
-        MainPreviewHost.SetPresentationVisible(visible);
         if (!visible)
         {
+            MainPreviewHost.SetPresentationVisible(false);
             // HwndHost owns native airspace and cannot be covered by the WPF
             // independent-window notice. Collapsing the host removes that
             // child HWND from composition until the main preview is restored.
@@ -6366,9 +6386,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             return;
         }
 
+        // Reactivate WPF airspace BEFORE attaching the D3D11 swapchain.
+        // Attaching a renderer to the still-collapsed HWND can leave the main
+        // window black after the independent window closes.
         MainPreviewHost.ClearValue(VisibilityProperty);
-        MainPreviewHost.Activate();
         MainPreviewHost.SetPresentationVisible(true);
+        var attached = MainPreviewHost.Activate();
+        if (!attached)
+            _viewModel.AddDiagnosticLog(AppLog.Event(
+                "main_preview_reattach_failed",
+                ("handle", AppLog.Handle(_viewModel.CurrentSessionHandle))));
     }
 
     private void OnDeviceVideoSizeChanged(string udid, uint width, uint height) =>
