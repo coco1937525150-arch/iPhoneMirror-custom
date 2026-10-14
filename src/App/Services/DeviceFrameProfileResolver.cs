@@ -28,11 +28,14 @@ internal static class DeviceFrameProfileResolver
         // Dynamic Island is already part of the decoded iOS picture.
         DeviceCutoutKind.None, 0, 0, 0);
 
-    // Geometry reserved for the single, bundled iPhone 16 Pro Max bezel.
+    // Geometry calibrated against the opaque ring / transparent screen in the
+    // immutable 994x2048 RGBA shell: center aperture approximately x=43..949,
+    // y=39..2008. Ratios use DISPLAY short-edge units (not outer width).
+    // Keep recorder, WPF layout editor and native preview on one profile.
     // The shell can no longer be overridden by files under LocalAppData.
     internal static readonly DeviceFrameProfile IPhoneImportedShell = new(
         "iphone-dynamic-island-custom-shell", true,
-        0.035, 0.018, 0.018, 0.158,
+        0.048, 0.043, 0.043, 0.158,
         DeviceCutoutKind.None, 0, 0, 0);
 
     internal static DeviceFrameProfile ActiveIPhoneShell =>
