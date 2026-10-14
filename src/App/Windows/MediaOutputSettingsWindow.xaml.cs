@@ -361,7 +361,9 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         StopMediaOutputButton.Content = "完成录制";
         var result = await _viewModel.StartRecordingAsync(
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
-            SelectedBackgroundPath, string.Empty);
+            SelectedBackgroundPath, string.Empty,
+            useBackgroundCanvas: _useDefaultWhiteBackground ||
+                !string.IsNullOrWhiteSpace(_customBackgroundPath));
         FeedbackText.Text = result.Message;
     }
 
@@ -381,7 +383,9 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         var result = await _viewModel.StartStreamingAsync(kind,
             StreamDestinationBox.Text.Trim(), StreamAuthorizationBox.Text.Trim(),
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
-            SelectedBackgroundPath, string.Empty);
+            SelectedBackgroundPath, string.Empty,
+            useBackgroundCanvas: _useDefaultWhiteBackground ||
+                !string.IsNullOrWhiteSpace(_customBackgroundPath));
         FeedbackText.Text = result.Message;
     }
 
