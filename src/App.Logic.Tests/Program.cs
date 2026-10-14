@@ -4456,6 +4456,23 @@ Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
     shellSilentArgs.Any(x => x.Contains("[phone_screen][2:v]overlay=0:0",
         StringComparison.Ordinal)) && shellSilentArgs.Contains("-an", StringComparer.Ordinal),
     "video-only shell output maintains correct input indices without PCM audio");
+var backgroundOnlyOutput = shellOutput with
+{
+    IncludePhoneShell = false,
+    UseBackgroundCanvas = true,
+};
+var backgroundOnlyArgs = MediaOutputService.BuildArguments(backgroundOnlyOutput,
+    ffmpegCapabilities, composition: shellComposition);
+Equal(true,
+    backgroundOnlyArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
+    backgroundOnlyArgs.Contains("custom-background.png", StringComparer.Ordinal) &&
+    !backgroundOnlyArgs.Contains("transparent-shell.png", StringComparer.Ordinal) &&
+    backgroundOnlyArgs.Any(arg => arg.Contains(
+        "[phone_screen]format=nv12[composited]", StringComparison.Ordinal)) &&
+    backgroundOnlyArgs.All(arg => !arg.Contains(
+        "[phone_screen][3:v]overlay", StringComparison.Ordinal)),
+    "whiteboard and custom backgrounds compose without an unwanted bezel");
+
 Equal(false, recordingArguments.Contains("-filter_complex", StringComparer.Ordinal),
     "ordinary recording keeps its original uncomposited encoder pipeline");
 
