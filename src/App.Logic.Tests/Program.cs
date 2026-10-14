@@ -4247,6 +4247,15 @@ Equal(true, bundledShellBytes.Length > 2000 &&
     bundledShellBytes.AsSpan(0, 8).SequenceEqual(
         new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
     "bundled user-reference phone shell has a valid PNG header");
+var appProjectFile = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "iPhoneMirror.App.csproj"));
+Equal(true, appProjectFile.Contains(
+        "EmbeddedResource Include=\"Assets\\iphone16_pro_max_shell.png\"", StringComparison.Ordinal) &&
+    appProjectFile.Contains(
+        "LogicalName=\"IPhoneMirror.Shell.IPhone16ProMax\"", StringComparison.Ordinal),
+    "phone shell is embedded inside the executable, not distributed as a loose image");
+Equal(true, File.Exists(PhoneShellAssetStore.ActivePath),
+    "embedded phone shell is extracted to a content-addressed runtime cache");
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
 Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal) ||
