@@ -5164,6 +5164,14 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
     // Reproduce the user's real 1080x1920, 60fps, 6000kbps capture
     // including AAC, transparent shell, aperture mask and background. A
     // nominal-FPS/unit-test-only check cannot detect FFmpeg EOF/mux errors.
+    // The earlier shell-recorder run correctly owns and deletes its temporary
+    // shell/mask during Cleanup(). Generate fresh overlay inputs for this
+    // independent 1080p60 recording; do not rely on deleted test resources.
+    SaveTestBitmap(shellTestOverlay, shellPixels);
+    var fullHdMaskEncoder = new PngBitmapEncoder();
+    fullHdMaskEncoder.Frames.Add(BitmapFrame.Create(matteBitmap));
+    using (var restoredMask = File.Create(shellTestMask))
+        fullHdMaskEncoder.Save(restoredMask);
     var fullHdCapture = Path.Combine(shellTestRoot, "fullhd-60fps-aac.mp4");
     var fullHdPcm = new byte[3840];
     var fullHdPixels = new byte[1080 * 1920 * 3 / 2];
