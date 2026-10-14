@@ -127,3 +127,39 @@ jobs:
           path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14
+
+      # A separately named PR-only testing artifact. Passing CI is not
+      # equivalent to accepting the bundled shell asset or iPhone hardware tests.
+      - name: Write pre6 integrated build provenance
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'outputs/iPhoneMirror'
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw 'Missing published Windows x64 output directory.'
+          }
+          @(
+            'Build: pre6 integrated CI candidate (NOT hardware validated)'
+            "Git commit: $env:GITHUB_SHA"
+            "Git workflow run: $env:GITHUB_RUN_ID"
+            'Source FPS validation: pending physical iPhone/Windows measurements'
+            'Bundled iPhone shell PNG verification: pending until original asset committed'
+          ) | Set-Content -LiteralPath (Join-Path $root 'BUILD_PROVENANCE.txt') -Encoding utf8
+          Get-ChildItem -LiteralPath $root -File -Recurse |
+            Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = [System.IO.Path]::GetRelativePath((Resolve-Path $root).Path, $_.FullName).Replace('\\', '/')
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $relative"
+            } | Set-Content -LiteralPath (Join-Path $root 'SHA256SUMS.txt') -Encoding ascii
+
+      - name: Upload pre6 integrated CI testing artifact
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneMirror-pre6-integrated-CI-UNVERIFIED
+          path: outputs/iPhoneMirror/
+          if-no-files-found: error
+          retention-days: 14
