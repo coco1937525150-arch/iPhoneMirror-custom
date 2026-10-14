@@ -204,25 +204,27 @@ internal sealed class MediaOutputService : IAsyncDisposable
     {
         ArgumentOutOfRangeException.ThrowIfZero(sessionHandle);
         Validate(request, capabilities);
-        // FFmpeg assigns the requested nominal FPS to rawvideo, regardless of
-        // whether iOS supplies that many distinct frames. Refuse 120fps MP4
-        // unless the source's distinct timestamps and wall-clock observations
-        // BOTH substantiate a true high-frame-rate feed.
-        if (request.Kind == MediaOutputKind.Recording && request.FrameRate > 60)
-        {
-            var measured = await MeasureDistinctSourceFpsAsync(
-                sessionHandle, request.Width, request.Height, cancellationToken);
-            DiagnosticLogger.Info("media_output", "high_fps_source_preflight",
-                ("requested_fps", request.FrameRate), ("measured_fps", measured));
-            if (measured < request.FrameRate * 0.90)
-                throw new InvalidOperationException(
-                    $"无法启动真实 {request.FrameRate}fps 录制：实际输入约 {measured:F1}fps。" +
-                    " 请改用 60fps，或先确认 iPhone 视频流确实输出 120 帧/秒。");
-        }
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
+            // Do not read 120fps sample buffers for 1.2s while another output
+            // is already active. Perform high-rate preflight under the same
+            // lifecycle gate used by Start/Stop to serialize transitions.
             if (IsRunning) throw new InvalidOperationException("A media output is already active.");
+            // FFmpeg assigns the requested nominal FPS to rawvideo, regardless
+            // of actual source frame cadence. Refuse 120fps unless source PTS
+            // and observed distinct frame count BOTH establish genuine 120fps.
+            if (request.Kind == MediaOutputKind.Recording && request.FrameRate > 60)
+            {
+                var measured = await MeasureDistinctSourceFpsAsync(
+                    sessionHandle, request.Width, request.Height, cancellationToken);
+                DiagnosticLogger.Info("media_output", "high_fps_source_preflight",
+                    ("requested_fps", request.FrameRate), ("measured_fps", measured));
+                if (measured < request.FrameRate * 0.90)
+                    throw new InvalidOperationException(
+                        $"无法启动真实 {request.FrameRate}fps 录制：实际输入约 {measured:F1}fps。" +
+                        " 请改用 60fps，或先确认 iPhone 视频流确实输出 120 帧/秒。");
+            }
             _lastError = string.Empty;
             lock (_stderrGate) _stderrTail.Clear();
             var firstAudio = await TryWaitForAudioAsync(sessionHandle, cancellationToken);
