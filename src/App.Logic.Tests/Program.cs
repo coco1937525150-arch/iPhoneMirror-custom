@@ -4243,6 +4243,13 @@ Sequence(["-hide_banner", "-loglevel", "warning", "-nostdin",
 var bundledShellPath = Path.Combine(sourceDirectory, "App", "Assets",
     "iphone16_pro_max_shell.png");
 var bundledShellBytes = File.ReadAllBytes(bundledShellPath);
+Equal("0539067df832d4ec3da82baaf7e690ff51c584b7dae664e16062b236eea813b4",
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bundledShellBytes)).ToLowerInvariant(),
+    "pre6 includes the exact original iPhone 16 Pro Max reference shell, never the old 240x509 fallback");
+var originalShellAperture = DeviceFrameProfileResolver.ActiveIPhoneShell
+    .GetScreenRect(994, 2048);
+Equal(new DeviceScreenRect(44, 39, 906, 1970), originalShellAperture,
+    "shared original-shell screen viewport matches measured 994x2048 RGBA aperture");
 Equal(true, bundledShellBytes.Length > 2000 &&
     bundledShellBytes.AsSpan(0, 8).SequenceEqual(
         new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
@@ -4258,6 +4265,11 @@ Equal(true, File.Exists(PhoneShellAssetStore.ActivePath),
     "embedded phone shell is extracted to a content-addressed runtime cache");
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
+Equal(true, outputSettingsXaml.Contains("<ScrollViewer Grid.Row=\\"0\\"", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("<Border Grid.Row=\\"1\\" Background=", StringComparison.Ordinal) &&
+    outputSettingsXaml.Split("x:Name=\\"StartRecordingButton\\"").Length == 2 &&
+    !outputSettingsXaml.Contains("高于 60fps 的录制需检测真实源帧率", StringComparison.Ordinal),
+    "recording action stays visible in fixed footer, with obsolete explanatory text removed");
 Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal) ||
     outputSettingsXaml.Contains("OnImportGlobalShellClick", StringComparison.Ordinal),
     "output settings cannot replace the bundled phone shell");
