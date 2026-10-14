@@ -45,6 +45,21 @@ struct WirelessReceiverHubTestAccess {
         hub.handle_message(header, {});
     }
 
+    static void handle_video(WirelessReceiverHub& hub,
+        const wireless::MessageHeader& header,
+        const std::vector<std::uint8_t>& payload) {
+        hub.handle_message(header, payload);
+    }
+
+    static iPhoneMirror::capture::Snapshot snapshot(
+        const WirelessReceiverHub& hub, std::wstring_view id) {
+        std::scoped_lock lock(hub.mutex_);
+        const auto found = hub.clients_.find(id);
+        if (found == hub.clients_.end())
+            throw std::runtime_error("missing test wireless device");
+        return found->second->snapshot();
+    }
+
     static bool connected(const WirelessReceiverHub& hub, std::wstring_view id) {
         std::scoped_lock lock(hub.mutex_);
         const auto found = hub.clients_.find(id);
@@ -1916,6 +1931,50 @@ void test_wireless_volume_before_connection() {
         "AirPlay disconnect clears the retained remote volume");
 }
 
+void test_wireless_valid_video_recovers_false_disconnect() {
+    using iPhoneMirror::capture::WirelessReceiverHubTestAccess;
+    using iPhoneMirror::wireless::MessageType;
+    iPhoneMirror::capture::WirelessReceiverHub hub;
+    constexpr char id[] = "00:11:22:33:44:55";
+    constexpr wchar_t wide_id[] = L"00:11:22:33:44:55";
+
+    iPhoneMirror::wireless::MessageHeader connected;
+    connected.type = MessageType::Connected;
+    std::copy(std::begin(id), std::end(id), connected.device_id);
+    WirelessReceiverHubTestAccess::handle(hub, connected);
+    check(WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "receiver begins connected after AirPlay callback");
+
+    auto disconnected = connected;
+    disconnected.type = MessageType::Disconnected;
+    WirelessReceiverHubTestAccess::handle(hub, disconnected);
+    check(!WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "real disconnected callback still transitions receiver out of connected");
+
+    auto video = connected;
+    video.type = MessageType::Video;
+    video.width = 2;
+    video.height = 2;
+    video.stride[0] = 2;
+    video.stride[1] = video.stride[2] = 1;
+    video.plane_size[0] = 4;
+    video.plane_size[1] = video.plane_size[2] = 1;
+    const std::vector<std::uint8_t> valid_i420{1, 2, 3, 4, 10, 20};
+    WirelessReceiverHubTestAccess::handle_video(hub, video, {1, 2, 3});
+    check(!WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "invalid/truncated I420 cannot fabricate a live connection");
+    WirelessReceiverHubTestAccess::handle_video(hub, video, valid_i420);
+    const auto recovered = WirelessReceiverHubTestAccess::snapshot(hub, wide_id);
+    check(WirelessReceiverHubTestAccess::connected(hub, wide_id) &&
+          recovered.state == iPhoneMirror::capture::State::Streaming &&
+          recovered.video_frames == 1 && recovered.width == 2 && recovered.height == 2,
+        "genuine video after premature disconnect restores receiver and screen");
+
+    WirelessReceiverHubTestAccess::handle(hub, disconnected);
+    check(!WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "subsequent true disconnect still takes effect until video resumes");
+}
+
 void test_media_command_queue() {
     using iPhoneMirror::capture::MediaCastCommand;
     using iPhoneMirror::capture::MediaCastCommandType;
@@ -2139,6 +2198,7 @@ int main(int argc, char** argv) {
         test_wireless_multi_stream_isolation();
         test_wireless_audio_only_stream();
         test_wireless_volume_before_connection();
+        test_wireless_valid_video_recovers_false_disconnect();
         test_media_command_queue();
         test_logging_shutdown_boundary();
     } catch (const std::exception& error) {
