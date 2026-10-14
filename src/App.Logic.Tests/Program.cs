@@ -4263,6 +4263,21 @@ Equal(true, appProjectFile.Contains(
     "phone shell is embedded inside the executable, not distributed as a loose image");
 Equal(true, File.Exists(PhoneShellAssetStore.ActivePath),
     "embedded phone shell is extracted to a content-addressed runtime cache");
+var startupSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "App.xaml.cs"));
+var nativeRendererSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "Renderer", "D3D11PreviewRenderer.cpp"));
+Equal(true,
+    startupSource.Contains("IPHONE_MIRROR_BUNDLED_SHELL", StringComparison.Ordinal) &&
+    startupSource.IndexOf("PhoneShellAssetStore.ActivePath", StringComparison.Ordinal) <
+    startupSource.IndexOf("MainWindow = new MainWindow()", StringComparison.Ordinal),
+    "WPF passes the original verified embedded shell path before native preview startup");
+Equal(true,
+    nativeRendererSource.Contains("GetEnvironmentVariableW(", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("IPHONE_MIRROR_BUNDLED_SHELL", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("profile.side_inset - 0.048F", StringComparison.Ordinal) &&
+    !nativeRendererSource.Contains("GetEnvironmentVariableW(L\\\"LOCALAPPDATA\\\"", StringComparison.Ordinal),
+    "native D3D uses the bundled PNG with the calibrated profile, not the legacy user override");
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
 Equal(true, outputSettingsXaml.Contains("<ScrollViewer Grid.Row=", StringComparison.Ordinal) &&
