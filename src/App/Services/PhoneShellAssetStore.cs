@@ -1,29 +1,60 @@
 using System.IO;
+using System.Security.Cryptography;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace IPhoneMirror.App.Services;
 
 /// <summary>
-/// A single on-disk phone-shell asset used by the recording compositor,
-/// WPF layout editor and the native independent-window renderer.
-/// The selected asset lives in LocalAppData so it works with read-only
-/// portable/package install directories.
+/// The immutable bundled phone shell shared by the editor and recording.
+/// Previous user overrides in LocalAppData are intentionally ignored.
 /// </summary>
 internal static class PhoneShellAssetStore
 {
     internal const string AssetName = "iphone16_pro_max_shell.png";
 
-    internal static string CustomPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "iPhoneMirror", "Assets", AssetName);
+    private const string ResourceName = "IPhoneMirror.Shell.IPhone16ProMax";
+    private static readonly Lazy<string> BundledAsset = new(ExtractBundledAsset);
 
-    internal static bool HasCustomShell => File.Exists(CustomPath);
+    // FFmpeg and the independent compositor require a file path. The source
+    // bytes are embedded in the executable and extracted by content hash;
+    // neither app settings nor a neighboring Assets folder can override them.
+    internal static string ActivePath => BundledAsset.Value;
 
-    internal static string ActivePath => HasCustomShell ? CustomPath :
-        Path.Combine(AppContext.BaseDirectory, "Assets", AssetName);
+    private static string ExtractBundledAsset()
+    {
+        using var resource = typeof(PhoneShellAssetStore).Assembly
+            .GetManifestResourceStream(ResourceName) ??
+            throw new FileNotFoundException(
+                "内置 iPhone 16 Pro Max 手机壳资源缺失，请重新安装完整版本。", ResourceName);
+        using var data = new MemoryStream();
+        resource.CopyTo(data);
+        var bytes = data.ToArray();
+        if (bytes.Length < 2000 ||
+            !bytes.AsSpan(0, 8).SequenceEqual(
+                new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+            throw new InvalidDataException("内置手机壳 PNG 数据无效。");
 
-    internal static void Install(string file, string? destinationPath = null)
+        var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var destination = Path.Combine(Path.GetTempPath(), "iPhoneMirror",
+            "bundled-phone-shell", digest, AssetName);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        if (File.Exists(destination) &&
+            File.ReadAllBytes(destination).AsSpan().SequenceEqual(bytes))
+            return destination;
+
+        var staged = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllBytes(staged, bytes);
+            File.Move(staged, destination, overwrite: true);
+        }
+        finally { if (File.Exists(staged)) File.Delete(staged); }
+        return destination;
+    }
+
+    // Build/test normalization helper; no user override is installed.
+    internal static void Install(string file, string destinationPath)
     {
         if (!File.Exists(file)) throw new FileNotFoundException(
             "手机壳 PNG 文件不存在。", file);
@@ -86,7 +117,7 @@ internal static class PhoneShellAssetStore
             PixelFormats.Bgra32, null, pixels, pitch);
         var png = new PngBitmapEncoder();
         png.Frames.Add(BitmapFrame.Create(corrected));
-        var destination = destinationPath ?? CustomPath;
+        var destination = destinationPath;
         var folder = Path.GetDirectoryName(destination)!;
         Directory.CreateDirectory(folder);
         var staging = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";

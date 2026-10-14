@@ -32,12 +32,15 @@ internal sealed class UpdateSettings
     public bool IndependentWindowAlwaysOnTop { get; set; }
     public bool MediaOutputIncludePhoneShell { get; set; } = true;
     public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
-    public string MediaOutputPhoneShellImagePath { get; set; } = string.Empty;
+    // Nullable for migrating existing background picture preferences.
+    public bool? MediaOutputUseDefaultWhiteBackground { get; set; }
     public string MediaOutputRecordingDirectory { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "iPhoneMirror");
     public double MediaOutputShellCenterX { get; set; } = 0.5;
     public double MediaOutputShellCenterY { get; set; } = 0.5;
     public double MediaOutputShellScale { get; set; } = 1.0;
+    // Null preserves the old automatic portrait/landscape orientation.
+    public int? MediaOutputShellRotationDegrees { get; set; }
     public WirelessReceiverBackend WirelessReceiverBackend { get; set; } =
         WirelessReceiverBackend.Original;
     public string WirelessDisplayProfileId { get; set; } = "1080p";
@@ -119,11 +122,12 @@ internal sealed class UpdateSettings
         IndependentWindowAlwaysOnTop = IndependentWindowAlwaysOnTop,
         MediaOutputIncludePhoneShell = MediaOutputIncludePhoneShell,
         MediaOutputBackgroundImagePath = MediaOutputBackgroundImagePath,
-        MediaOutputPhoneShellImagePath = MediaOutputPhoneShellImagePath,
+        MediaOutputUseDefaultWhiteBackground = MediaOutputUseDefaultWhiteBackground,
         MediaOutputRecordingDirectory = MediaOutputRecordingDirectory,
         MediaOutputShellCenterX = MediaOutputShellCenterX,
         MediaOutputShellCenterY = MediaOutputShellCenterY,
         MediaOutputShellScale = MediaOutputShellScale,
+        MediaOutputShellRotationDegrees = MediaOutputShellRotationDegrees,
         WirelessReceiverBackend = WirelessReceiverBackend,
         WirelessDisplayProfileId = WirelessDisplayProfileId,
         WirelessReceiverName = WirelessReceiverName,

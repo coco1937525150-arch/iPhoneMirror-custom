@@ -12,7 +12,8 @@ namespace IPhoneMirror.App.Services;
 /// </summary>
 internal sealed record PhoneShellComposition(
     string ShellFile, string? BackgroundFile, int ScreenX, int ScreenY,
-    int ScreenWidth, int ScreenHeight, int OutputWidth, int OutputHeight)
+    int ScreenWidth, int ScreenHeight, int OutputWidth, int OutputHeight,
+    int VideoRotationDegrees = 0)
 {
     internal void Cleanup()
     {
@@ -27,10 +28,43 @@ internal static class PhoneShellLayoutSettingsProvider
     internal static Func<PhoneShellLayoutSettings?>? Current;
 }
 
-internal sealed record PhoneShellLayoutSettings(double CenterX, double CenterY, double Scale);
+internal sealed record PhoneShellLayoutSettings(
+    double CenterX, double CenterY, double Scale, int? RotationDegrees = null);
 
 internal static class PhoneShellMediaComposer
 {
+    internal static int NormalizeRotation(int degrees) =>
+        ((degrees % 360) + 360) % 360 / 90 * 90;
+
+    internal static int VideoRotation(int shellDegrees, bool landscapeSource) =>
+        NormalizeRotation(shellDegrees - (landscapeSource ? 90 : 0));
+
+    internal static string VideoRotationFilter(int degrees) => NormalizeRotation(degrees) switch
+    {
+        90 => "transpose=clock,",
+        180 => "hflip,vflip,",
+        270 => "transpose=cclock,",
+        _ => string.Empty,
+    };
+
+    // Coordinates relative to the rotated outer bezel, not the absolute canvas.
+    internal static DeviceScreenRect RotateScreenRect(DeviceScreenRect rect,
+        int portraitWidth, int portraitHeight, int degrees) =>
+        NormalizeRotation(degrees) switch
+        {
+            90 => new DeviceScreenRect(
+                portraitHeight - rect.Y - rect.Height, rect.X,
+                rect.Height, rect.Width),
+            180 => new DeviceScreenRect(
+                portraitWidth - rect.X - rect.Width,
+                portraitHeight - rect.Y - rect.Height,
+                rect.Width, rect.Height),
+            270 => new DeviceScreenRect(
+                rect.Y, portraitWidth - rect.X - rect.Width,
+                rect.Height, rect.Width),
+            _ => rect,
+        };
+
     // Shared by the WPF layout editor and the encoder. Enforce a 5px
     // safety margin on the ORIGINAL background image in both paths.
     internal static (Rect Bounds, double CenterX, double CenterY, double Scale)
@@ -96,33 +130,25 @@ internal static class PhoneShellMediaComposer
         if (!File.Exists(bundledShell))
             throw new FileNotFoundException("The built-in phone-shell image is missing.",
                 bundledShell);
-        // The FFmpeg source retains its capture dimensions; the composited
-        // canvas is instead the *full* background image at native pixel size.
+        // The encoder canvas is independent of the background image pixel size.
         var canvasWidth = (int)width;
         var canvasHeight = (int)height;
-        if (!string.IsNullOrWhiteSpace(backgroundFile))
-        {
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.UriSource = new Uri(Path.GetFullPath(backgroundFile));
-            image.EndInit();
-            canvasWidth = image.PixelWidth;
-            canvasHeight = image.PixelHeight;
-        }
         if (canvasWidth is < 160 or > 4096 || canvasHeight is < 160 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(backgroundFile),
-                "背景图原始尺寸需要在 160–4096 像素之间。");
+                "录制画布尺寸需要在 160–4096 像素之间。");
         if ((canvasWidth & 1) != 0 || (canvasHeight & 1) != 0)
             throw new InvalidOperationException(
-                "H.264 NV12 视频要求画布宽高为偶数。请将背景图调整为偶数像素尺寸后重试。");
+                "NV12 编码要求偶数分辨率；请通过录制设置自动调整画布宽高。");
         // Match the already tuned iPhone 16 Pro Max viewport geometry.
         var profile = DeviceFrameProfileResolver.ActiveIPhoneShell;
         var reference = profile.GetOuterDimensions(1320, 2868);
         var landscape = width > height;
-        var aspect = landscape ? reference.Height / (double)reference.Width
-            : reference.Width / (double)reference.Height;
         var settings = PhoneShellLayoutSettingsProvider.Current?.Invoke();
+        var degrees = NormalizeRotation(settings?.RotationDegrees ??
+            (landscape ? 90 : 0));
+        var sideways = degrees % 180 != 0;
+        var aspect = sideways ? reference.Height / (double)reference.Width
+            : reference.Width / (double)reference.Height;
         var layoutScale = settings?.Scale ?? 1.0;
         if (!double.IsFinite(layoutScale)) layoutScale = 1;
         layoutScale = Math.Clamp(layoutScale, .1, 4.0);
@@ -132,7 +158,11 @@ internal static class PhoneShellMediaComposer
         if (!double.IsFinite(centerY)) centerY = .5;
         var outer = FitInsideCanvas(canvasWidth, canvasHeight, aspect,
             centerX, centerY, layoutScale).Bounds;
-        var inner = profile.GetScreenRect((int)outer.Width, (int)outer.Height);
+        var portraitWidth = (int)(sideways ? outer.Height : outer.Width);
+        var portraitHeight = (int)(sideways ? outer.Width : outer.Height);
+        var inner = RotateScreenRect(
+            profile.GetScreenRect(portraitWidth, portraitHeight),
+            portraitWidth, portraitHeight, degrees);
         // An exact rectangle can expose a 1–2 pixel background seam under
         // the antialiased shell edge. Expand only the VIDEO; keep the PNG
         // shell and background at their unchanged original canvas positions.
@@ -150,18 +180,16 @@ internal static class PhoneShellMediaComposer
                 {
                     // Render the complete shell as one rotated unit. The
                     // video screen rectangle uses the same profile rotation.
-                    var portraitOuter = outer;
-                    if (landscape)
-                    {
-                        context.PushTransform(new RotateTransform(90,
-                            outer.X + outer.Width / 2, outer.Y + outer.Height / 2));
-                        portraitOuter = new Rect(
-                            outer.X + (outer.Width - outer.Height) / 2,
+                    var portraitOuter = sideways
+                        ? new Rect(outer.X + (outer.Width - outer.Height) / 2,
                             outer.Y + (outer.Height - outer.Width) / 2,
-                            outer.Height, outer.Width);
-                    }
+                            outer.Height, outer.Width)
+                        : outer;
+                    if (degrees != 0)
+                        context.PushTransform(new RotateTransform(degrees,
+                            outer.X + outer.Width / 2, outer.Y + outer.Height / 2));
                     DrawImportedShell(context, bundledShell, portraitOuter);
-                    if (landscape) context.Pop();
+                    if (degrees != 0) context.Pop();
                 }
                 var bitmap = new RenderTargetBitmap(canvasWidth, canvasHeight,
                     96, 96, PixelFormats.Pbgra32);
@@ -177,7 +205,8 @@ internal static class PhoneShellMediaComposer
             else dispatcher.Invoke(Render);
             return new(filename, backgroundFile, screenX, screenY,
                 coveredScreen.Width, coveredScreen.Height,
-                canvasWidth, canvasHeight);
+                canvasWidth, canvasHeight,
+                VideoRotation(degrees, landscape));
         }
         catch
         {

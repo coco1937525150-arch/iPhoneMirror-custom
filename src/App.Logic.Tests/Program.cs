@@ -4247,13 +4247,29 @@ Equal(true, bundledShellBytes.Length > 2000 &&
     bundledShellBytes.AsSpan(0, 8).SequenceEqual(
         new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
     "bundled user-reference phone shell has a valid PNG header");
+var appProjectFile = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "iPhoneMirror.App.csproj"));
+Equal(true, appProjectFile.Contains(
+        "EmbeddedResource Include=\"Assets\\iphone16_pro_max_shell.png\"", StringComparison.Ordinal) &&
+    appProjectFile.Contains(
+        "LogicalName=\"IPhoneMirror.Shell.IPhone16ProMax\"", StringComparison.Ordinal),
+    "phone shell is embedded inside the executable, not distributed as a loose image");
+Equal(true, File.Exists(PhoneShellAssetStore.ActivePath),
+    "embedded phone shell is extracted to a content-addressed runtime cache");
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
-Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal),
-    "output settings no longer require picking an external phone shell");
+Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal) ||
+    outputSettingsXaml.Contains("OnImportGlobalShellClick", StringComparison.Ordinal),
+    "output settings cannot replace the bundled phone shell");
+Equal(true, outputSettingsXaml.Contains("OnUseDefaultWhiteBackgroundClick", StringComparison.Ordinal),
+    "output settings expose the default file-free whiteboard");
+Equal(true, outputSettingsXaml.Contains("RecordResolutionPresetBox", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("RecordFpsPresetBox", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("RecordBitratePresetBox", StringComparison.Ordinal),
+    "recording offers resolution, FPS, and bitrate presets without removing custom values");
 
-// The editor must follow every selected background's native size, not a
-// fixed 1448x1440 preview. Test boundary placement after pixel rounding.
+// The editor must follow the chosen output canvas dimensions, not the
+// resolution of a tiny backdrop picture.
 foreach (var (canvasW, canvasH) in new[]
     { (1000, 2000), (1448, 1440), (1920, 1080), (1080, 1920) })
 {
@@ -4325,6 +4341,22 @@ finally
     Directory.Delete(maskFixtureDirectory, recursive: true);
 }
 
+var rotationSample = new DeviceScreenRect(10, 20, 380, 800);
+Equal(new DeviceScreenRect(80, 10, 800, 380),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 90),
+    "quarter-turn bezel maps screen position and dimensions");
+Equal(new DeviceScreenRect(20, 10, 800, 380),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 270),
+    "counter-clockwise rotation maps screen offset to the opposite edge");
+Equal(new DeviceScreenRect(10, 80, 380, 800),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 180),
+    "upside-down bezel maps screen inset correctly");
+Equal(0, PhoneShellMediaComposer.VideoRotation(90, landscapeSource: true),
+    "already-landscape source is not rotated a second time");
+Equal(90, PhoneShellMediaComposer.VideoRotation(90, landscapeSource: false),
+    "portrait input rotates with manually turned shell");
+Equal("transpose=clock,", PhoneShellMediaComposer.VideoRotationFilter(90),
+    "quarter-turn video transform is wired to FFmpeg");
 var opening = new DeviceScreenRect(18, 22, 934, 1901);
 var expanded = PhoneShellMediaComposer.ExpandVideoUnderBezel(opening);
 Equal(true, expanded.X <= opening.X - 3 &&
@@ -4334,6 +4366,33 @@ Equal(true, expanded.X <= opening.X - 3 &&
     "phone video extends beneath the alpha-aliased shell edges on every side");
 Equal(true, (expanded.Width & 1) == 0 && (expanded.Height & 1) == 0,
     "expanded phone video uses chroma-safe even intermediate dimensions");
+
+// Under an audio backlog, release PCM at wall-clock speed instead of
+// letting a burst lead the encoded video by several seconds.
+Equal(TimeSpan.Zero, MediaOutputService.CalculateAudioPacingDelay(
+    19200, 0, 192000, TimeSpan.Zero),
+    "a 100ms PCM packet needs no delay inside the 125ms lead budget");
+Equal(true, Math.Abs(MediaOutputService.CalculateAudioPacingDelay(
+    96000, 0, 192000, TimeSpan.Zero).TotalMilliseconds - 375) < 0.1,
+    "a 500ms PCM burst is paced by 375ms");
+Equal(TimeSpan.Zero, MediaOutputService.CalculateAudioPacingDelay(
+    96000, 0, 192000, TimeSpan.FromMilliseconds(400)),
+    "audio pacing catches up automatically when video wall-clock progresses");
+
+// 120fps MP4 must be based on distinct source frames, not on the
+// requested FFmpeg -framerate or on a 120Hz monitor alone.
+Equal(true, Math.Abs(MediaOutputService.CalculateVerifiedSourceFps(
+    120, TimeSpan.FromSeconds(1), 9_916_667) - 120.0) <= 0.05,
+    "120Hz source probe measures true unique 120fps timestamps");
+Equal(true, MediaOutputService.CalculateVerifiedSourceFps(
+    60, TimeSpan.FromSeconds(1), 9_833_333) < 70,
+    "a real 60fps source cannot pass 120fps capture gate");
+Equal(0.0, MediaOutputService.CalculateVerifiedSourceFps(
+    120, TimeSpan.FromSeconds(1), 0),
+    "repeated source timestamps cannot forge 120fps");
+Equal(true, MediaOutputService.CalculateVerifiedSourceFps(
+    240, TimeSpan.FromSeconds(2), 10_000_000) <= 120,
+    "measured FPS is bounded by wall clock and source timestamps");
 
 // Layout bounds are identical in the editor and the MP4 compositor, and
 // old out-of-range preferences must not be able to crop the phone shell.
@@ -4377,7 +4436,7 @@ Equal(true, shellArgs.Any(x => x.Contains(
         "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)),
     "phone shell overlays the full-rate video after background composition");
 Equal(true, shellArgs.Any(arg => arg.Contains(
-        "[2:v]setsar=1[phone_bg]", StringComparison.Ordinal)) &&
+        "[2:v]scale=1280:1440:force_original_aspect_ratio=increase,crop=1280:1440,setsar=1[phone_bg]", StringComparison.Ordinal)) &&
     shellArgs.Any(arg => arg.Contains(
         "force_original_aspect_ratio=increase,crop=984:1770",
         StringComparison.Ordinal)) &&
@@ -4386,6 +4445,11 @@ Equal(true, shellArgs.Any(arg => arg.Contains(
     "background remains uncropped while the phone video fills the complete shell opening");
 Equal(true, shellArgs.Contains("custom-background.png", StringComparer.Ordinal),
     "recording carries the selected background as an independent FFmpeg input");
+var rotatedShellArgs = MediaOutputService.BuildArguments(shellOutput,
+    ffmpegCapabilities, composition: shellComposition with { VideoRotationDegrees = 90 });
+Equal(true, rotatedShellArgs.Any(arg => arg.Contains(
+        "[1:v]transpose=clock,scale=984:1770", StringComparison.Ordinal)),
+    "video rotates in the same filtergraph as the phone-shell layer");
 var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
     audioPipePath: null, includeAudio: false, composition: shellComposition);
 Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
@@ -4584,6 +4648,19 @@ Equal((byte)1, writingFrame.Span[0], "published frame owns its bytes before nati
 frameLatch.Publish(nv12Payload);
 Equal((byte)1, writingFrame.Span[0], "an in-flight pipe write retains the preceding snapshot");
 Equal((byte)99, frameLatch.Get().Span[0], "the next snapshot receives the new frame");
+var verifiedLatch = new MediaOutputService.FrameLatch();
+verifiedLatch.Publish(nv12Payload, 1_000_000);
+verifiedLatch.Publish(nv12Payload, 1_000_000);
+verifiedLatch.Publish(nv12Payload, 1_083_333);
+verifiedLatch.Publish(nv12Payload, 1_050_000);
+verifiedLatch.Publish(nv12Payload, 1_166_666);
+var verifiedMetrics = verifiedLatch.SourceMetrics;
+Equal(5L, verifiedMetrics.Reads,
+    "source diagnostics include all frame read samples");
+Equal(3L, verifiedMetrics.Distinct,
+    "source diagnostics count unique increasing timestamps, not repeated frames");
+Equal(1_166_666L, verifiedMetrics.LastTimestamp100Ns,
+    "source diagnostics retain the last increasing source timestamp");
 Throws<InvalidDataException>(() => MediaOutputService.GetNv12FramePayload(
         new IPhoneMirror.App.Interop.Nv12VideoFrame(4, 4, 8, 2, nv12Pixels),
         4, 4),
@@ -4871,10 +4948,22 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
             width, height, width,
             1_000_000,
             new byte[checked((int)((ulong)width * height * 3U / 2U))]),
-        (_, afterSequence) => afterSequence == 0
-            ? new IPhoneMirror.App.Interop.AudioPacket(
-                1, 48000, 2, 16, new byte[3840])
-            : null);
+        (_, afterSequence) => afterSequence switch
+        {
+            0 => new IPhoneMirror.App.Interop.AudioPacket(
+                1, 48000, 2, 16, new byte[3840]),
+            // Out-of-spec PCM from a briefly interrupted transport should
+            // be skipped without closing an otherwise healthy recording.
+            1 => new IPhoneMirror.App.Interop.AudioPacket(
+                2, 1000, 2, 16, new byte[3840]),
+            2 => new IPhoneMirror.App.Interop.AudioPacket(
+                3, 48000, 2, 16, new byte[3840]),
+            // Stale replay is deliberately never consumed; it must not
+            // prevent the wall-clock-aligned silence compensation.
+            3 => new IPhoneMirror.App.Interop.AudioPacket(
+                3, 48000, 2, 16, new byte[3840]),
+            _ => null,
+        });
     try
     {
         using var startupTimeout =
@@ -4885,7 +4974,7 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
             installedFfmpegCapabilities, startupTimeout.Token);
         await Task.Delay(TimeSpan.FromSeconds(5.5));
         Equal(true, interruptedAudioOutput.IsRunning,
-            "a PCM interruption and static frame longer than five seconds do not stop video output");
+            "malformed, repeated and interrupted PCM do not stop video recording");
         await interruptedAudioOutput.StopAsync();
         var interruptedMp4 = File.ReadAllBytes(interruptedAudioPath);
         Equal(true, interruptedMp4.AsSpan().IndexOf("moov"u8) >= 0,

@@ -477,7 +477,6 @@ try {
             'THIRD_PARTY_NOTICES.md',
             'CHANGELOG.md',
             'DRIVER_DEPENDENCIES.md',
-            'Assets\iphone16_pro_max_shell.png',
             'tools\iUsbBridge.exe',
             'tools\iUsbBridge-LICENSE.txt',
             'tools\updater\Apply-ZipUpdate.ps1',

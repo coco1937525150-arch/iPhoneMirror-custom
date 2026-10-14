@@ -67,24 +67,20 @@
                            TextWrapping="Wrap" FontSize="10"
                            Foreground="{DynamicResource MutedTextBrush}"/>
                 <Grid x:Name="ShellOptionsPanel" IsEnabled="False">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBox x:Name="BackgroundImageBox" Grid.Row="0" Grid.Column="0"
-                             Style="{StaticResource RoundedTextBox}" Height="34"
-                             ToolTip="{DynamicResource MediaOutputBackgroundHint}"/>
+                             Style="{StaticResource RoundedTextBox}" Height="34" IsReadOnly="True"
+                             ToolTip="默认白板无需选择文件；选择图片后使用自定义背景板。"/>
                     <Button Grid.Row="0" Grid.Column="2" Style="{StaticResource ToolButton}"
+                            Content="默认白板" Margin="0,0,8,0"
+                            ToolTip="启用纯白色 9:16 画布（1080×1920），无需选择背景图片"
+                            Click="OnUseDefaultWhiteBackgroundClick"/>
+                    <Button Grid.Row="0" Grid.Column="3" Style="{StaticResource ToolButton}"
                             Content="{DynamicResource MediaOutputChooseBackground}"
                             Click="OnChooseBackgroundClick"/>
-                    <!-- One replacement applies to the independent window,
-                         recording, streaming and the layout editor. -->
-                    <Button Grid.Row="1" Grid.ColumnSpan="3"
-                            Content="更换全局 iPhone 16 Pro Max 手机壳 PNG…"
-                            Margin="0,10,0,0"
-                            Style="{StaticResource ToolButton}"
-                            ToolTip="选择新的手机壳，导入后将自动处理屏幕透明区域；独立窗口需重启软件后刷新"
-                            Click="OnImportGlobalShellClick"/>
                 </Grid>
             </StackPanel>
         </Border>
@@ -96,6 +92,15 @@
                         <StackPanel>
                             <TextBlock Text="{DynamicResource RecordDescription}" TextWrapping="Wrap"
                                        Foreground="{DynamicResource MutedTextBrush}" FontSize="12"/>
+                            <TextBlock Text="录制分辨率预设" Style="{StaticResource DetailLabel}" Margin="0,12,0,0"/>
+                            <ComboBox x:Name="RecordResolutionPresetBox" SelectedIndex="0"
+                                      SelectionChanged="OnRecordResolutionPresetChanged">
+                                <ComboBoxItem Content="自定义" Tag="custom"/>
+                                <ComboBoxItem Content="720p (9:16)" Tag="720x1280"/>
+                                <ComboBoxItem Content="1080p (9:16)" Tag="1080x1920"/>
+                                <ComboBoxItem Content="1440p (9:16)" Tag="1440x2560"/>
+                                <ComboBoxItem Content="4K (9:16)" Tag="2160x3840"/>
+                            </ComboBox>
                             <Grid Margin="0,12,0,0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -119,13 +124,35 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
                                     <TextBlock Text="{DynamicResource OutputFps}" Style="{StaticResource DetailLabel}"/>
+                                    <ComboBox x:Name="RecordFpsPresetBox" SelectedIndex="0"
+                                              SelectionChanged="OnRecordFpsPresetChanged">
+                                        <ComboBoxItem Content="自定义" Tag="custom"/>
+                                        <ComboBoxItem Content="30 fps" Tag="30"/>
+                                        <ComboBoxItem Content="60 fps" Tag="60"/>
+                                        <ComboBoxItem Content="75 fps" Tag="75"/>
+                                        <ComboBoxItem Content="90 fps" Tag="90"/>
+                                        <ComboBoxItem Content="120 fps" Tag="120"/>
+                                    </ComboBox>
                                     <TextBox x:Name="RecordFpsBox" Style="{StaticResource RoundedTextBox}" Height="36"/>
                                 </StackPanel>
                                 <StackPanel Grid.Column="2">
                                     <TextBlock Text="{DynamicResource OutputBitrate}" Style="{StaticResource DetailLabel}"/>
+                                    <ComboBox x:Name="RecordBitratePresetBox" SelectedIndex="0"
+                                              SelectionChanged="OnRecordBitratePresetChanged">
+                                        <ComboBoxItem Content="自定义" Tag="custom"/>
+                                        <ComboBoxItem Content="推荐（自动）" Tag="recommend"/>
+                                        <ComboBoxItem Content="4 Mbps" Tag="4000"/>
+                                        <ComboBoxItem Content="6 Mbps" Tag="6000"/>
+                                        <ComboBoxItem Content="12 Mbps" Tag="12000"/>
+                                        <ComboBoxItem Content="24 Mbps" Tag="24000"/>
+                                        <ComboBoxItem Content="50 Mbps" Tag="50000"/>
+                                        <ComboBoxItem Content="68 Mbps" Tag="68000"/>
+                                    </ComboBox>
                                     <TextBox x:Name="RecordBitrateBox" Style="{StaticResource RoundedTextBox}" Height="36"/>
                                 </StackPanel>
                             </Grid>
+                            <TextBlock Text="高于 60fps 的录制需检测真实源帧率；不能使用重复帧冒充高帧率。" FontSize="10"
+                                       TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,6,0,0"/>
                             <TextBlock Text="默认视频保存位置" Style="{StaticResource DetailLabel}" Margin="0,12,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>

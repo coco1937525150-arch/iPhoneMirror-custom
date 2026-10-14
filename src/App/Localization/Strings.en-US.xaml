@@ -729,7 +729,7 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="MediaOutputUnavailableFormat">Media output is unavailable: {0}</system:String>
     <system:String x:Key="MediaOutputInvalidProtocol">Select a supported streaming protocol.</system:String>
     <system:String x:Key="MediaOutputNoSession">Start mirroring a device before starting media output.</system:String>
-    <system:String x:Key="MediaOutputInvalidSettings">Enter an even output size, 10-60 fps, and a bitrate from 500 to 50000 kbps.</system:String>
+    <system:String x:Key="MediaOutputInvalidSettings">Enter output dimensions from 160 to 4096 (odd values are adjusted), 10–120 fps for recording or 10–60 fps for streaming, and 500–150000 kbps.</system:String>
     <system:String x:Key="MediaOutputStopping">Stopping output and finalizing the file or stream...</system:String>
     <system:String x:Key="MediaOutputRecording">Recording</system:String>
     <system:String x:Key="MediaOutputStreaming">Live streaming</system:String>
@@ -947,9 +947,9 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="DeveloperNativePreviewTitle">iPhoneMirror independent preview</system:String>
     <system:String x:Key="DeveloperNativePreviewBody">Native preview window</system:String>
     <system:String x:Key="MediaOutputIncludeShell">Include phone shell in recording / stream</system:String>
-    <system:String x:Key="MediaOutputShellHint">Use a white background by default; optionally select an edited image and your iPhone 16 Pro Max shell template.</system:String>
+    <system:String x:Key="MediaOutputShellHint">The bundled iPhone 16 Pro Max shell is fixed and cannot be replaced. Choose the default 9:16 white canvas or a custom background image.</system:String>
     <system:String x:Key="MediaOutputChooseBackground">Choose background…</system:String>
     <system:String x:Key="MediaOutputChooseShell">Choose shell…</system:String>
-    <system:String x:Key="MediaOutputBackgroundHint">Background image (blank = white)</system:String>
+    <system:String x:Key="MediaOutputBackgroundHint">Background: default 9:16 white canvas or custom image.</system:String>
     <system:String x:Key="MediaOutputShellImageHint">Phone shell image (blank = built-in frame)</system:String>
 </ResourceDictionary>
