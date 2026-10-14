@@ -168,7 +168,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             if (RecordResolutionPresetBox is not null)
                 RecordResolutionPresetBox.SelectedIndex = 2;
         }
-        ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
+        // Background selection remains available when the phone shell is hidden.
     }
 
     private void SaveShellPreferences()
@@ -185,7 +185,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     private void OnShellModeChanged(object sender, RoutedEventArgs e)
     {
         if (ShellOptionsPanel is not null)
-            ShellOptionsPanel.IsEnabled = IncludePhoneShellBox.IsChecked == true;
+            // Background selection remains available when the phone shell is hidden.
     }
 
     private void UpdateRecommendedRecordingBitrate()
