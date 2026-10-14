@@ -2114,4 +2114,28 @@ std::int32_t IM_CALL im_session_set_window_rotation(iPhoneMirror::SessionHandle 
     return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
 }
 
+std::int32_t IM_CALL im_session_set_window_visual_rotation(
+    iPhoneMirror::SessionHandle handle, void* hwnd, float degrees,
+    float canvas_width, float canvas_height, float visual_scale,
+    std::int32_t active) {
+    if (hwnd == nullptr || !std::isfinite(degrees) ||
+        !std::isfinite(canvas_width) || !std::isfinite(canvas_height) ||
+        !std::isfinite(visual_scale) || canvas_width < 0.0F ||
+        canvas_height < 0.0F || visual_scale <= 0.0F || visual_scale > 1.0F)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Invalid visual rotation parameters");
+    auto context = find_multi_session(handle);
+    if (!context) return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown session handle");
+    std::shared_lock lifecycle_lock(context->lifecycle_mutex);
+    if (!context->capture || context->stopped)
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Session is stopped");
+    std::scoped_lock renderers_lock(context->renderers_mutex);
+    const auto found = context->renderers.find(static_cast<HWND>(hwnd));
+    if (found == context->renderers.end())
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown preview window");
+    found->second->set_visual_rotation(degrees, canvas_width,
+        canvas_height, visual_scale, active != 0);
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
 const wchar_t* IM_CALL im_last_error() { return last_error.c_str(); }
