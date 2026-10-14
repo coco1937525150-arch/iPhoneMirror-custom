@@ -6178,7 +6178,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     internal async Task<(bool Success, string Message)> StartRecordingAsync(
         uint width, uint height, int frameRate, int bitrateKbps,
         bool includePhoneShell = false, string? backgroundImage = null,
-        string? phoneShellImage = null)
+        string? phoneShellImage = null, bool useBackgroundCanvas = false)
     {
         if (PendingRecordingPath is not null)
             return (false, LocalizationService.Get("RecordingPendingSave"));
@@ -6186,7 +6186,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         var request = new MediaOutputRequest(MediaOutputKind.Recording, path,
             NormalizeOutputWidth(width), NormalizeOutputHeight(height), frameRate, bitrateKbps,
             IncludePhoneShell: includePhoneShell, BackgroundImage: backgroundImage,
-            PhoneShellImage: phoneShellImage);
+            PhoneShellImage: phoneShellImage, UseBackgroundCanvas: useBackgroundCanvas);
         var result = await StartMediaOutputAsync(request);
         if (result.Success) _pendingRecordingPath = path;
         else
@@ -6232,14 +6232,14 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         MediaOutputKind kind, string destination, string authorization,
         uint width, uint height, int frameRate, int bitrateKbps,
         bool includePhoneShell = false, string? backgroundImage = null,
-        string? phoneShellImage = null)
+        string? phoneShellImage = null, bool useBackgroundCanvas = false)
     {
         if (kind is MediaOutputKind.Recording)
             return (false, LocalizationService.Get("MediaOutputInvalidProtocol"));
         var request = new MediaOutputRequest(kind, destination,
             NormalizeOutputWidth(width), NormalizeOutputHeight(height),
             frameRate, bitrateKbps, authorization,
-            includePhoneShell, backgroundImage, phoneShellImage);
+            includePhoneShell, backgroundImage, phoneShellImage, useBackgroundCanvas);
         return await StartMediaOutputAsync(request);
     }
 
