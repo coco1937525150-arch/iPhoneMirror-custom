@@ -1705,13 +1705,13 @@ void test_wireless_i420_conversion() {
                 std::lround(light_gray.blue * 255.0) == 243,
             "wireless full-range gray 243 is not expanded and clipped to white");
     }
-    // A live 60 FPS preview must not display buffered frames from before a
-    // render stall. Test the actual two-frame queue limit rather than an
-    // impossible (> 2) overflow condition.
+    // The same wireless session may feed several HWND renderers. Each
+    // consumer must see the same current immutable frame; consuming a shared
+    // queue stole frames from the second preview and reduced its effective FPS.
     check(stream.next_render_frame() == published,
         "wireless preview initially displays its first decoded frame");
-    check(stream.next_render_frame() == nullptr,
-        "wireless preview consumes each queued frame only once");
+    check(stream.next_render_frame() == published,
+        "another preview can independently read the same decoded frame");
     auto second_i420 = i420;
     second_i420[0] = 12;
     stream.publish_video(header, second_i420);
@@ -1723,9 +1723,9 @@ void test_wireless_i420_conversion() {
     check(second_frame && third_frame && second_frame != third_frame,
         "wireless source produces distinct live frames");
     check(stream.next_render_frame() == third_frame,
-        "wireless preview skips old queued frames after a delayed render tick");
-    check(stream.next_render_frame() == nullptr,
-        "wireless preview does not replay a frame after catching up");
+        "wireless preview sees the latest frame after a delayed render tick");
+    check(stream.next_render_frame() == third_frame,
+        "second preview sees the same latest frame without draining it");
     iPhoneMirror::capture::WirelessReceiverHubTestAccess::simulate_video_pause(stream);
     const auto paused_status = stream.snapshot();
     check(paused_status.fps == 0 && paused_status.video_frames == 3,
