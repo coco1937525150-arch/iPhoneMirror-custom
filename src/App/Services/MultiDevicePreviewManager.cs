@@ -157,15 +157,24 @@ internal sealed class MultiDevicePreviewManager : IDisposable
             }
             return (false, LocalizationService.Get("CaptureStopped"));
         }
-        var profile = DeviceCornerProfileResolver.Resolve(device.ProductType, 1206, 2622);
-        var frameProfile = DeviceFrameProfileResolver.Resolve(device.ProductType, 1206, 2622);
+        // The AirPlay video format may already be known before the user opens
+        // the detached window (notably after returning from another preview).
+        // Initializing every window as 1206x2622 creates a stale portrait
+        // viewport until a *new* size-change callback arrives.
+        var isSelected = DeviceViewModel.UdidEquals(viewModel.SelectedDevice?.Udid, device.Udid);
+        var initialWidth = isSelected && viewModel.SourceVideoWidth > 0
+            ? viewModel.SourceVideoWidth : 1206U;
+        var initialHeight = isSelected && viewModel.SourceVideoHeight > 0
+            ? viewModel.SourceVideoHeight : 2622U;
+        var profile = DeviceCornerProfileResolver.Resolve(device.ProductType, initialWidth, initialHeight);
+        var frameProfile = DeviceFrameProfileResolver.Resolve(device.ProductType, initialWidth, initialHeight);
         var cornerRadius = profile.IsRounded ? profile.RadiusRatio : 0;
         // Avoid exaggerated black corner caps on detached iPhone previews.
         if (frameProfile.Id == "iphone-dynamic-island")
             cornerRadius = Math.Min(cornerRadius, 0.132);
         _ = Interop.NativeCore.SetDeviceCornerProfile(started.Handle,
             cornerRadius, profile.CurveExponent);
-        if (!NativePreviewWindow.TryCreateAndShowForSession(started.Handle, 1206, 2622,
+        if (!NativePreviewWindow.TryCreateAndShowForSession(started.Handle, initialWidth, initialHeight,
                 $"iPhoneMirror — {device.DisplayName}", cornerRadius, profile.CurveExponent,
                 frameProfile,
                 () => viewModel.IsDeviceAudioEnabled(device.Udid),
