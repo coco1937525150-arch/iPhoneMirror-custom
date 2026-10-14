@@ -474,7 +474,8 @@ void WasapiRenderer::run_endpoint(std::stop_token token) {
                 static_cast<std::size_t>(available - copied) * block_align_);
             if (count_underrun) {
                 const auto n = underruns_.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (n <= 3 || n % 100 == 0) {
+                // Count every underrun but log sparsely off the realtime path.
+                if (n <= 3 || n % 1000 == 0) {
                     logging::write(std::format(
                         "wasapi underrun n={} requested={} copied={} queue={}",
                         n, available, copied, queued_frames()));
