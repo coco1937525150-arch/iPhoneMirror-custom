@@ -403,17 +403,13 @@ std::shared_ptr<const media::DecodedFrame> WirelessClientStream::latest_frame() 
 
 std::shared_ptr<const media::DecodedFrame> WirelessClientStream::next_render_frame() {
     std::scoped_lock lock(mutex_);
-    if (render_queue_.empty()) return nullptr;
-    // Live 1080p60 prioritizes freshness over displaying every decoded frame.
-    // The producer already caps the queue at two entries, so the previous
-    // (> 2) catch-up condition was unreachable. A delayed render tick could
-    // present the *older* frame and retain a full frame of latency.
-    //
-    // A render consumer always receives the newest available frame. It never
-    // drains a delayed backlog after Windows scheduling or GPU upload stalls.
-    auto frame = std::move(render_queue_.back());
-    render_queue_.clear();
-    return frame;
+    // Multiple preview HWNDs can share the same wireless capture session.
+    // Consuming a single global queue caused one renderer to steal fresh
+    // frames from the other, potentially splitting a 60fps source across two
+    // windows. Publish the latest immutable frame non-destructively instead.
+    // Each D3D renderer deduplicates against its own last_timestamp, so this
+    // neither fabricates frames nor causes a busy redraw loop.
+    return latest_frame_;
 }
 
 std::shared_ptr<const AudioPacket> WirelessClientStream::next_audio_packet(
