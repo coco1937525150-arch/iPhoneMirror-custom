@@ -358,7 +358,10 @@ internal sealed class NativePreviewWindow : IDisposable
         _wheelZoomTimer.Tick += OnWheelZoomTick;
         _rotationTimer = new DispatcherTimer(DispatcherPriority.Render, _source.Dispatcher)
         {
-            Interval = TimeSpan.FromMilliseconds(16),
+            // The reference CSS rotates the whole phone continuously over
+            // 1000ms. Update the DComp transform at up to 120Hz instead of
+            // visibly stepping once every ~16ms on high-refresh monitors.
+            Interval = TimeSpan.FromMilliseconds(8),
         };
         _rotationTimer.Tick += OnRotationTick;
 
@@ -1430,13 +1433,9 @@ internal sealed class NativePreviewWindow : IDisposable
             info.WorkArea.Left, Math.Max(info.WorkArea.Left, info.WorkArea.Right - outerSideW));
         var stageY = (int)Math.Clamp(centerY - outerSideH / 2L,
             info.WorkArea.Top, Math.Max(info.WorkArea.Top, info.WorkArea.Bottom - outerSideH));
-        if (!SetWindowPos(_handle, 0, stageX, stageY, outerSideW, outerSideH,
-                SwpNoActivate | SwpNoZOrder))
-        {
-            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
-                0, 0, 0, 1, false);
-            return false;
-        }
+        // Set the animation guard BEFORE SetWindowPos dispatches synchronous
+        // WM_SIZE/WM_WINDOWPOSCHANGED. A queued aspect-controller reflow used
+        // to resize the temporary square while the device was mid-turn.
         _rotationOriginalBounds = outer;
         _rotationOriginalClientWidth = clientW;
         _rotationOriginalClientHeight = clientH;
@@ -1445,6 +1444,14 @@ internal sealed class NativePreviewWindow : IDisposable
         _rotationCanvasHeight = side;
         _rotationTimeline = new PhoneRotationTimeline();
         _rotationAnimating = true;
+        if (!SetWindowPos(_handle, 0, stageX, stageY, outerSideW, outerSideH,
+                SwpNoActivate | SwpNoZOrder))
+        {
+            _rotationAnimating = false;
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
+            return false;
+        }
         Log("independent_window_rotation_animation_started",
             ("duration_ms", 1000), ("canvas", side), ("scale", scale));
         return true;
