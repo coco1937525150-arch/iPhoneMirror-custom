@@ -1194,11 +1194,19 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 args.AddRange(["-f", "lavfi", "-i",
                     $"color=c=white:s={composition.OutputWidth}x{composition.OutputHeight}:r={request.FrameRate}"]);
             if (request.IncludePhoneShell)
+            {
+                if (string.IsNullOrEmpty(composition.ApertureMaskFile))
+                    throw new InvalidOperationException(
+                        "Recording shell must provide its original alpha-aperture matte.");
                 args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
                     "-i", composition.ShellFile]);
+                args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
+                    "-i", composition.ApertureMaskFile]);
+            }
             var videoIndex = includeAudio ? 1 : 0;
             var bgIndex = videoIndex + 1;
             var shellIndex = videoIndex + 2;
+            var maskIndex = videoIndex + 3;
             args.AddRange(["-filter_complex",
                 // Resize the backdrop to the chosen output dimensions, independently
                 // from the native source frame. Crop only the background overflow.
@@ -1213,7 +1221,16 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 $"scale={composition.ScreenWidth}:{composition.ScreenHeight}:" +
                 "force_original_aspect_ratio=increase," +
                 $"crop={composition.ScreenWidth}:{composition.ScreenHeight}:" +
-                "(iw-ow)/2:(ih-oh)/2,setsar=1[phone_video];" +
+                "(iw-ow)/2:(ih-oh)/2,setsar=1" +
+                (request.IncludePhoneShell
+                    // The outside of the PNG is transparent just like the
+                    // middle. Merge the CENTRAL connected-hole mask into the
+                    // video before overlay, or corner pixels leak outside.
+                    ? "[phone_video_unmasked];" +
+                      $"[{maskIndex}:v]format=gray[phone_mask];" +
+                      "[phone_video_unmasked]format=rgba[phone_video_rgba];" +
+                      "[phone_video_rgba][phone_mask]alphamerge[phone_video];"
+                    : "[phone_video];") +
                 // A user may deliberately move the shell partially outside the
                 // background. Crop the moving screen via overlay, never crop
                 // the background canvas or stretch it to the phone dimensions.
