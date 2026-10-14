@@ -454,6 +454,10 @@ IM_API std::int32_t IM_CALL im_session_set_window_device_frame_profile(
     float cutout_height, float cutout_top);
 IM_API std::int32_t IM_CALL im_session_set_window_rotation(
     iPhoneMirror::SessionHandle handle, void* hwnd, std::int32_t quarter_turns);
+IM_API std::int32_t IM_CALL im_session_set_window_visual_rotation(
+    iPhoneMirror::SessionHandle handle, void* hwnd, float degrees,
+    float canvas_width, float canvas_height, float visual_scale,
+    std::int32_t active);
 
 
 IM_API const wchar_t* IM_CALL im_last_error();
