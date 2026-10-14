@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using IPhoneMirror.App.Localization;
 using IPhoneMirror.App.Services;
 using IPhoneMirror.App.ViewModels;
@@ -14,6 +15,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     private readonly MainViewModel _viewModel;
     private readonly bool _previewOnly;
     private bool _savePromptOpen;
+    private bool _useRecommendedRecordingBitrate;
     private (uint Width, uint Height)? _lastDefaultSize;
     private string _customBackgroundPath = string.Empty;
     private bool _useDefaultWhiteBackground;
@@ -190,7 +192,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void UpdateRecommendedRecordingBitrate()
     {
-        if (RecordBitratePresetBox?.SelectedItem is not ComboBoxItem { Tag: "recommend" })
+        if (!_useRecommendedRecordingBitrate || RecordBitrateBox is null)
             return;
         if (!uint.TryParse(RecordWidthBox?.Text, out var width) ||
             !uint.TryParse(RecordHeightBox?.Text, out var height) ||
@@ -225,20 +227,29 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void OnRecordFpsPresetChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (RecordFpsBox is null || RecordFpsPresetBox?.SelectedItem
-            is not ComboBoxItem { Tag: string value } || value == "custom") return;
+        if (RecordFpsBox?.SelectedItem is not ComboBoxItem { Tag: string value }) return;
         RecordFpsBox.Text = value;
         UpdateRecommendedRecordingBitrate();
     }
 
     private void OnRecordBitratePresetChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (RecordBitrateBox is null ||
-            RecordBitratePresetBox?.SelectedItem is not ComboBoxItem { Tag: string value })
+        if (RecordBitrateBox?.SelectedItem is not ComboBoxItem { Tag: string value })
             return;
-        if (value == "recommend") UpdateRecommendedRecordingBitrate();
+        _useRecommendedRecordingBitrate = value == "recommend";
+        if (_useRecommendedRecordingBitrate) UpdateRecommendedRecordingBitrate();
         else if (int.TryParse(value, out var kbps))
             RecordBitrateBox.Text = kbps.ToString();
+    }
+
+    private void OnRecordBitrateEdited(object sender, TextCompositionEventArgs e) =>
+        _useRecommendedRecordingBitrate = false;
+
+    private void OnRecordBitrateKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Back or Key.Delete ||
+            e.Key == Key.V && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            _useRecommendedRecordingBitrate = false;
     }
 
     private string SelectedBackgroundPath =>
@@ -508,16 +519,23 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         }
     }
 
+    private static string ReadOutputValue(Control control) => control switch
+    {
+        ComboBox combo => combo.Text,
+        TextBox text => text.Text,
+        _ => string.Empty,
+    };
+
     private bool TryReadOutputSettings(TextBox widthBox, TextBox heightBox,
-        TextBox fpsBox, TextBox bitrateBox, out uint width, out uint height,
+        Control fpsBox, Control bitrateBox, out uint width, out uint height,
         out int fps, out int bitrate)
     {
         width = height = 0;
         fps = bitrate = 0;
         if (uint.TryParse(widthBox.Text, out width) &&
             uint.TryParse(heightBox.Text, out height) &&
-            int.TryParse(fpsBox.Text, out fps) &&
-            int.TryParse(bitrateBox.Text, out bitrate) &&
+            int.TryParse(ReadOutputValue(fpsBox), out fps) &&
+            int.TryParse(ReadOutputValue(bitrateBox), out bitrate) &&
             width is >= 160 and <= 4096 && height is >= 160 and <= 4096 &&
             fps >= 10 && fps <= (ReferenceEquals(fpsBox, RecordFpsBox) ? 120 : 60) &&
             bitrate is >= 500 and <= 150000)
