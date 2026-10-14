@@ -1709,6 +1709,28 @@ Equal(true,
     nativePreviewWindowCode.Contains("_rotationTimeline.Retarget(delta * 90.0",
         StringComparison.Ordinal),
     "native source commits at quarter turns AFTER whole-shell video/mask DComp animation");
+
+var rotationCompletionStart = nativePreviewWindowCode.IndexOf(
+    "private void CompleteRotationAnimation()", StringComparison.Ordinal);
+var rotationAbortStart = nativePreviewWindowCode.IndexOf(
+    "private void AbortRotationAnimation()", StringComparison.Ordinal);
+var completionSource = rotationCompletionStart >= 0 && rotationAbortStart > rotationCompletionStart
+    ? nativePreviewWindowCode[rotationCompletionStart..rotationAbortStart] : string.Empty;
+var finalWindowResize = completionSource.IndexOf("if (!SetWindowPos(_handle, 0, finalX, finalY, finalW, finalH",
+    StringComparison.Ordinal);
+var discreteRendererRotation = completionSource.IndexOf("if (!NativeCore.SetDeviceWindowRotation(",
+    StringComparison.Ordinal);
+Equal(true, completionSource.Contains("finalAngle, finalClientW, finalClientH",
+        StringComparison.Ordinal) && finalWindowResize >= 0 &&
+    discreteRendererRotation > finalWindowResize &&
+    completionSource.Contains("ApplyRotatedDimensions(reflow: false);",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("!_rotationAnimating && !_isFullScreen",
+        StringComparison.Ordinal) &&
+    aspectRatioControllerCode.Contains("if (reflow) QueueResize(fitToWorkArea: false);",
+        StringComparison.Ordinal),
+    "rotation keeps whole-phone DComp transform through HWND resize, then atomically commits native orientation without duplicate aspect reflow");
+
 Equal(true,
     mainViewModelSource.Contains("private bool _bluetoothControlStopping;",
         StringComparison.Ordinal) &&
@@ -4340,6 +4362,17 @@ Equal(true,
         StringComparison.Ordinal),
     "clockwise and counterclockwise shell PNG and aperture share the quarter-turn UV transform");
 
+Equal(true,
+    previewRendererCode.Contains("const int video_turns = ((turns & 1) != 0 && source_landscape &&",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("opening_landscape) ? 0 : turns;",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("waiting_for_rotation_resize", StringComparison.Ordinal) &&
+    previewRendererCode.Contains("draw_nv12(limited_viewport, limited_width, limited_height, false, video_turns, false);",
+        StringComparison.Ordinal),
+    "native renderer does not double-turn iPhone landscape frames or present interim portrait buffers during rotation");
+
+
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
 Equal(true, outputSettingsXaml.Contains("<ScrollViewer Grid.Row=", StringComparison.Ordinal) &&
@@ -4360,6 +4393,20 @@ Equal(true, outputSettingsXaml.Contains("RecordResolutionPresetBox", StringCompa
     !outputSettingsXaml.Contains("RecordFpsBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal) &&
     !outputSettingsXaml.Contains("RecordBitrateBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal),
     "record FPS and bitrate use single editable preset control, no duplicate entry rows");
+
+var mediaOutputServiceCode = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Services", "MediaOutputService.cs"));
+Equal(true,
+    mediaOutputServiceCode.Contains("var stopTimeout = activeKind == MediaOutputKind.Recording",
+        StringComparison.Ordinal) &&
+    mediaOutputServiceCode.IndexOf("await pumps.WaitAsync(PumpTaskShutdownTimeout)",
+        StringComparison.Ordinal) <
+    mediaOutputServiceCode.IndexOf("try { process.StandardInput.Close(); }",
+        StringComparison.Ordinal) &&
+    mediaOutputServiceCode.Contains("line.Contains(\"error\", StringComparison.OrdinalIgnoreCase)",
+        StringComparison.Ordinal),
+    "recording waits for producer shutdown before FFmpeg EOF and does not report a channel layout hint as encoder failure");
+
 
 // The editor must follow the chosen output canvas dimensions, not the
 // resolution of a tiny backdrop picture.
