@@ -4743,29 +4743,37 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     // MediaOutputService and VirtualCameraService pass the raw ulong handle
     // (CurrentSessionHandle) back into the frame providers. Resolve it to the
     // owning SafeHandle so the native call goes through the SafeHandle path.
-    private NativeSessionHandle? FindSessionHandleByRaw(ulong rawHandle)
-    {
-        if (rawHandle == 0) return null;
-        foreach (var state in _sessions.Values)
-        {
-            if (state.Handle?.RawHandle == rawHandle) return state.Handle;
-        }
-        return null;
-    }
+    private NativeSessionHandle? FindSessionHandleByRaw(ulong rawHandle) =>
+        _sessions.FindLiveHandle(rawHandle);
 
     private Nv12VideoFrame? GetOutputNv12Frame(ulong handle, uint width,
-        uint height) => handle == MediaCastOutputHandle
-            ? _mediaCastNv12FrameProvider?.Invoke(width, height)
-            : _core.GetDeviceOutputNv12Frame(FindSessionHandleByRaw(handle), width, height);
+        uint height)
+    {
+        if (handle == MediaCastOutputHandle)
+            return _mediaCastNv12FrameProvider?.Invoke(width, height);
+        var session = FindSessionHandleByRaw(handle);
+        return session is null
+            ? null : _core.GetDeviceOutputNv12Frame(session, width, height);
+    }
 
     private VideoFrame? GetOutputVideoFrame(ulong handle, uint width,
-        uint height) => handle == MediaCastOutputHandle
-            ? _mediaCastVideoFrameProvider?.Invoke(width, height)
-            : _core.GetDeviceOutputFrame(FindSessionHandleByRaw(handle), width, height);
+        uint height)
+    {
+        if (handle == MediaCastOutputHandle)
+            return _mediaCastVideoFrameProvider?.Invoke(width, height);
+        var session = FindSessionHandleByRaw(handle);
+        return session is null
+            ? null : _core.GetDeviceOutputFrame(session, width, height);
+    }
 
-    private AudioPacket? GetOutputAudioPacket(ulong handle, ulong afterSequence) =>
-        handle == MediaCastOutputHandle ? _mediaCastAudioPacketProvider?.Invoke(afterSequence) :
-            _core.GetDeviceOutputAudioPacket(FindSessionHandleByRaw(handle), afterSequence);
+    private AudioPacket? GetOutputAudioPacket(ulong handle, ulong afterSequence)
+    {
+        if (handle == MediaCastOutputHandle)
+            return _mediaCastAudioPacketProvider?.Invoke(afterSequence);
+        var session = FindSessionHandleByRaw(handle);
+        return session is null
+            ? null : _core.GetDeviceOutputAudioPacket(session, afterSequence);
+    }
 
     internal void UpdateMediaCastStatistics(uint width, uint height, bool audioEnabled)
     {
@@ -5252,7 +5260,13 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        var timestamp = _core.GetDeviceSessionLatestFrameTimestamp(FindSessionHandleByRaw(handle));
+        var activeHandle = FindSessionHandleByRaw(handle);
+        if (activeHandle is null)
+        {
+            _wirelessStallRecovery.Reset();
+            return;
+        }
+        var timestamp = _core.GetDeviceSessionLatestFrameTimestamp(activeHandle);
         var action = _wirelessStallRecovery.Observe(handle, status, timestamp,
             DateTimeOffset.UtcNow);
         if (action == WirelessStallRecoveryAction.None) return;
@@ -5359,7 +5373,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             _lastVideoOutputSignature = null;
             return;
         }
-        if (!_core.TryGetDeviceVideoOutputStatus(FindSessionHandleByRaw(handle), out var status))
+        var activeHandle = FindSessionHandleByRaw(handle);
+        if (activeHandle is null ||
+            !_core.TryGetDeviceVideoOutputStatus(activeHandle, out var status))
         {
             SetDecoderStatus(LocalizationService.Get("DecoderStatusDetecting"),
                 "Detecting");
