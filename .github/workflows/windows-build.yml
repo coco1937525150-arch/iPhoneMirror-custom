@@ -138,6 +138,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Make the download ZIP name unique for EVERY attempt. Keep the EXE
+      # entry point stable so shortcuts, updates and native DLL lookup work.
+      - name: Identify pre6 CI artifact
+        id: pre6_build_identity
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
+        shell: pwsh
+        run: |
+          $sourceCommit = '${{ github.event.pull_request.head.sha }}'
+          $shortSha = $sourceCommit.Substring(0, 8)
+          $name = "iPhoneMirror-pre6-build$env:GITHUB_RUN_ID-attempt$env:GITHUB_RUN_ATTEMPT-$shortSha-Win64-CI-UNVERIFIED"
+          "artifact_name=$name" >> $env:GITHUB_OUTPUT
+
       # A separately named PR-only testing artifact. Passing CI is not
       # equivalent to accepting the bundled shell asset or iPhone hardware tests.
       - name: Write pre6 integrated build provenance
@@ -151,10 +163,10 @@ jobs:
           }
           @(
             'Build: pre6 integrated CI candidate (NOT hardware validated)'
-            "Git commit: $env:GITHUB_SHA"
-            "Git workflow run: $env:GITHUB_RUN_ID"
+            "Source Git commit: ${{ github.event.pull_request.head.sha }}"
+            "Git workflow run: $env:GITHUB_RUN_ID attempt: $env:GITHUB_RUN_ATTEMPT"
             'Source FPS validation: pending physical iPhone/Windows measurements'
-            'Bundled iPhone shell PNG verification: pending until original asset committed'
+            'Bundled iPhone shell PNG verification: original SHA256 and aperture checked by pre6 CI preflight'
           ) | Set-Content -LiteralPath (Join-Path $root 'BUILD_PROVENANCE.txt') -Encoding utf8
           Get-ChildItem -LiteralPath $root -File -Recurse |
             Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
@@ -169,7 +181,7 @@ jobs:
         if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
         uses: actions/upload-artifact@v4
         with:
-          name: iPhoneMirror-pre6-integrated-CI-UNVERIFIED
+          name: ${{ steps.pre6_build_identity.outputs.artifact_name }}
           path: outputs/iPhoneMirror/
           if-no-files-found: error
           retention-days: 14
