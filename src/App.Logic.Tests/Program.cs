@@ -4394,16 +4394,16 @@ Equal(true, outputSettingsXaml.Contains("RecordResolutionPresetBox", StringCompa
     !outputSettingsXaml.Contains("RecordBitrateBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal),
     "record FPS and bitrate use single editable preset control, no duplicate entry rows");
 
-var mediaOutputServiceCode = File.ReadAllText(Path.Combine(sourceDirectory,
+var mediaOutputFinalizationCode = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "MediaOutputService.cs"));
 Equal(true,
-    mediaOutputServiceCode.Contains("var stopTimeout = activeKind == MediaOutputKind.Recording",
+    mediaOutputFinalizationCode.Contains("var stopTimeout = activeKind == MediaOutputKind.Recording",
         StringComparison.Ordinal) &&
-    mediaOutputServiceCode.IndexOf("await pumps.WaitAsync(PumpTaskShutdownTimeout)",
+    mediaOutputFinalizationCode.IndexOf("await pumps.WaitAsync(PumpTaskShutdownTimeout)",
         StringComparison.Ordinal) <
-    mediaOutputServiceCode.IndexOf("try { process.StandardInput.Close(); }",
+    mediaOutputFinalizationCode.IndexOf("try { process.StandardInput.Close(); }",
         StringComparison.Ordinal) &&
-    mediaOutputServiceCode.Contains("line.Contains(\"error\", StringComparison.OrdinalIgnoreCase)",
+    mediaOutputFinalizationCode.Contains("line.Contains(\"error\", StringComparison.OrdinalIgnoreCase)",
         StringComparison.Ordinal),
     "recording waits for producer shutdown before FFmpeg EOF and does not report a channel layout hint as encoder failure");
 
