@@ -634,6 +634,18 @@ struct D3D11PreviewRenderer::Impl {
     std::mutex image_adjustments_mutex;
     ImageAdjustments image_adjustments;
     std::atomic_int rotation_quarter_turns{};
+    struct VisualRotationRequest {
+        float degrees{};
+        float canvas_width{};
+        float canvas_height{};
+        float scale{1.0F};
+        bool active{};
+        std::uint64_t generation{1};
+    };
+    std::mutex visual_rotation_mutex;
+    VisualRotationRequest visual_rotation_request{};
+    std::uint64_t applied_visual_generation{};
+    std::atomic_bool hold_swap_chain_resize{};
     std::atomic_uint64_t color_output_policy_generation{};
     // A single packed load prevents torn diagnostics. Renderer-owned fields
     // still advance as their underlying facts change, so a newly detected SDR
@@ -1461,10 +1473,67 @@ struct D3D11PreviewRenderer::Impl {
             if (device_frame_enabled(frame_profile)) draw_device_frame(frame_profile);
             else draw_black_background(rounded_window_enabled());
         }
+        apply_visual_rotation_if_needed(true);
         check(swap_chain->Present(1, 0), "Present black frame");
     }
 
+    void apply_visual_rotation_if_needed(bool after_final_resize = false) noexcept {
+        if (!composition_mode || !composition_visual || !composition_device) return;
+        VisualRotationRequest request;
+        {
+            std::scoped_lock lock(visual_rotation_mutex);
+            request = visual_rotation_request;
+        }
+        if (request.generation == applied_visual_generation) return;
+        if (!request.active) {
+            // Do not reset the transform while the old portrait backbuffer
+            // is still inside the temporary square animation HWND. Switch
+            // identity only after its FINAL client size has been rendered.
+            if (!after_final_resize) return;
+            RECT client{};
+            if (!GetClientRect(window, &client) ||
+                target_width != static_cast<UINT>(client.right - client.left) ||
+                target_height != static_cast<UINT>(client.bottom - client.top))
+                return;
+        }
+
+        D2D_MATRIX_3X2_F matrix{};
+        if (request.active) {
+            constexpr float DegreesToRadians = 0.01745329251994329577F;
+            const float angle = request.degrees * DegreesToRadians;
+            const float c = std::cos(angle) * request.scale;
+            const float s = std::sin(angle) * request.scale;
+            // DComp transforms the ENTIRE swap-chain visual: shell, screen,
+            // video and aperture are guaranteed to move rigidly together.
+            // Screen coordinate Y increases downwards, so +90 is clockwise.
+            matrix._11 = c;
+            matrix._12 = s;
+            matrix._21 = -s;
+            matrix._22 = c;
+            matrix._31 = request.canvas_width * 0.5F -
+                c * static_cast<float>(target_width) * 0.5F +
+                s * static_cast<float>(target_height) * 0.5F;
+            matrix._32 = request.canvas_height * 0.5F -
+                s * static_cast<float>(target_width) * 0.5F -
+                c * static_cast<float>(target_height) * 0.5F;
+        } else {
+            matrix._11 = matrix._22 = 1.0F;
+        }
+        if (FAILED(composition_visual->SetTransform(&matrix)) ||
+            FAILED(composition_device->Commit())) {
+            logging::write("d3d_preview whole_visual_rotation_commit_failed");
+            return;
+        }
+        applied_visual_generation = request.generation;
+    }
+
     bool resize_if_needed(std::chrono::steady_clock::time_point now) {
+        // A single transparent HWND is enlarged to fit the entire rotation
+        // sweep while DComp transforms the original phone swap-chain within
+        // it. Resizing the source swap-chain to the square would distort both
+        // the opening geometry and the shell PNG.
+        if (hold_swap_chain_resize.load(std::memory_order_acquire))
+            return false;
         RECT rect{};
         if (!GetClientRect(window, &rect)) return false;
         const auto width = static_cast<UINT>(std::max<LONG>(0, rect.right - rect.left));
@@ -1952,6 +2021,10 @@ struct D3D11PreviewRenderer::Impl {
         // flip presentation must not hold up the newest landscape frame when
         // DWM is late with a vblank; skip that presentation and keep capture
         // and decode independent of desktop composition.
+        // Reset the temporary transform on the SAME present that already
+        // contains the new landscape/portrait geometry. A separate reset
+        // before the resize would reveal a black or off-center intermediate.
+        apply_visual_rotation_if_needed(true);
         const auto present_result = swap_chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
         if (present_result != DXGI_ERROR_WAS_STILL_DRAWING)
             check(present_result, "Present");
@@ -2040,6 +2113,7 @@ struct D3D11PreviewRenderer::Impl {
                 // Coalesce interactive WM_SIZE bursts independently of media
                 // FPS. A resize iteration bypasses the media deadline below
                 // and immediately presents the newest retained frame.
+                apply_visual_rotation_if_needed();
                 const bool target_resized = resize_if_needed(
                     std::chrono::steady_clock::now());
                 if (clear_requested.exchange(false, std::memory_order_acq_rel)) {
@@ -2217,6 +2291,30 @@ void D3D11PreviewRenderer::set_rotation(std::int32_t quarter_turns) noexcept {
     if (!impl_) return;
     impl_->rotation_quarter_turns.store(quarter_turns, std::memory_order_relaxed);
     impl_->refresh_requested.store(true, std::memory_order_release);
+}
+
+void D3D11PreviewRenderer::set_visual_rotation(float degrees,
+    float canvas_width, float canvas_height, float visual_scale,
+    bool active) noexcept {
+    if (!impl_) return;
+    if (!std::isfinite(degrees) || !std::isfinite(canvas_width) ||
+        !std::isfinite(canvas_height) || !std::isfinite(visual_scale) ||
+        visual_scale <= 0.0F || visual_scale > 1.0F) return;
+    // Publish the resize guard before Windows receives WM_SIZE for the
+    // temporary square animation host. Never touch the AirPlay session.
+    impl_->hold_swap_chain_resize.store(active, std::memory_order_release);
+    {
+        std::scoped_lock lock(impl_->visual_rotation_mutex);
+        auto& request = impl_->visual_rotation_request;
+        request.degrees = degrees;
+        request.canvas_width = canvas_width;
+        request.canvas_height = canvas_height;
+        request.scale = visual_scale;
+        request.active = active;
+        ++request.generation;
+    }
+    if (!active)
+        impl_->refresh_requested.store(true, std::memory_order_release);
 }
 
 void D3D11PreviewRenderer::set_color_output_preference(
