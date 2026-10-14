@@ -29,6 +29,7 @@ internal sealed class AspectRatioWindowController : IDisposable
     private double _aspectRatio;
     private bool _disposed;
     private bool _resizeQueued;
+    private int _resizeGeneration;
 
     internal AspectRatioWindowController(Window window, uint sourceWidth, uint sourceHeight)
     {
@@ -115,6 +116,18 @@ internal sealed class AspectRatioWindowController : IDisposable
 
     internal void Reflow() => QueueResize(fitToWorkArea: false);
 
+    /// <summary>
+    /// Discard a previously queued Dispatcher resize when the phone's
+    /// DirectComposition rotation takes ownership of the HWND geometry.
+    /// A stale queued reflow can otherwise run just after the animation
+    /// completes and blow up the bezel beyond the fitted window bounds.
+    /// </summary>
+    internal void CancelQueuedResize()
+    {
+        ++_resizeGeneration;
+        _resizeQueued = false;
+    }
+
     private static double? ValidAspect(uint width, uint height)
     {
         if (width == 0 || height == 0) return null;
@@ -155,9 +168,11 @@ internal sealed class AspectRatioWindowController : IDisposable
     private void QueueResize(bool fitToWorkArea)
     {
         if (_disposed || _handle == 0 || _resizeQueued) return;
+        var generation = _resizeGeneration;
         _resizeQueued = true;
         _dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
+            if (_disposed || generation != _resizeGeneration) return;
             _resizeQueued = false;
             _ = ResizeWindowToAspect(fitToWorkArea);
         });
