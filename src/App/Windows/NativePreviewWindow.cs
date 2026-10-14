@@ -400,8 +400,8 @@ internal sealed class NativePreviewWindow : IDisposable
         var initialWindowDimensions = _deviceFrameProfile.GetOuterDimensions(sourceWidth, sourceHeight);
         _aspectController = new AspectRatioWindowController(_source,
             initialWindowDimensions.Width, initialWindowDimensions.Height,
-            () => !_disposed && !_isFullScreen && _handle != 0 &&
-                !IsIconic(_handle) && !IsZoomed(_handle));
+            () => !_disposed && !_rotationAnimating && !_isFullScreen &&
+                _handle != 0 && !IsIconic(_handle) && !IsZoomed(_handle));
         // Install the instance hook only after every callback dependency is
         // initialized; HwndSource construction itself dispatches messages.
         _source.AddHook(WindowProcedure);
@@ -1481,14 +1481,6 @@ internal sealed class NativePreviewWindow : IDisposable
         _rotationTimer.Stop();
         var turns = (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0);
         var nextRotation = ((_rotation + turns) % 4 + 4) % 4;
-        var previousRotation = _rotation;
-        if (_sessionHandle != 0 && !NativeCore.SetDeviceWindowRotation(
-                _sessionHandle, _handle, nextRotation))
-        {
-            Log("independent_window_rotation_commit_failed");
-            AbortRotationAnimation();
-            return;
-        }
         var swapped = (turns & 1) != 0;
         var width = swapped ? _rotationOriginalClientHeight : _rotationOriginalClientWidth;
         var height = swapped ? _rotationOriginalClientWidth : _rotationOriginalClientHeight;
@@ -1496,17 +1488,41 @@ internal sealed class NativePreviewWindow : IDisposable
             _rotationOriginalClientWidth;
         var outerH = _rotationOriginalBounds.Bottom - _rotationOriginalBounds.Top -
             _rotationOriginalClientHeight;
-        var finalW = Math.Max(1, (int)Math.Round(width * _rotationScale)) + outerW;
-        var finalH = Math.Max(1, (int)Math.Round(height * _rotationScale)) + outerH;
+        var finalClientW = Math.Max(1, (int)Math.Round(width * _rotationScale));
+        var finalClientH = Math.Max(1, (int)Math.Round(height * _rotationScale));
+        var finalW = finalClientW + outerW;
+        var finalH = finalClientH + outerH;
         var cx = ((long)_rotationOriginalBounds.Left + _rotationOriginalBounds.Right) / 2;
         var cy = ((long)_rotationOriginalBounds.Top + _rotationOriginalBounds.Bottom) / 2;
         var finalX = (int)(cx - finalW / 2L);
         var finalY = (int)(cy - finalH / 2L);
+
+        // The reference animation rotates the WHOLE device inside a fixed
+        // fitted stage. Keep the ORIGINAL portrait backbuffer untouched
+        // until the last animation frame is visible. Only then resize HWND,
+        // while DComp still presents the complete phone at the final angle.
+        // The former order rotated the PNG shader inside a portrait swapchain
+        // before the HWND was resized: landscape bezel + vertical screen.
+        var finalAngle = (float)_rotationTimeline.TargetDegrees;
+        if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                finalAngle, finalClientW, finalClientH, _rotationScale, true))
+        {
+            Log("independent_window_rotation_handoff_failed");
+            AbortRotationAnimation();
+            return;
+        }
         if (!SetWindowPos(_handle, 0, finalX, finalY, finalW, finalH,
                 SwpNoActivate | SwpNoZOrder))
         {
-            _ = NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle,
-                previousRotation);
+            AbortRotationAnimation();
+            return;
+        }
+        // Commit the shader quarter-turn only AFTER the HWND has its final
+        // geometry. Native D3D11 blocks intermediate presents until the new
+        // swapchain size is ready, then clears DComp on the SAME present.
+        if (!NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, nextRotation))
+        {
+            Log("independent_window_rotation_commit_failed");
             AbortRotationAnimation();
             return;
         }
@@ -1514,10 +1530,10 @@ internal sealed class NativePreviewWindow : IDisposable
         _rotationAnimating = false;
         _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
             0, 0, 0, 1, false);
-        ApplyRotatedDimensions();
+        ApplyRotatedDimensions(reflow: false);
         Log("independent_window_rotation_animation_completed",
             ("mode", WindowMode), ("quarter_turns", nextRotation),
-            ("duration_ms", 1000));
+            ("duration_ms", 1000), ("client_size", $"{finalClientW}x{finalClientH}"));
     }
 
     private void AbortRotationAnimation()
@@ -1525,24 +1541,27 @@ internal sealed class NativePreviewWindow : IDisposable
         if (!_rotationAnimating) return;
         _rotationTimer.Stop();
         _rotationAnimating = false;
-        if (_sessionHandle != 0 && _handle != 0)
-            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
-                0, 0, 0, 1, false);
+        // Restore the unrotated HWND first; only then release DComp resize
+        // protection. An early transform reset while still in the square
+        // stage is visibly off-center and can briefly expose a giant bezel.
         var bounds = _rotationOriginalBounds;
         if (_handle != 0)
             _ = SetWindowPos(_handle, 0, bounds.Left, bounds.Top,
                 Math.Max(1, bounds.Right - bounds.Left),
                 Math.Max(1, bounds.Bottom - bounds.Top),
                 SwpNoActivate | SwpNoZOrder);
+        if (_sessionHandle != 0 && _handle != 0)
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
     }
 
-    private void ApplyRotatedDimensions()
+    private void ApplyRotatedDimensions(bool reflow = true)
     {
         if (_sourceWidth == 0 || _sourceHeight == 0) return;
         var width = (_rotation & 1) != 0 ? _sourceHeight : _sourceWidth;
         var height = (_rotation & 1) != 0 ? _sourceWidth : _sourceHeight;
         var outer = _deviceFrameProfile.GetOuterDimensions(width, height);
-        _aspectController.SetSourceDimensions(outer.Width, outer.Height);
+        _aspectController.SetSourceDimensions(outer.Width, outer.Height, reflow);
     }
 
     private void ApplyDeviceFrameProfile()
