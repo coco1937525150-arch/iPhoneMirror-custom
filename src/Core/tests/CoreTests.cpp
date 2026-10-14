@@ -1837,14 +1837,18 @@ void test_wireless_multi_stream_isolation() {
     check(first->latest_frame() && first->latest_frame()->nv12.front() == 200,
         "wireless session recovery accepts a replacement frame without reconnecting");
 
-    const auto video_frames_before_disconnect = first->snapshot().video_frames;
     first->set_identity(L"First iPhone", false);
     check(first->snapshot().width == 0 && second->snapshot().width == 2,
         "disconnect clears only the matching wireless client");
+    // A receiver callback may signal disconnect before the iPhone stops
+    // sending. A NEW valid frame is positive evidence that mirroring is
+    // still live: a stale no-recovery assertion would recreate P0-1.
     first->publish_video(first_header, first_i420);
-    check(first->snapshot().video_frames == video_frames_before_disconnect &&
-            first->latest_frame() == nullptr,
-        "late frames after disconnect cannot repopulate the wireless client");
+    check(first->connected() && first->latest_frame() != nullptr &&
+            first->snapshot().width == 4 &&
+            first->snapshot().video_frames == 1 &&
+            second->snapshot().width == 2,
+        "fresh valid video after premature disconnect restores only its client");
     first->detach();
     second->detach();
 }
