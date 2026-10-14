@@ -4297,6 +4297,19 @@ Equal(true,
     nativeRendererSource.Contains("profile.side_inset - 0.048F", StringComparison.Ordinal) &&
     !nativeRendererSource.Contains("local_app_data[", StringComparison.Ordinal),
     "native D3D uses the bundled PNG with the calibrated profile, not the legacy user override");
+Equal(true,
+    startupSource.Contains("IPHONE_MIRROR_BUNDLED_APERTURE", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("IPHONE_MIRROR_BUNDLED_APERTURE", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("reference_aperture_loaded", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("referenceAperture.Sample(", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("allow_aperture = true", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("turns, false);", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("turns, true);", StringComparison.Ordinal),
+    "D3D11 preview uses the same connected-hole matte in direct and limited render passes");
+Equal(true,
+    nativeRendererSource.Contains("float2(1.0 - uv.y, uv.x) : uv;", StringComparison.Ordinal),
+    "landscape shell turns left with the original silver reference image");
+
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
 Equal(true, outputSettingsXaml.Contains("<ScrollViewer Grid.Row=", StringComparison.Ordinal) &&
