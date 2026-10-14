@@ -358,7 +358,6 @@ void WirelessClientStream::reset_video_for_attach() noexcept {
     // This is deliberately different from a new device connection, where no
     // frame exists yet and the counters should start from zero.
     if (!latest_frame_) {
-        render_queue_.clear();
         snapshot_.width = snapshot_.height = 0;
         snapshot_.fps = snapshot_.latency_ms = 0;
         snapshot_.video_frames = snapshot_.audio_packets = 0;
@@ -495,7 +494,6 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
         // survive the switch: at original quality they can retain tens of MB
         // of NV12 data and the renderer may otherwise consume a stale-sized
         // frame after its output buffers have been resized.
-        render_queue_.clear();
         // Do not let the renderer hold on to a frame from the previous
         // orientation while the new decoder geometry is being uploaded. This
         // matters most for the maximum/original profile where a rotated frame
@@ -510,9 +508,6 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     }
     latest_frame_ = frame;
     last_video_at_ = received_at;
-    render_queue_.push_back(frame);
-    const auto queue_limit = attachments_ == 0 ? 1U : 2U;
-    while (render_queue_.size() > queue_limit) render_queue_.pop_front();
     snapshot_.state = State::Streaming;
     snapshot_.message = L"Wireless mirroring";
     snapshot_.width = header.width;
@@ -606,7 +601,6 @@ void WirelessClientStream::clear_media() noexcept {
     {
         std::scoped_lock lock(mutex_);
         latest_frame_.reset();
-        render_queue_.clear();
         snapshot_.width = snapshot_.height = 0;
         snapshot_.fps = snapshot_.latency_ms = 0;
         snapshot_.audio_sample_rate = snapshot_.audio_channels = 0;
