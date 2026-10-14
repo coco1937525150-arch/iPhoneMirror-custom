@@ -4353,9 +4353,13 @@ Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordin
 Equal(true, outputSettingsXaml.Contains("OnUseDefaultWhiteBackgroundClick", StringComparison.Ordinal),
     "output settings expose the default file-free whiteboard");
 Equal(true, outputSettingsXaml.Contains("RecordResolutionPresetBox", StringComparison.Ordinal) &&
-    outputSettingsXaml.Contains("RecordFpsPresetBox", StringComparison.Ordinal) &&
-    outputSettingsXaml.Contains("RecordBitratePresetBox", StringComparison.Ordinal),
-    "recording offers resolution, FPS, and bitrate presets without removing custom values");
+    outputSettingsXaml.Contains("x:Name=\"RecordFpsBox\" Height=\"36\" IsEditable=\"True\"", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("x:Name=\"RecordBitrateBox\" Height=\"36\" IsEditable=\"True\"", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordFpsPresetBox", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordBitratePresetBox", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordFpsBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordBitrateBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal),
+    "record FPS and bitrate use single editable preset control, no duplicate entry rows");
 
 // The editor must follow the chosen output canvas dimensions, not the
 // resolution of a tiny backdrop picture.
