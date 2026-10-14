@@ -273,7 +273,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
                     ("canvas_width", encoderWidth), ("canvas_height", encoderHeight),
                     ("fps", request.FrameRate),
                     ("encoder", capabilities.PreferredH264Encoder),
-                    ("audio", includeAudio), ("shell", composition is not null));
+                    ("audio", includeAudio), ("shell", request.IncludePhoneShell),
+                    ("background_canvas", composition is not null));
                 audioPipe = audioPipeName is null ? null : new NamedPipeServerStream(
                     audioPipeName, PipeDirection.Out, 1, PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous, 64 * 1024, 64 * 1024);
