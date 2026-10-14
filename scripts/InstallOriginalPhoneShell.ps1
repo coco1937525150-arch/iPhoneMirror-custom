@@ -43,8 +43,8 @@ try {
     for ($i = 0; $i -lt $pngSignature.Length; $i++) {
         if ($data[$i] -ne $pngSignature[$i]) { throw 'Expected a PNG file.' }
     }
-    $width = [System.Buffers.Binary.BinaryPrimitives]::ReadInt32BigEndian([ReadOnlySpan[byte]]::new($data, 16, 4))
-    $height = [System.Buffers.Binary.BinaryPrimitives]::ReadInt32BigEndian([ReadOnlySpan[byte]]::new($data, 20, 4))
+    $width = [System.Net.IPAddress]::NetworkToHostOrder([System.BitConverter]::ToInt32($data, 16))
+    $height = [System.Net.IPAddress]::NetworkToHostOrder([System.BitConverter]::ToInt32($data, 20))
     if ($width -ne 994 -or $height -ne 2048 -or $data[25] -ne 6) {
         throw "Unexpected PNG format: ${width}x${height}, color type $($data[25])."
     }
