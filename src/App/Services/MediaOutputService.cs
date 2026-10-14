@@ -1449,12 +1449,13 @@ internal sealed class MediaOutputService : IAsyncDisposable
             throw new InvalidOperationException("A compatible FFmpeg H.264 encoder is unavailable.");
         if (!capabilities.Supports(request.Kind))
             throw new InvalidOperationException("The requested FFmpeg output protocol is unavailable.");
-        if (request.Width is < 160 or > 3840 || request.Height is < 160 or > 2160 ||
+        if (request.Width is < 160 or > 4096 || request.Height is < 160 or > 4096 ||
             (request.Width & 1) != 0 || (request.Height & 1) != 0)
-            throw new ArgumentOutOfRangeException(nameof(request), "Output dimensions must be even and at most 3840x2160.");
+            throw new ArgumentOutOfRangeException(nameof(request),
+                "Output width and height must be even and between 160 and 4096.");
         var maxFps = request.Kind == MediaOutputKind.Recording ? 120 : 60;
         if (request.FrameRate < 10 || request.FrameRate > maxFps ||
-            request.BitrateKbps is < 500 or > 50000)
+            request.BitrateKbps is < 500 or > 150000)
             throw new ArgumentOutOfRangeException(nameof(request));
         if (string.IsNullOrWhiteSpace(request.Destination))
             throw new ArgumentException("An output destination is required.", nameof(request));
