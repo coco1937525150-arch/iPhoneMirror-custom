@@ -385,7 +385,9 @@ float4 frameMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARG
     if (outputSize.x > outputSize.y) {
         // Rotate the button layout together with the complete phone body,
         // instead of leaving portrait buttons on the landscape shell.
-        portraitPixel = float2(position.y, outputSize.x - position.x);
+        // In landscape, the reference phone body turns LEFT (counter-clockwise).
+        // Keep the top of the portrait phone on the landscape left edge.
+        portraitPixel = float2(outputSize.y - position.y, position.x);
         portraitSize = float2(outputSize.y, outputSize.x);
     }
     float2 uvBody = saturate(portraitPixel / max(portraitSize, float2(1.0, 1.0)));
@@ -469,7 +471,7 @@ float4 copyMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGE
 float4 referenceShellMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     if (frameEnabled < 0.5) return float4(0, 0, 0, 0);
     float2 shellUv = outputSize.x > outputSize.y ?
-        float2(uv.y, 1.0 - uv.x) : uv;
+        float2(1.0 - uv.y, uv.x) : uv;
     return referenceShell.Sample(linearSampler, shellUv);
 }
 
