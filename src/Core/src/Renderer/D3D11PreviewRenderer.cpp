@@ -1533,7 +1533,7 @@ struct D3D11PreviewRenderer::Impl {
         } else {
             matrix._11 = matrix._22 = 1.0F;
         }
-        if (FAILED(composition_visual->SetTransform(&matrix)) ||
+        if (FAILED(composition_visual->SetTransform(matrix)) ||
             FAILED(composition_device->Commit())) {
             logging::write("d3d_preview whole_visual_rotation_commit_failed");
             return;
