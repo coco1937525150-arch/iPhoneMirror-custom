@@ -101,13 +101,16 @@ internal sealed class AspectRatioWindowController : IDisposable
             SwpNoActivate | SwpNoZOrder);
     }
 
-    internal void SetSourceDimensions(uint width, uint height)
+    internal void SetSourceDimensions(uint width, uint height, bool reflow = true)
     {
         var newAspect = ValidAspect(width, height);
         if (newAspect is null || Math.Abs(newAspect.Value - _aspectRatio) < 0.00001) return;
 
         _aspectRatio = newAspect.Value;
-        QueueResize(fitToWorkArea: false);
+        // The phone-rotation compositor owns the final HWND size during its
+        // discrete orientation handoff. Do not queue a second aspect resize
+        // immediately after the already-sized rotated window is displayed.
+        if (reflow) QueueResize(fitToWorkArea: false);
     }
 
     internal void Reflow() => QueueResize(fitToWorkArea: false);
