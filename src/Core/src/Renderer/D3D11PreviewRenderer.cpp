@@ -1240,26 +1240,20 @@ struct D3D11PreviewRenderer::Impl {
         } apartment;
         if (FAILED(apartment.result) &&
             apartment.result != RPC_E_CHANGED_MODE) return;
-        wchar_t module_path[32768]{};
-        const auto length = GetModuleFileNameW(nullptr, module_path,
-            static_cast<DWORD>(std::size(module_path)));
-        if (length == 0 || length >= std::size(module_path)) return;
-        const auto bundled_path = std::filesystem::path(module_path).parent_path() /
-            L"Assets" / L"iphone16_pro_max_shell.png";
-        // The WPF recorder and layout editor prefer the same user-installed
-        // PNG. Store it under LocalAppData so portable/exe directories can
-        // remain read-only; reconnect/relaunch to reload the GPU texture.
-        auto path = bundled_path;
-        wchar_t local_app_data[32768]{};
-        const auto local_length = GetEnvironmentVariableW(L"LOCALAPPDATA",
-            local_app_data, static_cast<DWORD>(std::size(local_app_data)));
-        if (local_length > 0 && local_length < std::size(local_app_data)) {
-            const auto user_path = std::filesystem::path(local_app_data) /
-                L"iPhoneMirror" / L"Assets" / L"iphone16_pro_max_shell.png";
-            if (std::filesystem::exists(user_path)) path = user_path;
+        // WPF extracts and SHA256-verifies the original embedded RGBA PNG
+        // BEFORE any preview renderer starts. The native renderer must consume
+        // that exact path; no user-controlled LocalAppData PNG may override it.
+        wchar_t shell_path[32768]{};
+        const auto shell_length = GetEnvironmentVariableW(
+            L"IPHONE_MIRROR_BUNDLED_SHELL", shell_path,
+            static_cast<DWORD>(std::size(shell_path)));
+        if (shell_length == 0 || shell_length >= std::size(shell_path)) {
+            logging::write("d3d_preview original_reference_shell_path_missing");
+            return;
         }
-        if (!std::filesystem::exists(path)) {
-            logging::write("d3d_preview reference_shell_missing");
+        const std::filesystem::path path(shell_path);
+        if (!std::filesystem::is_regular_file(path)) {
+            logging::write("d3d_preview original_reference_shell_file_missing");
             return;
         }
         ComPtr<IWICImagingFactory> imaging;
@@ -1307,9 +1301,11 @@ struct D3D11PreviewRenderer::Impl {
     }
 
     bool use_reference_shell(const DeviceFrameProfileData& profile) const noexcept {
+        // The shared 994x2048 shell geometry uses 0.048 (source short-edge).
+        // Accept the correct calibrated profile instead of silently painting
+        // the old synthetic black frame when the PNG is already loaded.
         return profile.enabled && reference_shell_view &&
-            (std::abs(profile.side_inset - 0.064F) < 0.002F ||
-             std::abs(profile.side_inset - 0.035F) < 0.002F) &&
+            std::abs(profile.side_inset - 0.048F) < 0.002F &&
             profile.cutout_kind == 0;
     }
 
