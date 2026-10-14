@@ -1863,13 +1863,22 @@ struct D3D11PreviewRenderer::Impl {
         }
 
         const auto turns = ((rotation_quarter_turns.load(std::memory_order_relaxed) % 4) + 4) % 4;
-        const bool swaps_axes = (turns & 1) != 0;
-        const float source_aspect = swaps_axes
-            ? static_cast<float>(frame.height) / frame.width
-            : static_cast<float>(frame.width) / frame.height;
         const auto frame_profile = device_frame_snapshot();
         const auto framed = device_frame_enabled(frame_profile);
         const auto screen_area = device_screen_rect(frame_profile);
+        // A manually turned phone needs a rotated PORTRAIT source. However,
+        // AirPlay may already send 16:9 LANDSCAPE pixels after an actual iOS
+        // orientation switch. Rotating those pixels again makes a narrow,
+        // vertical video appear inside a horizontal silver iPhone shell.
+        // The shell/aperture always use their own quarter-turn transform.
+        const bool source_landscape = frame.width > frame.height;
+        const bool opening_landscape = screen_area.width > screen_area.height;
+        const int video_turns = ((turns & 1) != 0 && source_landscape &&
+            opening_landscape) ? 0 : turns;
+        const bool swaps_axes = (video_turns & 1) != 0;
+        const float source_aspect = swaps_axes
+            ? static_cast<float>(frame.height) / frame.width
+            : static_cast<float>(frame.width) / frame.height;
         const float target_aspect = screen_area.width / screen_area.height;
         D3D11_VIEWPORT viewport{};
         viewport.TopLeftX = screen_area.x;
@@ -1982,7 +1991,7 @@ struct D3D11PreviewRenderer::Impl {
             draw_nv12(viewport,
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
-                rounded, turns, true);
+                rounded, video_turns, true);
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             if (framed) draw_reference_shell(frame_profile);
@@ -1996,7 +2005,7 @@ struct D3D11PreviewRenderer::Impl {
             limited_viewport.Height = static_cast<float>(limited_height);
             limited_viewport.MinDepth = 0;
             limited_viewport.MaxDepth = 1;
-            draw_nv12(limited_viewport, limited_width, limited_height, false, turns, false);
+            draw_nv12(limited_viewport, limited_width, limited_height, false, video_turns, false);
 
             // A resource must not remain bound as an RTV when it becomes the
             // SRV for the copy pass; explicit unbinding avoids a driver-side
@@ -2130,6 +2139,33 @@ struct D3D11PreviewRenderer::Impl {
                 apply_visual_rotation_if_needed();
                 const bool target_resized = resize_if_needed(
                     std::chrono::steady_clock::now());
+                // At the very end of a whole-phone rotation, the HWND has
+                // its final portrait/landscape client size while the old
+                // backbuffer may still be the opposite orientation. Never
+                // PRESENT the shader's new quarter-turn against that old
+                // geometry: it produces the reported giant bezel, vertical
+                // video and black flash. Finish ResizeBuffers first and
+                // reset the DComp matrix with the newly sized rendered frame.
+                bool waiting_for_rotation_resize = false;
+                {
+                    std::scoped_lock lock(visual_rotation_mutex);
+                    if (!visual_rotation_request.active &&
+                        visual_rotation_request.generation !=
+                            applied_visual_generation) {
+                        RECT final_rect{};
+                        if (GetClientRect(window, &final_rect)) {
+                            waiting_for_rotation_resize =
+                                target_width != static_cast<UINT>(
+                                    std::max<LONG>(0, final_rect.right - final_rect.left)) ||
+                                target_height != static_cast<UINT>(
+                                    std::max<LONG>(0, final_rect.bottom - final_rect.top));
+                        }
+                    }
+                }
+                if (waiting_for_rotation_resize) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
                 if (clear_requested.exchange(false, std::memory_order_acq_rel)) {
                     last_frame.reset();
                     last_timestamp = 0;
