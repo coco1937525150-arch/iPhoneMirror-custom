@@ -248,12 +248,23 @@ cbuffer ShapeConstants : register(b0) {
     float4 cutoutParams;
 };
 
-float2 rotateUv(float2 uv) {
-    int turns = ((int)round(rotationQuarterTurns) % 4 + 4) % 4;
+float2 rotateUvByTurns(float2 uv, float quarterTurns) {
+    int turns = ((int)round(quarterTurns) % 4 + 4) % 4;
     if (turns == 1) return float2(uv.y, 1.0 - uv.x);
     if (turns == 2) return float2(1.0 - uv.x, 1.0 - uv.y);
     if (turns == 3) return float2(1.0 - uv.y, uv.x);
     return uv;
+}
+
+float2 rotateUv(float2 uv) {
+    return rotateUvByTurns(uv, rotationQuarterTurns);
+}
+
+float2 rotateShellUv(float2 uv) {
+    // The video is already oriented in a limited intermediate copy pass,
+    // but the original PNG and aperture still need the FINAL device angle.
+    // apertureControl.y is independent of the video's per-pass rotation.
+    return rotateUvByTurns(uv, apertureControl.y);
 }
 
 float cornerCoverage(float2 pixel) {
@@ -280,8 +291,7 @@ float4 premultiplyForCorner(float3 rgb, float2 pixel) {
         // Only the interior transparency is video: the outside corners of
         // the silver reference shell are ALSO transparent and must stay clear.
         float2 sourceUv = pixel / max(apertureCanvasSize, float2(1.0, 1.0));
-        if (apertureCanvasSize.x > apertureCanvasSize.y)
-            sourceUv = float2(1.0 - sourceUv.y, sourceUv.x);
+        sourceUv = rotateShellUv(sourceUv);
         alpha = saturate(referenceAperture.Sample(linearSampler, sourceUv).r);
     }
     return float4(rgb * alpha, alpha);
@@ -480,9 +490,7 @@ float4 copyMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGE
 
 float4 referenceShellMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     if (frameEnabled < 0.5) return float4(0, 0, 0, 0);
-    float2 shellUv = outputSize.x > outputSize.y ?
-        float2(1.0 - uv.y, uv.x) : uv;
-    return referenceShell.Sample(linearSampler, shellUv);
+    return referenceShell.Sample(linearSampler, rotateShellUv(uv));
 }
 
 float4 maskMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
@@ -1189,6 +1197,12 @@ struct D3D11PreviewRenderer::Impl {
         const auto framed = device_frame_enabled(local_frame_profile);
         values.color_padding[0] = allow_aperture && framed &&
             reference_aperture_view && use_reference_shell(local_frame_profile) ? 1.0F : 0.0F;
+        // Shell PNG + connected-aperture mask must use the same device
+        // orientation as video, including counterclockwise and 180 turns.
+        // Kept independent of the per-pass video rotation to avoid rotating
+        // an already-oriented limited-pass texture a second time.
+        const auto shell_turns = rotation_quarter_turns.load(std::memory_order_relaxed);
+        values.color_padding[1] = static_cast<float>(((shell_turns % 4) + 4) % 4);
         const auto screen = device_screen_rect(local_frame_profile);
         const auto display_short_edge = std::min(screen.width, screen.height);
         values.frame_enabled = framed ? 1.0F : 0.0F;
