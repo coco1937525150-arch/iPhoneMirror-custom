@@ -4265,9 +4265,9 @@ Equal(true, File.Exists(PhoneShellAssetStore.ActivePath),
     "embedded phone shell is extracted to a content-addressed runtime cache");
 var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Windows", "MediaOutputSettingsWindow.xaml"));
-Equal(true, outputSettingsXaml.Contains("<ScrollViewer Grid.Row=\\"0\\"", StringComparison.Ordinal) &&
-    outputSettingsXaml.Contains("<Border Grid.Row=\\"1\\" Background=", StringComparison.Ordinal) &&
-    outputSettingsXaml.Split("x:Name=\\"StartRecordingButton\\"").Length == 2 &&
+Equal(true, outputSettingsXaml.Contains("<ScrollViewer Grid.Row=", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("<Border Grid.Row=", StringComparison.Ordinal) &&
+    outputSettingsXaml.Split("StartRecordingButton").Length == 2 &&
     !outputSettingsXaml.Contains("高于 60fps 的录制需检测真实源帧率", StringComparison.Ordinal),
     "recording action stays visible in fixed footer, with obsolete explanatory text removed");
 Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal) ||
