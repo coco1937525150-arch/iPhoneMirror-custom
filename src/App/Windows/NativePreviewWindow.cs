@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -55,6 +56,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private const int VkEscape = 0x1B;
     private const int VkReturn = 0x0D;
     private const int VkF11 = 0x7A;
+    private const int VkLeft = 0x25;
+    private const int VkRight = 0x27;
     private const int VkShift = 0x10;
     private const int VkControl = 0x11;
     private const int VkMenu = 0x12;
@@ -159,6 +162,16 @@ internal sealed class NativePreviewWindow : IDisposable
     private double _sizeFraction = 0.82;
     private double _wheelZoomTargetFraction = 0.82;
     private readonly DispatcherTimer _wheelZoomTimer;
+    private readonly DispatcherTimer _rotationTimer;
+    private readonly Stopwatch _rotationClock = Stopwatch.StartNew();
+    private PhoneRotationTimeline _rotationTimeline = new();
+    private bool _rotationAnimating;
+    private WindowRect _rotationOriginalBounds;
+    private int _rotationOriginalClientWidth;
+    private int _rotationOriginalClientHeight;
+    private float _rotationCanvasWidth;
+    private float _rotationCanvasHeight;
+    private float _rotationScale = 1.0f;
     private bool _disposed;
     private bool _closeQueued;
     private bool _isTopMost;
@@ -343,6 +356,11 @@ internal sealed class NativePreviewWindow : IDisposable
             Interval = TimeSpan.FromMilliseconds(24),
         };
         _wheelZoomTimer.Tick += OnWheelZoomTick;
+        _rotationTimer = new DispatcherTimer(DispatcherPriority.Render, _source.Dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(16),
+        };
+        _rotationTimer.Tick += OnRotationTick;
 
         if (managedContent is not null)
         {
@@ -425,6 +443,9 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (_disposed || _managedContent is not null || _handle == 0 || sessionHandle == 0)
             return false;
+        // The replacement D3D11 renderer owns a different visual; do not
+        // transfer an in-flight old-session DComp animation across handles.
+        if (_rotationAnimating) AbortRotationAnimation();
 
         var previousHandle = _sessionHandle;
         if (_attached)
@@ -678,7 +699,7 @@ internal sealed class NativePreviewWindow : IDisposable
         var changed = _sourceWidth != width || _sourceHeight != height;
         _sourceWidth = width;
         _sourceHeight = height;
-        ApplyRotatedDimensions();
+        if (!_rotationAnimating) ApplyRotatedDimensions();
         if (changed)
             Log("independent_window_dimensions",
                 ("mode", WindowMode), ("size", $"{width}x{height}"),
@@ -689,7 +710,7 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (_disposed || _managedContent is not null || profile == _deviceFrameProfile) return;
         _deviceFrameProfile = profile;
-        ApplyRotatedDimensions();
+        if (!_rotationAnimating) ApplyRotatedDimensions();
         ApplyDeviceFrameProfile();
         Log("independent_window_device_frame",
             ("mode", WindowMode), ("profile", profile.Id),
@@ -699,6 +720,7 @@ internal sealed class NativePreviewWindow : IDisposable
     internal void ToggleFullScreen()
     {
         if (_disposed || _handle == 0) return;
+        if (_rotationAnimating) CompleteRotationAnimation();
         if (_isFullScreen)
         {
             _isFullScreen = false;
@@ -845,6 +867,21 @@ internal sealed class NativePreviewWindow : IDisposable
                 // Boss key is process-global. Keep it out of the iPhone HID
                 // stream while the main window receives WM_HOTKEY.
                 handled = true;
+                return 0;
+            case WmKeyDown when !_rotationAnimating && GetKeyState(VkControl) < 0 &&
+                wParam.ToInt32() == VkLeft:
+                handled = true;
+                Rotate(-1);
+                return 0;
+            case WmKeyDown when !_rotationAnimating && GetKeyState(VkControl) < 0 &&
+                wParam.ToInt32() == VkRight:
+                handled = true;
+                Rotate(1);
+                return 0;
+            case WmKeyDown when _rotationAnimating && GetKeyState(VkControl) < 0 &&
+                (wParam.ToInt32() == VkLeft || wParam.ToInt32() == VkRight):
+                handled = true;
+                Rotate(wParam.ToInt32() == VkRight ? 1 : -1);
                 return 0;
             case WmKeyDown when wParam.ToInt32() == VkF11:
                 handled = true;
@@ -1184,8 +1221,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private bool IsPointerInputEnabledForWindow =>
         IsReverseControlEnabledForWindow || IsUsbControlEnabledForWindow;
     private bool IsPointerInputActive =>
-        IsReverseControlActive || (IsUsbControlEnabledForWindow &&
-            GetForegroundWindow() == _handle);
+        !_rotationAnimating && (IsReverseControlActive ||
+        (IsUsbControlEnabledForWindow && GetForegroundWindow() == _handle));
 
     private void EnableReverseControl()
     {
@@ -1323,24 +1360,180 @@ internal sealed class NativePreviewWindow : IDisposable
     private void Rotate(int delta)
     {
         if (_disposed || _handle == 0) return;
-        var targetRotation = ((_rotation + delta) % 4 + 4) % 4;
-        // Never rotate the decorative shell if the video renderer rejected
-        // the same rotation. Both layers must share one committed state.
-        if (_managedContent is null && _sessionHandle != 0 &&
-            !NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, targetRotation))
+        if (_managedContent is not null || _sessionHandle == 0 ||
+            _isFullScreen || IsIconic(_handle))
         {
-            Log("independent_window_rotation_rejected",
-                ("mode", WindowMode), ("quarter_turns", targetRotation));
+            // Media-cast windows have a separate managed visual and retain
+            // the previous non-phone quarter-turn behavior.
+            if (_managedContent is null) return;
+            _rotation = ((_rotation + delta) % 4 + 4) % 4;
+            _managedContent.LayoutTransform = new RotateTransform(_rotation * 90);
+            ApplyRotatedDimensions();
             return;
         }
-        _rotation = targetRotation;
-        if (_managedContent is not null)
-            _managedContent.LayoutTransform = new RotateTransform(_rotation * 90);
+
+        // Windows reduced-motion setting skips interpolation but still keeps
+        // the final shell and video under the same discrete native transform.
+        if (!SystemParameters.MenuAnimation)
+        {
+            var next = ((_rotation + delta) % 4 + 4) % 4;
+            if (NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, next))
+            {
+                _rotation = next;
+                ApplyRotatedDimensions();
+            }
+            return;
+        }
+
+        if (!_rotationAnimating && !BeginRotationAnimation()) return;
+        // Retarget from the CURRENT eased angle. A reverse click during the
+        // animation does not snap back to zero or restart its phone texture.
+        _rotationTimeline.Retarget(delta * 90.0, _rotationClock.Elapsed);
+        UpdateRotationVisual();
+        _rotationTimer.Start();
+    }
+
+    private bool BeginRotationAnimation()
+    {
+        if (!GetWindowRect(_handle, out var outer) ||
+            !GetClientRect(_handle, out var client))
+            return false;
+        var clientW = client.Right - client.Left;
+        var clientH = client.Bottom - client.Top;
+        if (clientW <= 0 || clientH <= 0) return false;
+        var monitor = MonitorFromWindow(_handle, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = (uint)Marshal.SizeOf<MonitorInfo>() };
+        if (monitor == 0 || !GetMonitorInfoW(monitor, ref info)) return false;
+        var borderW = outer.Right - outer.Left - clientW;
+        var borderH = outer.Bottom - outer.Top - clientH;
+        var available = Math.Min(info.WorkArea.Right - info.WorkArea.Left - borderW,
+            info.WorkArea.Bottom - info.WorkArea.Top - borderH);
+        if (available <= 0) return false;
+        // The diagonal bounds EVERY angle (not merely portrait/landscape).
+        var diagonal = Math.Sqrt((double)clientW * clientW +
+            (double)clientH * clientH) + 4;
+        var side = Math.Max(1, Math.Min((int)Math.Ceiling(diagonal), available));
+        var scale = (float)Math.Min(1.0, (side - 1.0) / diagonal);
+        if (scale <= 0.0f) return false;
+        if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, side, side, scale, true))
+        {
+            Log("independent_window_rotation_visual_unavailable");
+            return false;
+        }
+
+        var centerX = ((long)outer.Left + outer.Right) / 2;
+        var centerY = ((long)outer.Top + outer.Bottom) / 2;
+        var outerSideW = side + borderW;
+        var outerSideH = side + borderH;
+        var stageX = (int)Math.Clamp(centerX - outerSideW / 2L,
+            info.WorkArea.Left, Math.Max(info.WorkArea.Left, info.WorkArea.Right - outerSideW));
+        var stageY = (int)Math.Clamp(centerY - outerSideH / 2L,
+            info.WorkArea.Top, Math.Max(info.WorkArea.Top, info.WorkArea.Bottom - outerSideH));
+        if (!SetWindowPos(_handle, 0, stageX, stageY, outerSideW, outerSideH,
+                SwpNoActivate | SwpNoZOrder))
+        {
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
+            return false;
+        }
+        _rotationOriginalBounds = outer;
+        _rotationOriginalClientWidth = clientW;
+        _rotationOriginalClientHeight = clientH;
+        _rotationScale = scale;
+        _rotationCanvasWidth = side;
+        _rotationCanvasHeight = side;
+        _rotationTimeline = new PhoneRotationTimeline();
+        _rotationAnimating = true;
+        Log("independent_window_rotation_animation_started",
+            ("duration_ms", 1000), ("canvas", side), ("scale", scale));
+        return true;
+    }
+
+    private void OnRotationTick(object? sender, EventArgs e)
+    {
+        if (!_rotationAnimating || _disposed || _sessionHandle == 0)
+        {
+            _rotationTimer.Stop();
+            return;
+        }
+        UpdateRotationVisual();
+        if (_rotationTimeline.Finished(_rotationClock.Elapsed))
+            CompleteRotationAnimation();
+    }
+
+    private void UpdateRotationVisual()
+    {
+        if (!_rotationAnimating) return;
+        var angle = (float)_rotationTimeline.Sample(_rotationClock.Elapsed);
+        if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                angle, _rotationCanvasWidth, _rotationCanvasHeight,
+                _rotationScale, true))
+        {
+            Log("independent_window_rotation_animation_failed");
+            AbortRotationAnimation();
+        }
+    }
+
+    private void CompleteRotationAnimation()
+    {
+        if (!_rotationAnimating) return;
+        _rotationTimer.Stop();
+        var turns = (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0);
+        var nextRotation = ((_rotation + turns) % 4 + 4) % 4;
+        var previousRotation = _rotation;
+        if (_sessionHandle != 0 && !NativeCore.SetDeviceWindowRotation(
+                _sessionHandle, _handle, nextRotation))
+        {
+            Log("independent_window_rotation_commit_failed");
+            AbortRotationAnimation();
+            return;
+        }
+        var swapped = (turns & 1) != 0;
+        var width = swapped ? _rotationOriginalClientHeight : _rotationOriginalClientWidth;
+        var height = swapped ? _rotationOriginalClientWidth : _rotationOriginalClientHeight;
+        var outerW = _rotationOriginalBounds.Right - _rotationOriginalBounds.Left -
+            _rotationOriginalClientWidth;
+        var outerH = _rotationOriginalBounds.Bottom - _rotationOriginalBounds.Top -
+            _rotationOriginalClientHeight;
+        var finalW = Math.Max(1, (int)Math.Round(width * _rotationScale)) + outerW;
+        var finalH = Math.Max(1, (int)Math.Round(height * _rotationScale)) + outerH;
+        var cx = ((long)_rotationOriginalBounds.Left + _rotationOriginalBounds.Right) / 2;
+        var cy = ((long)_rotationOriginalBounds.Top + _rotationOriginalBounds.Bottom) / 2;
+        var finalX = (int)(cx - finalW / 2L);
+        var finalY = (int)(cy - finalH / 2L);
+        if (!SetWindowPos(_handle, 0, finalX, finalY, finalW, finalH,
+                SwpNoActivate | SwpNoZOrder))
+        {
+            _ = NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle,
+                previousRotation);
+            AbortRotationAnimation();
+            return;
+        }
+        _rotation = nextRotation;
+        _rotationAnimating = false;
+        _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+            0, 0, 0, 1, false);
         ApplyRotatedDimensions();
-        // The native renderer refreshes its retained frame from set_rotation().
-        // Reattaching the HWND here could reset its rotation state.
-        Log("independent_window_rotation",
-            ("mode", WindowMode), ("quarter_turns", _rotation));
+        Log("independent_window_rotation_animation_completed",
+            ("mode", WindowMode), ("quarter_turns", nextRotation),
+            ("duration_ms", 1000));
+    }
+
+    private void AbortRotationAnimation()
+    {
+        if (!_rotationAnimating) return;
+        _rotationTimer.Stop();
+        _rotationAnimating = false;
+        if (_sessionHandle != 0 && _handle != 0)
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
+        var bounds = _rotationOriginalBounds;
+        if (_handle != 0)
+            _ = SetWindowPos(_handle, 0, bounds.Left, bounds.Top,
+                Math.Max(1, bounds.Right - bounds.Left),
+                Math.Max(1, bounds.Bottom - bounds.Top),
+                SwpNoActivate | SwpNoZOrder);
     }
 
     private void ApplyRotatedDimensions()
@@ -1364,7 +1557,10 @@ internal sealed class NativePreviewWindow : IDisposable
         Log("independent_window_dispose_begin",
             ("mode", WindowMode), ("attached", _attached),
             ("full_screen", _isFullScreen));
+        if (_rotationAnimating) AbortRotationAnimation();
         _disposed = true;
+        _rotationTimer.Stop();
+        _rotationTimer.Tick -= OnRotationTick;
         _wheelZoomTimer.Stop();
         _wheelZoomTimer.Tick -= OnWheelZoomTick;
         OpenWindows.Remove(this);
