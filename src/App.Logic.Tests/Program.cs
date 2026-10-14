@@ -1648,6 +1648,11 @@ var previewRendererCode = File.ReadAllText(Path.Combine(sourceDirectory,
 var multiPreviewManagerCode = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "MultiDevicePreviewManager.cs"));
 Equal(true,
+    multiPreviewManagerCode.Contains("viewModel.SourceVideoWidth > 0", StringComparison.Ordinal) &&
+    multiPreviewManagerCode.Contains("viewModel.SourceVideoHeight > 0", StringComparison.Ordinal) &&
+    multiPreviewManagerCode.Contains("started.Handle, initialWidth, initialHeight", StringComparison.Ordinal),
+    "detached AirPlay preview starts with current decoded source dimensions rather than hard-coded portrait");
+Equal(true,
     nativePreviewWindowCode.Contains("internal void HideForShutdown()",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains("ShowWindow(_handle, SwHide)",
