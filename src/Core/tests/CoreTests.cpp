@@ -1811,6 +1811,8 @@ void test_wireless_multi_stream_isolation() {
     second_header.plane_size[1] = second_header.plane_size[2] = 1;
     const std::vector<std::uint8_t> second_i420{31, 32, 33, 34, 40, 50};
 
+    // A measurable initial epoch makes a later timestamp reset detectable.
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
     first->publish_video(first_header, first_i420);
     second->publish_video(second_header, second_i420);
     const auto first_snapshot = first->snapshot();
@@ -1836,6 +1838,10 @@ void test_wireless_multi_stream_isolation() {
     first->publish_video(first_header, replacement_i420);
     check(first->latest_frame() && first->latest_frame()->nv12.front() == 200,
         "wireless session recovery accepts a replacement frame without reconnecting");
+    check(first->latest_frame() &&
+            first->latest_frame()->timestamp_100ns >
+                frame_before_local_recovery->timestamp_100ns,
+        "wireless session reattach preserves monotonic video timestamps");
 
     const auto frames_before_disconnect = first->snapshot().video_frames;
     first->set_identity(L"First iPhone", false);
