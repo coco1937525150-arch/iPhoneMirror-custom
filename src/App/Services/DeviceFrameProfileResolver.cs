@@ -28,17 +28,15 @@ internal static class DeviceFrameProfileResolver
         // Dynamic Island is already part of the decoded iOS picture.
         DeviceCutoutKind.None, 0, 0, 0);
 
-    // Geometry matched to the imported high-resolution phone-shell image.
-    // Keep the legacy insets for existing users until a custom shell is
-    // imported; both paths switch together on the next app launch.
+    // Geometry reserved for the single, bundled iPhone 16 Pro Max bezel.
+    // The shell can no longer be overridden by files under LocalAppData.
     internal static readonly DeviceFrameProfile IPhoneImportedShell = new(
         "iphone-dynamic-island-custom-shell", true,
         0.035, 0.018, 0.018, 0.158,
         DeviceCutoutKind.None, 0, 0, 0);
 
     internal static DeviceFrameProfile ActiveIPhoneShell =>
-        PhoneShellAssetStore.HasCustomShell
-            ? IPhoneImportedShell : IPhoneDynamicIsland;
+        IPhoneImportedShell;
 
     internal static readonly DeviceFrameProfile IPad = new(
         "ipad", true,
