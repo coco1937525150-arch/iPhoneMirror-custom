@@ -3784,7 +3784,7 @@ Equal("rectangular",
 Equal(0, DeviceCornerProfile.Rectangular.GetGdiRadius(1206),
     "rectangular fallback radius");
 
-Equal("iphone-dynamic-island",
+Equal("iphone-dynamic-island-custom-shell",
     DeviceFrameProfileResolver.Resolve("iPhone18,3", 1206, 2622).Id,
     "modern iPhone receives a hardware shell with Dynamic Island");
 Equal(DeviceCutoutKind.None,
@@ -3793,7 +3793,7 @@ Equal(DeviceCutoutKind.None,
 Equal(DeviceCutoutKind.None,
     DeviceFrameProfileResolver.Resolve("iPhone17,5", 1170, 2532).CutoutKind,
     "the original iOS notch must not be drawn twice");
-Equal("iphone-dynamic-island",
+Equal("iphone-dynamic-island-custom-shell",
     DeviceFrameProfileResolver.Resolve("iPhone17,4", 1320, 2868).Id,
     "iPhone 16 Pro Max model uses the thin front shell");
 Equal("iphone-home-button",
