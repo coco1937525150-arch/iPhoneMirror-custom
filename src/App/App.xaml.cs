@@ -97,9 +97,12 @@ public partial class App : Application
             // assembly manifest resource. Extract the *verified* embedded PNG
             // once, then pass its immutable content-addressed path to native.
             // Do this before MainWindow constructs/attaches preview renderers.
+            var bundledPhoneShell = PhoneShellAssetStore.ActivePath;
+            var bundledAperture = PhoneShellApertureMask.ExportVerifiedAperture(bundledPhoneShell);
             Environment.SetEnvironmentVariable("IPHONE_MIRROR_BUNDLED_SHELL",
-                Services.PhoneShellAssetStore.ActivePath,
-                EnvironmentVariableTarget.Process);
+                bundledPhoneShell, EnvironmentVariableTarget.Process);
+            Environment.SetEnvironmentVariable("IPHONE_MIRROR_BUNDLED_APERTURE",
+                bundledAperture, EnvironmentVariableTarget.Process);
             GitHubReleaseClient.CleanupInterruptedDownloads();
             MainWindow = new MainWindow();
             AppIdentity.Attach(MainWindow);
