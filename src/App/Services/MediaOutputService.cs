@@ -1267,7 +1267,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
                     ? "[phone_video_unmasked];" +
                       $"[{maskIndex}:v]format=gray[phone_mask];" +
                       "[phone_video_unmasked]format=rgba[phone_video_rgba];" +
-                      "[phone_video_rgba][phone_mask]alphamerge[phone_video];"
+                      // alphamerge defaults to repeating an infinite-loop matte even AFTER
+                      // stdin video reaches EOF. That keeps the composited
+                      // MP4 video output alive forever during finalization.
+                      // The finite AirPlay video must own this filter's life.
+                      "[phone_video_rgba][phone_mask]alphamerge=shortest=1:repeatlast=0[phone_video];"
                     : "[phone_video];") +
                 // A user may deliberately move the shell partially outside the
                 // background. Crop the moving screen via overlay, never crop
