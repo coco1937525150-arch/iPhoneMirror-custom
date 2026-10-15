@@ -1447,21 +1447,25 @@ internal sealed class NativePreviewWindow : IDisposable
         var side = Math.Max(1, Math.Min((int)Math.Ceiling(diagonal), available));
         var scale = (float)Math.Min(1.0, (side - 1.0) / diagonal);
         if (scale <= 0.0f) return false;
+        var initialScale = PhoneRotationStageGeometry.ScaleAtAngle(
+            clientW, clientH, side, scale, 0);
         if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
-                0, side, side, scale, true))
+                0, side, side, initialScale, true))
         {
             Log("independent_window_rotation_visual_unavailable");
             return false;
         }
 
-        var centerX = ((long)outer.Left + outer.Right) / 2;
-        var centerY = ((long)outer.Top + outer.Bottom) / 2;
         var outerSideW = side + borderW;
         var outerSideH = side + borderH;
-        var stageX = (int)Math.Clamp(centerX - outerSideW / 2L,
-            info.WorkArea.Left, Math.Max(info.WorkArea.Left, info.WorkArea.Right - outerSideW));
-        var stageY = (int)Math.Clamp(centerY - outerSideH / 2L,
-            info.WorkArea.Top, Math.Max(info.WorkArea.Top, info.WorkArea.Bottom - outerSideH));
+        // Keep the same physical center through portrait, rotation stage
+        // and landscape. Work-area clamping EACH stage independently moved
+        // the pivot by hundreds of pixels on monitors' right/bottom edges.
+        // Preserve pivot even when the window's transparent square stage
+        // extends partly outside the monitor. Never stretch the phone shell.
+        var (stageX, stageY) = PhoneRotationStageGeometry.CenteredBounds(
+            outer.Left, outer.Top, outer.Right, outer.Bottom,
+            outerSideW, outerSideH);
         // A reflow queued BEFORE the animation may otherwise wake up just
         // after the final geometry is committed, inflating the phone shell.
         _aspectController.CancelQueuedResize();
@@ -1505,9 +1509,12 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (!_rotationAnimating) return;
         var angle = (float)_rotationTimeline.Sample(_rotationClock.Elapsed);
+        var frameScale = PhoneRotationStageGeometry.ScaleAtAngle(
+            _rotationOriginalClientWidth, _rotationOriginalClientHeight,
+            _rotationCanvasWidth, _rotationScale, angle);
         if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
                 angle, _rotationCanvasWidth, _rotationCanvasHeight,
-                _rotationScale, true))
+                frameScale, true))
         {
             Log("independent_window_rotation_animation_failed");
             AbortRotationAnimation();
@@ -1554,23 +1561,10 @@ internal sealed class NativePreviewWindow : IDisposable
         var finalClientH = Math.Max(1, (int)Math.Round(height * _rotationScale));
         var finalW = finalClientW + outerW;
         var finalH = finalClientH + outerH;
-        var cx = ((long)_rotationOriginalBounds.Left + _rotationOriginalBounds.Right) / 2;
-        var cy = ((long)_rotationOriginalBounds.Top + _rotationOriginalBounds.Bottom) / 2;
-        var finalX = (int)(cx - finalW / 2L);
-        var finalY = (int)(cy - finalH / 2L);
-        var finalMonitor = MonitorFromWindow(_handle, MonitorDefaultToNearest);
-        var finalMonitorInfo = new MonitorInfo
-        {
-            Size = (uint)Marshal.SizeOf<MonitorInfo>(),
-        };
-        if (finalMonitor != 0 && GetMonitorInfoW(finalMonitor, ref finalMonitorInfo))
-        {
-            var work = finalMonitorInfo.WorkArea;
-            finalX = Math.Clamp(finalX, work.Left,
-                Math.Max(work.Left, work.Right - finalW));
-            finalY = Math.Clamp(finalY, work.Top,
-                Math.Max(work.Top, work.Bottom - finalH));
-        }
+        var (finalX, finalY) = PhoneRotationStageGeometry.CenteredBounds(
+            _rotationOriginalBounds.Left, _rotationOriginalBounds.Top,
+            _rotationOriginalBounds.Right, _rotationOriginalBounds.Bottom,
+            finalW, finalH);
 
         // The reference animation rotates the WHOLE device inside a fixed
         // fitted stage. Keep the ORIGINAL portrait backbuffer untouched
