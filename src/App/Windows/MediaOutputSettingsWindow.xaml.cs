@@ -35,6 +35,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     {
         ApplyPreviewOutputDefaults(force: true);
         RestoreShellPreferences();
+        ShowBundledBuildIdentity();
         PhoneShellLayoutSettingsProvider.Current = () =>
         {
             if (Application.Current is not App app) return null;
@@ -126,6 +127,37 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         SelectVirtualCameraResolution(size.Width, size.Height,
             updateVirtualCamera);
         _lastDefaultSize = size;
+    }
+
+    private void ShowBundledBuildIdentity()
+    {
+        // BUILD_PROVENANCE.txt is injected into the exact publish directory
+        // by Windows Actions AFTER compilation and bundled alongside EXE.
+        // Showing its real run/commit lets the user distinguish a stale old
+        // installation from the downloaded CI artifact; no version is guessed.
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "BUILD_PROVENANCE.txt");
+            if (!File.Exists(path)) return;
+            var lines = File.ReadAllLines(path);
+            var commit = lines.FirstOrDefault(line =>
+                line.StartsWith("Source Git commit: ", StringComparison.Ordinal));
+            var workflow = lines.FirstOrDefault(line =>
+                line.StartsWith("Git workflow run: ", StringComparison.Ordinal));
+            if (commit is null || workflow is null) return;
+            var sha = commit["Source Git commit: ".Length..].Trim();
+            var run = workflow["Git workflow run: ".Length..].Split(' ')[0];
+            if (sha.Length < 8 ||
+                !ulong.TryParse(run, out _)) return;
+            Pre6BuildIdentityText.Text =
+                $"pre6 CI #{run} · {sha[..8]} · 测试版（未经过实机验收）";
+            Pre6BuildIdentityText.Visibility = Visibility.Visible;
+        }
+        catch (Exception error)
+        {
+            DiagnosticLogger.ExceptionOnce("pre6-build-provenance", "media_output",
+                "build_provenance_display_failed", error);
+        }
     }
 
     private void SelectVirtualCameraResolution(uint width, uint height,
