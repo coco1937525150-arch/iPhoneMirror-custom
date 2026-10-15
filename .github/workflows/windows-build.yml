@@ -6,7 +6,7 @@ run-name: >-
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/pre6-unified-diagnostics-20261016]
   pull_request:
   workflow_dispatch:
 
@@ -110,12 +110,12 @@ jobs:
           }
 
       - name: Validate original pre6 shell resource and aperture geometry
-        if: github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')
+        if: github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016') || (github.event_name == 'push' && github.ref_name == 'feature/pre6-unified-diagnostics-20261016')
         shell: pwsh
         run: python scripts/test_pre6_shell_asset.py
 
       - name: Compile native D3D11 preview HLSL with Windows D3DCompiler
-        if: github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')
+        if: github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016') || (github.event_name == 'push' && github.ref_name == 'feature/pre6-unified-diagnostics-20261016')
         shell: pwsh
         run: python scripts/test_pre6_preview_shaders.py
 
@@ -142,7 +142,7 @@ jobs:
       # entry point stable so shortcuts, updates and native DLL lookup work.
       - name: Identify pre6 CI artifact
         id: pre6_build_identity
-        if: (github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'workflow_dispatch' && (github.ref_name == 'feature/pre6-integrated-20261014' || github.ref_name == 'feature/pre6-unified-diagnostics-20261016'))
+        if: (github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'workflow_dispatch' && (github.ref_name == 'feature/pre6-integrated-20261014' || github.ref_name == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'push' && github.ref_name == 'feature/pre6-unified-diagnostics-20261016')
         shell: pwsh
         run: |
           $sourceCommit = '${{ github.event.pull_request.head.sha || github.sha }}'
@@ -153,7 +153,7 @@ jobs:
       # A separately named PR-only testing artifact. Passing CI is not
       # equivalent to accepting the bundled shell asset or iPhone hardware tests.
       - name: Write pre6 integrated build provenance
-        if: (github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'workflow_dispatch' && (github.ref_name == 'feature/pre6-integrated-20261014' || github.ref_name == 'feature/pre6-unified-diagnostics-20261016'))
+        if: (github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'workflow_dispatch' && (github.ref_name == 'feature/pre6-integrated-20261014' || github.ref_name == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'push' && github.ref_name == 'feature/pre6-unified-diagnostics-20261016')
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -180,7 +180,7 @@ jobs:
             } | Set-Content -LiteralPath (Join-Path $root 'SHA256SUMS.txt') -Encoding ascii
 
       - name: Upload pre6 integrated CI testing artifact
-        if: (github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'workflow_dispatch' && (github.ref_name == 'feature/pre6-integrated-20261014' || github.ref_name == 'feature/pre6-unified-diagnostics-20261016'))
+        if: (github.event_name == 'pull_request' && (github.head_ref == 'feature/pre6-integrated-20261014' || github.head_ref == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'workflow_dispatch' && (github.ref_name == 'feature/pre6-integrated-20261014' || github.ref_name == 'feature/pre6-unified-diagnostics-20261016')) || (github.event_name == 'push' && github.ref_name == 'feature/pre6-unified-diagnostics-20261016')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pre6_build_identity.outputs.artifact_name }}
