@@ -435,10 +435,15 @@ internal sealed class NativePreviewWindow : IDisposable
 
     internal event EventHandler? Closed;
     internal ulong SessionHandle => _sessionHandle;
+    // Match the native renderer: when AirPlay already supplies landscape
+    // pixels we rotate only the physical bezel, never the input twice.
+    private int EffectiveSourceTurns => (_rotation & 1) != 0 &&
+        _sourceWidth > _sourceHeight ? 0 : _rotation;
+
     internal (uint Width, uint Height, int Rotation) ControlGeometry =>
-        (_rotation & 1) == 0
-            ? (_sourceWidth, _sourceHeight, _rotation)
-            : (_sourceHeight, _sourceWidth, _rotation);
+        (EffectiveSourceTurns & 1) == 0
+            ? (_sourceWidth, _sourceHeight, EffectiveSourceTurns)
+            : (_sourceHeight, _sourceWidth, EffectiveSourceTurns);
 
     internal void SetWaitingForWirelessReconnect(bool waiting)
     {
@@ -1365,10 +1370,11 @@ internal sealed class NativePreviewWindow : IDisposable
         x = Math.Clamp(x, 0, Math.Max(0, screen.Width - 1));
         y = Math.Clamp(y, 0, Math.Max(0, screen.Height - 1));
 
-        var sourceWidth = (_rotation & 1) == 0 ? _sourceWidth : _sourceHeight;
-        var sourceHeight = (_rotation & 1) == 0 ? _sourceHeight : _sourceWidth;
+        var sourceTurns = EffectiveSourceTurns;
+        var sourceWidth = (sourceTurns & 1) == 0 ? _sourceWidth : _sourceHeight;
+        var sourceHeight = (sourceTurns & 1) == 0 ? _sourceHeight : _sourceWidth;
         _pointerInput(new PreviewPointerEventArgs(kind, (short)x, (short)y, button, wheel,
-            screen.Width, screen.Height, sourceWidth, sourceHeight, _rotation));
+            screen.Width, screen.Height, sourceWidth, sourceHeight, sourceTurns));
     }
 
     private void ToggleCorners()
@@ -1623,11 +1629,18 @@ internal sealed class NativePreviewWindow : IDisposable
             _sessionHandle == 0 || _isFullScreen ||
             _sourceWidth == 0 || _sourceHeight == 0) return;
 
+        // Ignore ambiguous nearly-square frames while the encoder negotiates.
+        var largest = Math.Max(_sourceWidth, _sourceHeight);
+        var smallest = Math.Min(_sourceWidth, _sourceHeight);
+        if (smallest == 0 || largest < smallest * 1.12) return;
         var landscape = _sourceWidth > _sourceHeight;
         if (_autoAirPlayWasLandscape == landscape) return;
-        // A normal iOS orientation change should be a single left 90 degree
-        // turn and a single right 90 degree return, not a fresh AirPlay session.
+        // Manual rotation may already match the new physical orientation.
+        // In that case update the automatic state without rotating TWICE.
         _autoAirPlayWasLandscape = landscape;
+        var targetTurns = landscape ? 3 : 0;
+        if ((_rotation & 3) == targetTurns && !_rotationAnimating)
+            return;
         Log("independent_window_airplay_orientation_auto",
             ("landscape", landscape), ("source_width", _sourceWidth),
             ("source_height", _sourceHeight));
