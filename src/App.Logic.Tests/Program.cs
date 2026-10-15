@@ -1732,6 +1732,32 @@ Equal(true, completionSource.Contains("finalAngle, finalClientW, finalClientH",
     "rotation keeps whole-phone DComp transform through HWND resize, then atomically commits native orientation without duplicate aspect reflow");
 
 Equal(true,
+    nativePreviewWindowCode.Contains("EnableAirPlayAutomaticRotation(bool enabled)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("OnAirPlayOrientationSettled(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("Interval = TimeSpan.FromMilliseconds(450)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("Rotate(landscape ? -1 : 1)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("var portraitWidth = Math.Min(_sourceWidth, _sourceHeight);",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("var portraitHeight = Math.Max(_sourceWidth, _sourceHeight);",
+        StringComparison.Ordinal),
+    "AirPlay detached shell auto turns left on stable landscape input and right on portrait without double-resizing native landscape frames");
+var wirelessIndependentManagerSource = File.ReadAllText(Path.Combine(
+    sourceDirectory, "App", "Services", "MultiDevicePreviewManager.cs"));
+Equal(true,
+    wirelessIndependentManagerSource.Contains(
+        "window.EnableAirPlayAutomaticRotation(device.IsWireless);",
+        StringComparison.Ordinal) &&
+    wirelessIndependentManagerSource.Contains(
+        "Math.Min(sourceWidth, sourceHeight) : sourceWidth;",
+        StringComparison.Ordinal),
+    "only true wireless AirPlay windows request automatic physical phone rotation");
+
+
+Equal(true,
     mainViewModelSource.Contains("private bool _bluetoothControlStopping;",
         StringComparison.Ordinal) &&
     mainViewModelSource.Contains("if (_bluetoothControlStopping ||",
@@ -4408,6 +4434,18 @@ Equal(true, outputSettingsXaml.Contains("RecordResolutionPresetBox", StringCompa
     !outputSettingsXaml.Contains("RecordFpsBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal) &&
     !outputSettingsXaml.Contains("RecordBitrateBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal),
     "record FPS and bitrate use single editable preset control, no duplicate entry rows");
+
+var settingsCodeWithProvenance = File.ReadAllText(Path.Combine(
+    sourceDirectory, "App", "Windows", "MediaOutputSettingsWindow.xaml.cs"));
+Equal(true,
+    outputSettingsXaml.Contains("x:Name=\"Pre6BuildIdentityText\"",
+        StringComparison.Ordinal) &&
+    settingsCodeWithProvenance.Contains("BUILD_PROVENANCE.txt", StringComparison.Ordinal) &&
+    settingsCodeWithProvenance.Contains(
+        "Pre6BuildIdentityText.Visibility = Visibility.Visible",
+        StringComparison.Ordinal),
+    "record settings show real CI build ID and SHA so stale EXE runs are detectable");
+
 
 var mediaOutputFinalizationCode = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "MediaOutputService.cs"));
