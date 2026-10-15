@@ -1679,19 +1679,13 @@ internal sealed class NativePreviewWindow : IDisposable
         var pendingTurns = _rotationAnimating
             ? (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0)
             : 0;
-        var destination = ((_rotation + pendingTurns) % 4 + 4) % 4;
-        var destinationLandscape = (destination & 1) != 0;
-        if (destinationLandscape == landscape)
+        var delta = PhoneAutoRotationPolicy.DecideDelta(
+            _rotation, pendingTurns, landscape);
+        if (delta == 0)
         {
             _autoAirPlayWasLandscape = landscape;
             return;
         }
-        // Default portrait -> landscape is always LEFT (-1).
-        // On return, undo the actual orientation: a manually rotated +90
-        // device returns with -1, and a -90 device with +1. This preserves
-        // the user's manual direction while avoiding accidental 180 turns.
-        var delta = landscape ? (destination == 2 ? 1 : -1)
-            : (destination == 1 ? -1 : 1);
         if (!Rotate(delta))
         {
             // A failed or temporarily unavailable DComp transition must not
