@@ -1779,9 +1779,11 @@ Equal(true,
     nativePreviewWindowCode.Contains(
         "_autoAirPlayWasLandscape = landscape;",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("var portraitWidth = Math.Min(_sourceWidth, _sourceHeight);",
+    nativePreviewWindowCode.Contains(
+        "DeviceFrameProfileResolver.GetStableWindowOuterDimensions(",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("var portraitHeight = Math.Max(_sourceWidth, _sourceHeight);",
+    nativePreviewWindowCode.Contains(
+        "_deviceFrameProfile, _sourceWidth, _sourceHeight, _rotation);",
         StringComparison.Ordinal),
     "AirPlay auto-turn compares pending animation destination, handles user manual direction and retries rejected native turns");
 var wirelessIndependentManagerSource = File.ReadAllText(Path.Combine(
