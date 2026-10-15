@@ -1288,7 +1288,7 @@ void test_capture_media_safety_helpers() {
             full_hd_recording[0] == 0 &&
             full_hd_recording[1U * 1080U + 100U] == 200 &&
             full_hd_recording[1918U * 1080U + 980U] == 200 &&
-            full_hd_recording[1920U * 1080U / 2U + 128U] == 128 &&
+            full_hd_recording[1920U * 1080U + 128U] == 128 &&
             full_hd_recording[1919U * 1080U + 540U] == 200,
         "498x1080 AirPlay source is scaled across full-height 1080x1920 encoder input, not recorded as a tiny 498x1080 thumbnail");
 
