@@ -754,11 +754,14 @@ internal sealed class NativePreviewWindow : IDisposable
             var pendingTurns = _rotationAnimating
                 ? (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0)
                 : 0;
-            var pendingDelta = PhoneAutoRotationPolicy.DecideDelta(
+            // Retain staged movie UVs across repeated AirPlay resolution
+            // negotiation DURING an already scheduled phone rotation.
+            // DecideDelta compares the destination parity and returns zero
+            // once the target already fits, but the physical shell has not
+            // moved there yet. Clearing staging in that interval makes the
+            // movie jump relative to the bezel.
+            var earlyVideoTurns = PhoneAutoRotationPolicy.DecideStagedVideoTurns(
                 _rotation, pendingTurns, width > height);
-            var earlyVideoTurns = width > height &&
-                (_rotation & 1) == 0 && pendingDelta != 0
-                ? ((-pendingDelta % 4) + 4) % 4 : -1;
             if (_sessionHandle != 0 && _handle != 0 &&
                 !NativeCore.SetDeviceWindowVideoStageRotation(
                     _sessionHandle, _handle, earlyVideoTurns))

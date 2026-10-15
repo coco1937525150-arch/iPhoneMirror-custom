@@ -4598,6 +4598,25 @@ foreach (var (committed, pending, landscape, expected) in new[]
         $"AirPlay auto rotation committed={committed} pending={pending} landscape={landscape}");
 }
 
+// A second landscape encoder format during the SAME in-flight -90 degree
+// animation must preserve the early sideways frame inside the portrait PNG.
+// "DecideDelta" correctly reports zero against the animation destination,
+// but zero must not disable the still-needed movie staging override.
+foreach (var (committed, pending, landscape, expectedStage) in new[]
+{
+    (0, 0, true, 1),     // 1920x1080 first arrives in portrait phone
+    (0, -1, true, 1),    // 1280x720 arrives DURING left rotation
+    (0, -1, false, -1), // source reverted to portrait, cancel staging
+    (2, 0, true, 3),    // upside-down portrait uses right turn
+    (2, 1, true, 3),    // same right rotation still in flight
+    (3, 0, true, -1),   // final landscape: shader no longer needs override
+    (1, 0, false, -1),  // return to portrait: no early movie rotation
+})
+    Equal(expectedStage,
+        PhoneAutoRotationPolicy.DecideStagedVideoTurns(
+            committed, pending, landscape),
+        $"AirPlay staged content rotation committed={committed} pending={pending} landscape={landscape}");
+
 // Regression: real-world AirPlay movie playback must NEVER stretch the
 // physical 16 Pro Max bezel when returning from zoomed landscape to portrait.
 // Video dimensions can jump 1320x2868 -> 1920x1080 -> 1080x1920 while
@@ -4678,7 +4697,8 @@ Equal(true,
 Equal(true,
     nativePreviewWindowCode.Contains("SetDeviceWindowVideoStageRotation(",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("var earlyVideoTurns = width > height",
+    nativePreviewWindowCode.Contains(
+        "PhoneAutoRotationPolicy.DecideStagedVideoTurns(",
         StringComparison.Ordinal) &&
     previewRendererCode.Contains("staging_video_turns.store(-1",
         StringComparison.Ordinal),

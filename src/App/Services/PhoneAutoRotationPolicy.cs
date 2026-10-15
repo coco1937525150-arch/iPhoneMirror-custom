@@ -9,6 +9,21 @@ internal static class PhoneAutoRotationPolicy
 {
     /// <returns>-1 for a left turn, +1 for a right turn, 0 if the
     /// device shell already has the correct orientation parity.</returns>
+    // The renderer's early video UV orientation is relative to the ORIGINAL
+    // (not yet turned) phone shell. A change from 1920x1080 to 1280x720
+    // during an active -90-degree animation must NOT clear the override just
+    // because the pending destination already matches landscape.
+    internal static int DecideStagedVideoTurns(int committedTurns, int pendingTurns,
+        bool sourceLandscape)
+    {
+        if (!sourceLandscape || (committedTurns & 1) != 0)
+            return -1; // automatic UV orientation
+        var intendedTurn = pendingTurns != 0 ? pendingTurns
+            : DecideDelta(committedTurns, 0, sourceLandscape);
+        return intendedTurn == 0 ? -1
+            : ((-intendedTurn % 4) + 4) % 4;
+    }
+
     internal static int DecideDelta(int committedTurns, int pendingTurns,
         bool sourceLandscape)
     {
