@@ -1503,7 +1503,7 @@ internal sealed class NativePreviewWindow : IDisposable
         if (_rotationRenderingSubscribed) return;
         CompositionTarget.Rendering += OnRotationRendering;
         _rotationRenderingSubscribed = true;
-        _lastCompositionRotationTick = TimeSpan.MinValue;
+        _lastCompositionRotationTick = TimeSpan.Zero;
     }
 
     private void UnsubscribeRotationRendering()
@@ -1525,6 +1525,7 @@ internal sealed class NativePreviewWindow : IDisposable
         // inconsistent 16ms DispatcherTimer transform between display
         // presents. Use this only if no WPF render tick arrived recently.
         if (_rotationRenderingSubscribed &&
+            _lastCompositionRotationTick != TimeSpan.Zero &&
             _rotationClock.Elapsed - _lastCompositionRotationTick <
                 TimeSpan.FromMilliseconds(40))
             return;
