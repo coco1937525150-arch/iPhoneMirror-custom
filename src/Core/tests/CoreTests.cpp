@@ -14,6 +14,7 @@
 #include "Device/AppleUsbDiscovery.h"
 #include "Logging.h"
 #include "Renderer/RotationPresentGeometry.h"
+#include "Renderer/LandscapeCoverGeometry.h"
 #include "IpcProtocol.h"
 #include "iPhoneMirror/CoreApi.h"
 
@@ -2188,6 +2189,20 @@ void test_logging_shutdown_boundary() {
     std::filesystem::remove_all(failed_directory, error);
 }
 
+void test_landscape_video_cover_geometry() {
+    using iPhoneMirror::renderer::landscape_cover_crop;
+    const auto wide = landscape_cover_crop(16.0F / 9.0F, 2.17F);
+    check(std::abs(wide.x - 1.0F) < 0.0001F &&
+        wide.y > 0.81F && wide.y < 0.83F,
+        "16:9 video covers the wide iPhone opening without stretching");
+    const auto panoramic = landscape_cover_crop(2.4F, 2.17F);
+    check(panoramic.x < 1.0F && panoramic.y == 1.0F,
+        "wide panorama crops X instead of stretching");
+    const auto exact = landscape_cover_crop(2.17F, 2.17F);
+    check(exact.x == 1.0F && exact.y == 1.0F,
+        "matching opening aspect preserves full source");
+}
+
 void test_phone_rotation_final_present_geometry_gate() {
     using iPhoneMirror::renderer::should_defer_phone_present;
     // Captured native flash: final 1132x549 HWND, OLD 549x1132
@@ -2302,6 +2317,7 @@ int main(int argc, char** argv) {
         test_logging_shutdown_boundary();
         test_flash_diagnostic_timeline();
         test_phone_rotation_final_present_geometry_gate();
+        test_landscape_video_cover_geometry();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
         return 2;

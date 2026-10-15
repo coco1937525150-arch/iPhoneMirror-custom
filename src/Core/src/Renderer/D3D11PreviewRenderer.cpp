@@ -1,6 +1,7 @@
 #include "Renderer/D3D11PreviewRenderer.h"
 #include "Renderer/OutputModeState.h"
 #include "Renderer/RotationPresentGeometry.h"
+#include "Renderer/LandscapeCoverGeometry.h"
 
 #include "Logging.h"
 
@@ -247,6 +248,8 @@ cbuffer ShapeConstants : register(b0) {
     float frameOuterRadius;
     float4 screenRect;
     float4 cutoutParams;
+    float2 videoCropScale;
+    float2 videoCropPadding;
 };
 
 float2 rotateUvByTurns(float2 uv, float quarterTurns) {
@@ -474,6 +477,7 @@ float4 cutoutMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TAR
 
 float4 nv12Main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     uv = rotateUv(uv);
+    uv = (uv - 0.5) * videoCropScale + 0.5;
     float y = max(0.0, yPlane.Sample(linearSampler, uv) - yOffset) * yScale;
     float2 chroma = (uvPlane.Sample(linearSampler, uv) -
         float2(chromaOffset, chromaOffset)) * chromaScale;
@@ -486,7 +490,9 @@ float4 nv12Main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGE
 }
 
 float4 copyMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
-    return premultiplyForCorner(image.Sample(linearSampler, rotateUv(uv)).rgb, position.xy);
+    uv = rotateUv(uv);
+    uv = (uv - 0.5) * videoCropScale + 0.5;
+    return premultiplyForCorner(image.Sample(linearSampler, uv).rgb, position.xy);
 }
 
 float4 referenceShellMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
@@ -540,6 +546,9 @@ struct D3D11PreviewRenderer::Impl {
         float cutout_width{};
         float cutout_height{};
         float cutout_top{};
+        float video_crop_x{1.0F};
+        float video_crop_y{1.0F};
+        float video_crop_pad[2]{};
     };
 
     struct ImageAdjustments {
@@ -1212,8 +1221,11 @@ struct D3D11PreviewRenderer::Impl {
     void update_shape_constants(UINT width, UINT height, bool enabled, int rotation = 0,
         const media::DecodedFrame* frame = nullptr, float origin_x = 0.0F,
         float origin_y = 0.0F, const DeviceFrameProfileData* frame_profile_override = nullptr,
-        bool allow_aperture = true) {
+        bool allow_aperture = true, float crop_x = 1.0F,
+        float crop_y = 1.0F) {
         ShapeConstantData values{};
+        values.video_crop_x = crop_x;
+        values.video_crop_y = crop_y;
         values.output_width = static_cast<float>(width);
         values.output_height = static_cast<float>(height);
         values.shape_origin_x = origin_x;
@@ -1950,10 +1962,21 @@ struct D3D11PreviewRenderer::Impl {
             ? static_cast<float>(frame.height) / frame.width
             : static_cast<float>(frame.width) / frame.height;
         const float target_aspect = screen_area.width / screen_area.height;
+        // Match FFmpeg recording's existing cover/crop layout. Contain
+        // left visible gutters for 16:9 AirPlay video in the wider shell.
+        // Only a landscape source in a landscape opening uses Cover here;
+        // transitional and portrait previews retain their previous fitting.
+        const bool landscape_cover = framed && source_landscape && opening_landscape;
+        const auto crop = landscape_cover
+            ? landscape_cover_crop(source_aspect, target_aspect)
+            : VideoCoverCrop{};
         D3D11_VIEWPORT viewport{};
         viewport.TopLeftX = screen_area.x;
         viewport.TopLeftY = screen_area.y;
-        if (target_aspect > source_aspect) {
+        if (landscape_cover) {
+            viewport.Width = screen_area.width;
+            viewport.Height = screen_area.height;
+        } else if (target_aspect > source_aspect) {
             viewport.Height = screen_area.height;
             viewport.Width = viewport.Height * source_aspect;
             viewport.TopLeftX += (screen_area.width - viewport.Width) * 0.5F;
@@ -2024,14 +2047,15 @@ struct D3D11PreviewRenderer::Impl {
         const auto draw_nv12 = [&](const D3D11_VIEWPORT& draw_viewport,
                                    UINT output_width, UINT output_height,
                                    bool apply_corner, int rotation,
-                                   bool apply_aperture) {
+                                   bool apply_aperture,
+                                   float crop_x = 1.0F, float crop_y = 1.0F) {
             context->RSSetViewports(1, &draw_viewport);
             context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context->VSSetShader(vertex_shader.Get(), nullptr, 0);
             context->PSSetShader(pixel_shader.Get(), nullptr, 0);
             update_shape_constants(output_width, output_height, apply_corner, rotation, &frame,
                 draw_viewport.TopLeftX, draw_viewport.TopLeftY,
-                &frame_profile, apply_aperture);
+                &frame_profile, apply_aperture, crop_x, crop_y);
             auto* mask_view = reference_aperture_view.Get();
             context->PSSetShaderResources(4, 1, &mask_view);
             ID3D11ShaderResourceView* nv12_views[] = {
@@ -2061,7 +2085,7 @@ struct D3D11PreviewRenderer::Impl {
             draw_nv12(viewport,
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
-                rounded, video_turns, true);
+                rounded, video_turns, true, crop.x, crop.y);
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             if (framed) draw_reference_shell(frame_profile);
@@ -2092,7 +2116,8 @@ struct D3D11PreviewRenderer::Impl {
             update_shape_constants(
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
-                rounded, 0, nullptr, viewport.TopLeftX, viewport.TopLeftY, &frame_profile);
+                rounded, 0, nullptr, viewport.TopLeftX, viewport.TopLeftY,
+                &frame_profile, true, crop.x, crop.y);
             ID3D11ShaderResourceView* copy_view = render_view.Get();
             context->PSSetShaderResources(2, 1, &copy_view);
             auto* mask_view = reference_aperture_view.Get();
