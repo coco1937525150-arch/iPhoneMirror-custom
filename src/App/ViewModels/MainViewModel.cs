@@ -2158,7 +2158,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             _usbControlStatus = LocalizationService.Format("ReverseControlWirelessFailedFormat", GetUsbControlFailureMessage(error, bridge, wireless: true));
             ShowReverseControlError(LocalizationService.Get("ReverseControlTransportWireless"), GetUsbControlFailureMessage(error, bridge, wireless: true));
             DiagnosticLogger.ReverseControlError("wireless", "start_failed",
-                ("device", AppLog.Device(device.Udid)), ("error", AppLog.Error(error)),
+                ("device", AppLog.Device(device?.Udid)), ("error", AppLog.Error(error)),
                 ("bridge_code", bridge.LastErrorCode), ("bridge_diagnostic", bridge.LastDiagnostic));
         }
         finally
@@ -2462,11 +2462,11 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             ShowReverseControlError(LocalizationService.Get("ReverseControlTransportWired"), message);
             _usbControlDeviceUdid = null;
             AddDiagnosticLog(AppLog.Event("usb_control_enable_failed",
-                ("device", AppLog.Device(device.Udid)), ("error", AppLog.Error(error)),
+                ("device", AppLog.Device(device?.Udid)), ("error", AppLog.Error(error)),
                 ("bridge_code", bridge.LastErrorCode),
                 ("bridge_diagnostic", bridge.LastDiagnostic)));
             DiagnosticLogger.ReverseControlError("usb", "start_failed",
-                ("device", AppLog.Device(device.Udid)), ("error", AppLog.Error(error)),
+                ("device", AppLog.Device(device?.Udid)), ("error", AppLog.Error(error)),
                 ("bridge_code", bridge.LastErrorCode), ("bridge_diagnostic", bridge.LastDiagnostic));
         }
         finally
