@@ -3758,7 +3758,28 @@ try
                          throw new InvalidOperationException(
                              "verified helper bootstrap did not start"))
     {
-        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        // Windows-hosted CI can spend more than ten seconds starting the
+        // system PowerShell process under Defender/SDK load. The test must
+        // still execute its SHA256-verified helper and assert its exit code,
+        // rather than silently skipping the security check.
+        var bootstrapTimeout = string.Equals(
+            Environment.GetEnvironmentVariable("CI"), "true",
+            StringComparison.OrdinalIgnoreCase)
+            ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(20);
+        try
+        {
+            await process.WaitForExitAsync().WaitAsync(bootstrapTimeout);
+        }
+        catch (TimeoutException)
+        {
+            if (!process.HasExited)
+            {
+                try { process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { }
+            }
+            throw new TimeoutException(
+                $"Verified PowerShell bootstrap did not exit within {bootstrapTimeout.TotalSeconds}s.");
+        }
         Equal(0, process.ExitCode,
             "verified helper bootstrap executes the expected script");
     }
