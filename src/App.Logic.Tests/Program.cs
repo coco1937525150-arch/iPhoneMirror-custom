@@ -1738,13 +1738,26 @@ Equal(true,
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains("Interval = TimeSpan.FromMilliseconds(450)",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("Rotate(landscape ? -1 : 1)",
+    nativePreviewWindowCode.Contains(
+        "var pendingTurns = _rotationAnimating",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "var destinationLandscape = (destination & 1) != 0;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "var delta = landscape ? (destination == 2 ? 1 : -1)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "if (!Rotate(delta))",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "_autoAirPlayWasLandscape = landscape;",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains("var portraitWidth = Math.Min(_sourceWidth, _sourceHeight);",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains("var portraitHeight = Math.Max(_sourceWidth, _sourceHeight);",
         StringComparison.Ordinal),
-    "AirPlay detached shell auto turns left on stable landscape input and right on portrait without double-resizing native landscape frames");
+    "AirPlay auto-turn compares pending animation destination, handles user manual direction and retries rejected native turns");
 var wirelessIndependentManagerSource = File.ReadAllText(Path.Combine(
     sourceDirectory, "App", "Services", "MultiDevicePreviewManager.cs"));
 Equal(true,
@@ -1755,6 +1768,16 @@ Equal(true,
         "Math.Min(sourceWidth, sourceHeight) : sourceWidth;",
         StringComparison.Ordinal),
     "only true wireless AirPlay windows request automatic physical phone rotation");
+
+Equal(true,
+    mainViewModelSource.Contains(
+        "DiagnosticLogger.ReverseControlError(\"wireless\", \"start_failed\",",
+        StringComparison.Ordinal) &&
+    mainViewModelSource.Contains(
+        "(\"device\", AppLog.Device(device?.Udid)), (\"error\", AppLog.Error(error)),",
+        StringComparison.Ordinal),
+    "AirPlay/USB failure reporting cannot throw a second null-device exception while diagnosing disconnects");
+
 
 
 Equal(true,
