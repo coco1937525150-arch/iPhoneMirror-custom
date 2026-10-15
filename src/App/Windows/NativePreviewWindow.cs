@@ -166,6 +166,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly Stopwatch _rotationClock = Stopwatch.StartNew();
     private PhoneRotationTimeline _rotationTimeline = new();
     private bool _rotationAnimating;
+    private bool _rotationRenderingSubscribed;
+    private TimeSpan _lastCompositionRotationTick;
     private readonly DispatcherTimer _airPlayOrientationTimer;
     private bool _autoRotateAirPlay;
     private bool _autoAirPlayWasLandscape;
@@ -361,10 +363,12 @@ internal sealed class NativePreviewWindow : IDisposable
         _wheelZoomTimer.Tick += OnWheelZoomTick;
         _rotationTimer = new DispatcherTimer(DispatcherPriority.Render, _source.Dispatcher)
         {
-            // The reference CSS rotates the whole phone continuously over
-            // 1000ms. Update the DComp transform at up to 120Hz instead of
-            // visibly stepping once every ~16ms on high-refresh monitors.
-            Interval = TimeSpan.FromMilliseconds(8),
+            // WPF CompositionTarget.Rendering drives the normal vblank
+            // cadence. This 16ms timer is ONLY a fallback if the main WPF
+            // view is hidden and no rendering callbacks are being issued.
+            // Running a second 8ms DComp commit loop caused irregular updates
+            // and visible jitter on 60Hz monitors.
+            Interval = TimeSpan.FromMilliseconds(16),
         };
         _rotationTimer.Tick += OnRotationTick;
         _airPlayOrientationTimer = new DispatcherTimer(
@@ -1421,6 +1425,7 @@ internal sealed class NativePreviewWindow : IDisposable
         _rotationTimeline.Retarget(delta * 90.0, _rotationClock.Elapsed);
         UpdateRotationVisual();
         if (!_rotationAnimating) return false;
+        SubscribeRotationRendering();
         _rotationTimer.Start();
         return true;
     }
@@ -1493,11 +1498,45 @@ internal sealed class NativePreviewWindow : IDisposable
         return true;
     }
 
+    private void SubscribeRotationRendering()
+    {
+        if (_rotationRenderingSubscribed) return;
+        CompositionTarget.Rendering += OnRotationRendering;
+        _rotationRenderingSubscribed = true;
+        _lastCompositionRotationTick = TimeSpan.MinValue;
+    }
+
+    private void UnsubscribeRotationRendering()
+    {
+        if (!_rotationRenderingSubscribed) return;
+        CompositionTarget.Rendering -= OnRotationRendering;
+        _rotationRenderingSubscribed = false;
+    }
+
+    private void OnRotationRendering(object? sender, EventArgs e)
+    {
+        _lastCompositionRotationTick = _rotationClock.Elapsed;
+        AdvanceRotationVisual();
+    }
+
     private void OnRotationTick(object? sender, EventArgs e)
+    {
+        // On an active WPF composition clock, do not also commit a second
+        // inconsistent 16ms DispatcherTimer transform between display
+        // presents. Use this only if no WPF render tick arrived recently.
+        if (_rotationRenderingSubscribed &&
+            _rotationClock.Elapsed - _lastCompositionRotationTick <
+                TimeSpan.FromMilliseconds(40))
+            return;
+        AdvanceRotationVisual();
+    }
+
+    private void AdvanceRotationVisual()
     {
         if (!_rotationAnimating || _disposed || _sessionHandle == 0)
         {
             _rotationTimer.Stop();
+            UnsubscribeRotationRendering();
             return;
         }
         UpdateRotationVisual();
@@ -1525,6 +1564,7 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (!_rotationAnimating) return;
         _rotationTimer.Stop();
+        UnsubscribeRotationRendering();
         var turns = (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0);
         if (turns == 0)
         {
@@ -1610,6 +1650,7 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (!_rotationAnimating) return;
         _rotationTimer.Stop();
+        UnsubscribeRotationRendering();
         _rotationAnimating = false;
         _aspectController.CancelQueuedResize();
         // Restore the unrotated HWND first; only then release DComp resize
@@ -1714,6 +1755,7 @@ internal sealed class NativePreviewWindow : IDisposable
         if (_rotationAnimating) AbortRotationAnimation();
         _disposed = true;
         _rotationTimer.Stop();
+        UnsubscribeRotationRendering();
         _rotationTimer.Tick -= OnRotationTick;
         _airPlayOrientationTimer.Stop();
         _airPlayOrientationTimer.Tick -= OnAirPlayOrientationSettled;
