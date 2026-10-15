@@ -170,6 +170,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private TimeSpan _lastCompositionRotationTick;
     private readonly DispatcherTimer _airPlayOrientationTimer;
     private bool _autoRotateAirPlay;
+    private bool? _queuedAirPlayLandscape;
+    private TimeSpan _queuedAirPlayAt;
     private bool _autoAirPlayWasLandscape;
     private WindowRect _rotationOriginalBounds;
     private int _rotationOriginalClientWidth;
@@ -376,7 +378,9 @@ internal sealed class NativePreviewWindow : IDisposable
         {
             // AirPlay may briefly change decoded dimensions during playback
             // negotiation; rotate only after the orientation has been stable.
-            Interval = TimeSpan.FromMilliseconds(450),
+            // The status-only 150ms poll already filters frame changes;
+            // retain a short hysteresis to ignore transient encoder formats.
+            Interval = TimeSpan.FromMilliseconds(120),
         };
         _airPlayOrientationTimer.Tick += OnAirPlayOrientationSettled;
 
@@ -728,11 +732,22 @@ internal sealed class NativePreviewWindow : IDisposable
         _sourceHeight = height;
         if (changed && _autoRotateAirPlay && width != 0 && height != 0)
         {
-            // Video playback is usually exposed as landscape-coded AirPlay
-            // frames. Do not stretch the old portrait shell to the newly
-            // reported source aspect before the phone-body animation begins.
-            _airPlayOrientationTimer.Stop();
-            _airPlayOrientationTimer.Start();
+            // Reset the 120ms confirmation ONLY if portrait/landscape
+            // polarity changes. Frequent resolution re-negotiations within
+            // the same orientation must not postpone the animation forever.
+            var landscape = width > height;
+            var committedLandscape = (_rotation & 1) != 0;
+            if (_queuedAirPlayLandscape != landscape &&
+                (landscape != committedLandscape || _rotationAnimating))
+            {
+                _queuedAirPlayLandscape = landscape;
+                _queuedAirPlayAt = _rotationClock.Elapsed;
+                _airPlayOrientationTimer.Stop();
+                _airPlayOrientationTimer.Start();
+                Log("independent_window_airplay_orientation_detected",
+                    ("landscape", landscape), ("source_width", width),
+                    ("source_height", height));
+            }
         }
         var pendingAutoTurn = _autoRotateAirPlay && width > 0 && height > 0 &&
             (width > height) != ((_rotation & 1) != 0);
@@ -1699,14 +1714,21 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (_managedContent is not null || _disposed) return;
         _autoRotateAirPlay = enabled;
+        _queuedAirPlayLandscape = null;
         _airPlayOrientationTimer.Stop();
         if (enabled && _sourceWidth != 0 && _sourceHeight != 0)
+        {
+            _queuedAirPlayLandscape = _sourceWidth > _sourceHeight;
+            _queuedAirPlayAt = _rotationClock.Elapsed;
             _airPlayOrientationTimer.Start();
+        }
     }
 
     private void OnAirPlayOrientationSettled(object? sender, EventArgs e)
     {
         _airPlayOrientationTimer.Stop();
+        var queuedAgeMs = (_rotationClock.Elapsed - _queuedAirPlayAt).TotalMilliseconds;
+        _queuedAirPlayLandscape = null;
         if (!_autoRotateAirPlay || _disposed || _handle == 0 ||
             _sessionHandle == 0 || _isFullScreen ||
             _sourceWidth == 0 || _sourceHeight == 0) return;
@@ -1747,7 +1769,8 @@ internal sealed class NativePreviewWindow : IDisposable
         Log("independent_window_airplay_orientation_auto",
             ("landscape", landscape), ("delta", delta),
             ("source_width", _sourceWidth),
-            ("source_height", _sourceHeight));
+            ("source_height", _sourceHeight),
+            ("confirmation_ms", Math.Round(queuedAgeMs)));
     }
 
     private void ApplyDeviceFrameProfile()

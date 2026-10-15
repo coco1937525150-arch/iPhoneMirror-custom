@@ -1762,7 +1762,7 @@ Equal(true,
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains("OnAirPlayOrientationSettled(",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("Interval = TimeSpan.FromMilliseconds(450)",
+    nativePreviewWindowCode.Contains("Interval = TimeSpan.FromMilliseconds(120)",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains(
         "var pendingTurns = _rotationAnimating",
@@ -4598,6 +4598,24 @@ var unframedMovie = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
     DeviceFrameProfile.None, 1920, 1080, 0);
 Equal(true, unframedMovie.Width == 1080 && unframedMovie.Height == 1920,
     "unframed media keeps its own content aspect rather than iPhone-shell ratio");
+
+// Low-latency AirPlay direction detection is a separate status-only poll;
+// USB inventory keeps the original two-second cadence. Resolutions that
+// change repeatedly within one orientation must not reset hysteresis.
+Equal(true,
+    mainWindowCode.Contains("_wirelessOrientationTimer = new DispatcherTimer",
+        StringComparison.Ordinal) &&
+    mainWindowCode.Contains("Interval = TimeSpan.FromMilliseconds(150)",
+        StringComparison.Ordinal) &&
+    mainWindowCode.Contains("RefreshWirelessOrientationStatusAsync()",
+        StringComparison.Ordinal) &&
+    mainWindowCode.Contains("_refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_queuedAirPlayLandscape != landscape",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("independent_window_airplay_orientation_detected",
+        StringComparison.Ordinal),
+    "fast wireless orientation polls stay independent of device enumeration and repeated source sizes");
 
 // The temporary DComp square, portrait original and final landscape HWND
 // MUST share the very same desktop center. Clamping its square to work-area

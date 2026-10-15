@@ -42,6 +42,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private readonly MainViewModel _viewModel;
     private readonly DispatcherTimer _refreshTimer;
+    private readonly DispatcherTimer _wirelessOrientationTimer;
     private readonly DispatcherTimer _mediaCastTimer;
     private readonly DispatcherTimer _mediaPlaybackTimer;
     private readonly DispatcherTimer _mediaControlsHideTimer;
@@ -396,6 +397,19 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _viewModel.DeviceBindingRequested += OnDeviceBindingRequested;
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _refreshTimer.Tick += (_, _) => _ = _viewModel.RefreshAsync();
+        // The two-second inventory cadence must not delay AirPlay orientation.
+        // This status-only poll runs ONLY for an open, selected wireless HWND.
+        // It never enumerates USB or restarts the capture session.
+        _wirelessOrientationTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(150),
+        };
+        _wirelessOrientationTimer.Tick += (_, _) =>
+        {
+            if (_viewModel.IsWirelessSelected &&
+                _secondaryMirrors.IsOpen(_viewModel.SelectedDevice))
+                _ = _viewModel.RefreshWirelessOrientationStatusAsync();
+        };
         _mediaCastTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _mediaCastTimer.Tick += (_, _) => _viewModel.RefreshMediaCast();
         _mediaPlaybackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
@@ -1858,6 +1872,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // stalled service or USB re-enumeration must not make the GUI appear
         // frozen or prevent the user from seeing the current status.
         _refreshTimer.Start();
+        _wirelessOrientationTimer.Start();
         _mediaCastTimer.Start();
         ApplyWorkspacePanelState();
         ApplyApplicationDisplayMode();
@@ -2617,6 +2632,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _viewModel.MediaOutputSettingsRequested -= OnMediaOutputSettingsRequested;
         _viewModel.DeviceBindingRequested -= OnDeviceBindingRequested;
         _refreshTimer.Stop();
+        _wirelessOrientationTimer.Stop();
         _mediaCastTimer.Stop();
         var application = Application.Current;
         application.ShutdownMode = ShutdownMode.OnExplicitShutdown;

@@ -3414,21 +3414,39 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    private int _activeStatusPollInFlight;
+
+    // A lightweight status-only path for detached AirPlay orientation. Do
+    // not call RefreshAsync() at 150ms cadence: every fifth inventory pass
+    // would unnecessarily enumerate devices and risk USB preview hitches.
+    internal Task RefreshWirelessOrientationStatusAsync() =>
+        !_disposed && IsWirelessSelected && CurrentSessionHandle != 0
+            ? RefreshActiveSessionStatusAsync()
+            : Task.CompletedTask;
+
     private async Task RefreshActiveSessionStatusAsync()
     {
-        if (_disposed || IsMediaCastSelected) return;
-        NativeCaptureStatus status;
+        if (_disposed || IsMediaCastSelected ||
+            Interlocked.CompareExchange(ref _activeStatusPollInFlight, 1, 0) != 0)
+            return;
+        var originalSession = CurrentSessionHandle;
         try
         {
-            status = await Task.Run(GetSelectedCaptureStatus).ConfigureAwait(true);
+            var status = await Task.Run(GetSelectedCaptureStatus).ConfigureAwait(true);
+            // An old in-flight poll must not overwrite a newly selected
+            // AirPlay session's width/height or cause a phantom auto-rotation.
+            if (!_disposed && CurrentSessionHandle == originalSession)
+                ApplyCaptureStatus(status);
         }
         catch (Exception error)
         {
             DiagnosticLogger.ExceptionOnce("active-session-status-refresh",
                 "capture", "active_session_status_refresh_failed", error);
-            return;
         }
-        ApplyCaptureStatus(status);
+        finally
+        {
+            Interlocked.Exchange(ref _activeStatusPollInFlight, 0);
+        }
     }
 
     private async Task SyncWirelessSessionsLockedAsync(IEnumerable<DeviceViewModel> connected)
