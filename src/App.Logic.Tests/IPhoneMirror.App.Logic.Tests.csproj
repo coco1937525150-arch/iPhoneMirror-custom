@@ -61,6 +61,7 @@
     <Compile Include="..\App\Services\PhoneShellMediaComposer.cs" Link="PhoneShellMediaComposer.cs" />
     <Compile Include="..\App\Services\PhoneRotationTimeline.cs" Link="PhoneRotationTimeline.cs" />
     <Compile Include="..\App\Services\PhoneAutoRotationPolicy.cs" Link="PhoneAutoRotationPolicy.cs" />
+    <Compile Include="..\App\Services\PhoneRotationStageGeometry.cs" Link="PhoneRotationStageGeometry.cs" />
     <Compile Include="..\App\Services\PhoneShellApertureMask.cs" Link="PhoneShellApertureMask.cs" />
     <Compile Include="..\App\Services\PhoneShellAssetStore.cs" Link="PhoneShellAssetStore.cs" />
     <Compile Include="..\App\Services\RuntimeBinaryIntegrity.cs" Link="RuntimeBinaryIntegrity.cs" />
