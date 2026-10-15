@@ -166,6 +166,9 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly Stopwatch _rotationClock = Stopwatch.StartNew();
     private PhoneRotationTimeline _rotationTimeline = new();
     private bool _rotationAnimating;
+    private readonly DispatcherTimer _airPlayOrientationTimer;
+    private bool _autoRotateAirPlay;
+    private bool _autoAirPlayWasLandscape;
     private WindowRect _rotationOriginalBounds;
     private int _rotationOriginalClientWidth;
     private int _rotationOriginalClientHeight;
@@ -364,6 +367,14 @@ internal sealed class NativePreviewWindow : IDisposable
             Interval = TimeSpan.FromMilliseconds(8),
         };
         _rotationTimer.Tick += OnRotationTick;
+        _airPlayOrientationTimer = new DispatcherTimer(
+            DispatcherPriority.Background, _source.Dispatcher)
+        {
+            // AirPlay may briefly change decoded dimensions during playback
+            // negotiation; rotate only after the orientation has been stable.
+            Interval = TimeSpan.FromMilliseconds(450),
+        };
+        _airPlayOrientationTimer.Tick += OnAirPlayOrientationSettled;
 
         if (managedContent is not null)
         {
@@ -702,7 +713,18 @@ internal sealed class NativePreviewWindow : IDisposable
         var changed = _sourceWidth != width || _sourceHeight != height;
         _sourceWidth = width;
         _sourceHeight = height;
-        if (!_rotationAnimating) ApplyRotatedDimensions();
+        if (changed && _autoRotateAirPlay && width != 0 && height != 0)
+        {
+            // Video playback is usually exposed as landscape-coded AirPlay
+            // frames. Do not stretch the old portrait shell to the newly
+            // reported source aspect before the phone-body animation begins.
+            _airPlayOrientationTimer.Stop();
+            _airPlayOrientationTimer.Start();
+        }
+        var pendingAutoTurn = _autoRotateAirPlay && width > 0 && height > 0 &&
+            (width > height) != ((_rotation & 1) != 0);
+        if (!_rotationAnimating && !pendingAutoTurn)
+            ApplyRotatedDimensions();
         if (changed)
             Log("independent_window_dimensions",
                 ("mode", WindowMode), ("size", $"{width}x{height}"),
@@ -1570,10 +1592,46 @@ internal sealed class NativePreviewWindow : IDisposable
     private void ApplyRotatedDimensions(bool reflow = true)
     {
         if (_sourceWidth == 0 || _sourceHeight == 0) return;
-        var width = (_rotation & 1) != 0 ? _sourceHeight : _sourceWidth;
-        var height = (_rotation & 1) != 0 ? _sourceWidth : _sourceHeight;
+        // The SDK can ALREADY deliver landscape video after iOS rotates.
+        // Normalise to a portrait physical phone first, then apply exactly
+        // one shell rotation. Blindly swapping the new landscape source a
+        // second time caused portrait-aspect HWND reflows / giant bezels.
+        var portraitWidth = Math.Min(_sourceWidth, _sourceHeight);
+        var portraitHeight = Math.Max(_sourceWidth, _sourceHeight);
+        var width = (_rotation & 1) != 0 ? portraitHeight : portraitWidth;
+        var height = (_rotation & 1) != 0 ? portraitWidth : portraitHeight;
         var outer = _deviceFrameProfile.GetOuterDimensions(width, height);
         _aspectController.SetSourceDimensions(outer.Width, outer.Height, reflow);
+    }
+
+    /// <summary>Automatically turn the entire physical AirPlay phone left
+    /// when the decoded source switches to landscape; turn right on return
+    /// to portrait. Does NOT attempt to infer playback from static pixels.</summary>
+    internal void EnableAirPlayAutomaticRotation(bool enabled)
+    {
+        if (_managedContent is not null || _disposed) return;
+        _autoRotateAirPlay = enabled;
+        _airPlayOrientationTimer.Stop();
+        if (enabled && _sourceWidth != 0 && _sourceHeight != 0)
+            _airPlayOrientationTimer.Start();
+    }
+
+    private void OnAirPlayOrientationSettled(object? sender, EventArgs e)
+    {
+        _airPlayOrientationTimer.Stop();
+        if (!_autoRotateAirPlay || _disposed || _handle == 0 ||
+            _sessionHandle == 0 || _isFullScreen ||
+            _sourceWidth == 0 || _sourceHeight == 0) return;
+
+        var landscape = _sourceWidth > _sourceHeight;
+        if (_autoAirPlayWasLandscape == landscape) return;
+        // A normal iOS orientation change should be a single left 90 degree
+        // turn and a single right 90 degree return, not a fresh AirPlay session.
+        _autoAirPlayWasLandscape = landscape;
+        Log("independent_window_airplay_orientation_auto",
+            ("landscape", landscape), ("source_width", _sourceWidth),
+            ("source_height", _sourceHeight));
+        Rotate(landscape ? -1 : 1);
     }
 
     private void ApplyDeviceFrameProfile()
@@ -1592,6 +1650,8 @@ internal sealed class NativePreviewWindow : IDisposable
         _disposed = true;
         _rotationTimer.Stop();
         _rotationTimer.Tick -= OnRotationTick;
+        _airPlayOrientationTimer.Stop();
+        _airPlayOrientationTimer.Tick -= OnAirPlayOrientationSettled;
         _wheelZoomTimer.Stop();
         _wheelZoomTimer.Tick -= OnWheelZoomTick;
         OpenWindows.Remove(this);
