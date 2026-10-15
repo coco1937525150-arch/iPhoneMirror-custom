@@ -1858,7 +1858,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             {
                 lock (this)
                 {
-                    if (!_frame.IsEmpty && sourceTimestamp100Ns <= _lastSourceTimestamp)
+                    if (!_frame.IsEmpty && sourceTimestamp100Ns == _lastSourceTimestamp)
                     {
                         ++_readSamples;
                         _lastFailure = null;
