@@ -1266,6 +1266,32 @@ void test_capture_media_safety_helpers() {
                 return true;
             }(),
         "scaled full-range SDR NV12 export keeps gray levels and black bars");
+
+    // Real iPhone 16 Pro Max AirPlay sessions can decode a 498x1080
+    // thumbnail-sized transport frame even when the recording canvas is
+    // configured at 1080x1920. The legacy converter capped scale at 1.0,
+    // baking a 498x1080 postage stamp into a huge black recorded canvas.
+    // Export upscaling MUST fill height while preserving the aspect ratio;
+    // the downstream shell composition will crop ONLY surplus pillarboxes.
+    auto live_phone_frame = full_range_gray;
+    live_phone_frame.width = 498;
+    live_phone_frame.height = 1080;
+    live_phone_frame.stride = 498;
+    const std::size_t phone_y_bytes = 498U * 1080U;
+    live_phone_frame.nv12.assign(phone_y_bytes * 3U / 2U, 128);
+    std::fill_n(live_phone_frame.nv12.data(), phone_y_bytes,
+        std::uint8_t{200});
+    std::vector<std::uint8_t> full_hd_recording(1080U * 1920U * 3U / 2U);
+    check(iPhoneMirror::media::detail::copy_nv12_frame_letterboxed_sdr(
+            live_phone_frame, full_hd_recording, 1080, 1920,
+            true /* encoder-scale, never legacy no-upscale */) &&
+            full_hd_recording[0] == 0 &&
+            full_hd_recording[1U * 1080U + 100U] == 200 &&
+            full_hd_recording[1918U * 1080U + 980U] == 200 &&
+            full_hd_recording[1920U * 1080U / 2U + 128U] == 128 &&
+            full_hd_recording[1919U * 1080U + 540U] == 200,
+        "498x1080 AirPlay source is scaled across full-height 1080x1920 encoder input, not recorded as a tiny 498x1080 thumbnail");
+
     iPhoneMirror::media::DecodedFrame p010_reference = p010_frame;
     p010_reference.color.range = iPhoneMirror::coremedia::ColorRange::Limited;
     p010_reference.nv12.assign(48, 0);
