@@ -22,11 +22,11 @@ internal static class PhoneRotationStageGeometry
     }
 
     /// <summary>
-    /// Fit the phone's swept bounding box inside the fixed animation square.
-    /// Scale decreases smoothly as the device turns, rather than instantly
-    /// jumping from 1.0 to the final fitted size when animation begins.
-    /// Track the maximum rotated extent ALREADY encountered so zoom never
-    /// pulsates as the horizontal/vertical bounds trade places.
+    /// Reserve the full swept diagonal once, rather than rescaling the
+    /// entire phone on each intermediate angle. Dynamic angle-dependent
+    /// resizing made the bezel pulse against a still-updating video frame.
+    /// A monitor-limited canvas may require a fixed downscale; never let
+    /// either axis of the rotated body escape the temporary square.
     /// </summary>
     internal static float ScaleAtAngle(
         int sourceWidth, int sourceHeight, double canvasSide,
@@ -34,27 +34,13 @@ internal static class PhoneRotationStageGeometry
     {
         if (sourceWidth <= 0 || sourceHeight <= 0 || canvasSide <= 1)
             return Math.Clamp(finalScale, 0.01f, 1f);
-        var theta = Math.Clamp(Math.Abs(degrees), 0, 90) * Math.PI / 180;
+        // The entire sweep must use the SAME scale: theta only affects the
+        // rigid DComp rotation matrix, not the dimensions of the phone body.
+        _ = degrees;
         var diagonal = Math.Sqrt((double)sourceWidth * sourceWidth +
             (double)sourceHeight * sourceHeight);
-        var horizontalPeak = Math.Atan2(sourceHeight, sourceWidth);
-        var verticalPeak = Math.Atan2(sourceWidth, sourceHeight);
-        double HorizontalExtent(double angle) =>
-            sourceWidth * Math.Cos(angle) + sourceHeight * Math.Sin(angle);
-        double VerticalExtent(double angle) =>
-            sourceWidth * Math.Sin(angle) + sourceHeight * Math.Cos(angle);
-
-        var widestSeen = theta >= horizontalPeak
-            ? diagonal : HorizontalExtent(theta);
-        var tallestSeen = theta >= verticalPeak
-            ? diagonal : VerticalExtent(theta);
-        var maximumSeen = Math.Max(
-            Math.Max(sourceWidth, sourceHeight),
-            Math.Max(widestSeen, tallestSeen));
-        var safeScale = (canvasSide - 1.0) / maximumSeen;
-        var easing = Math.Min(1.0, Math.Abs(degrees) / 90.0);
-        var progressScale = 1.0 - (1.0 - finalScale) * easing;
-        return (float)Math.Clamp(Math.Min(progressScale, safeScale),
-            0.01, 1.0);
+        var safeScale = (canvasSide - 1.0) / diagonal;
+        return (float)Math.Clamp(Math.Min(finalScale, safeScale), 0.01, 1.0);
     }
+
 }

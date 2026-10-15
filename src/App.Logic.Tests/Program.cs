@@ -4612,6 +4612,25 @@ for (var degrees = 0; degrees <= 90; degrees += 3)
 }
 Equal(true, Math.Abs(previousRotationScale - rotationFinalFit) < 0.001,
     "final center-pivot scale exactly matches the renderer's landscape handoff");
+Equal(true, Math.Abs(PhoneRotationStageGeometry.ScaleAtAngle(
+        rotationTestWidth, rotationTestHeight, rotationTestSide,
+        rotationFinalFit, 0) -
+    PhoneRotationStageGeometry.ScaleAtAngle(
+        rotationTestWidth, rotationTestHeight, rotationTestSide,
+        rotationFinalFit, 45)) < 0.00001,
+    "whole-phone rotation keeps a fixed scale throughout the 0..90 degree sweep");
+
+var layoutEditorCode = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Windows", "RecordingLayoutEditorWindow.cs"));
+Equal(true,
+    layoutEditorCode.Contains("private const double ZoomStep = 0.05;",
+        StringComparison.Ordinal) &&
+    layoutEditorCode.Contains("plus.Click += (_, _) => AdjustZoom(1);",
+        StringComparison.Ordinal) &&
+    layoutEditorCode.Contains("minus.Click += (_, _) => AdjustZoom(-1);",
+        StringComparison.Ordinal) &&
+    layoutEditorCode.Contains("AdjustZoom(notches);", StringComparison.Ordinal),
+    "recording layout editor uses symmetric additive 5 percentage-point zoom steps");
 
 // Whole-phone DirectComposition animation uses CSS cubic-bezier(.76,0,.24,1)
 // over 1000ms, and retargeting must preserve the current eased visual angle.

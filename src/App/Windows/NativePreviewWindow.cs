@@ -1047,7 +1047,8 @@ internal sealed class NativePreviewWindow : IDisposable
 
     private void SetIndependentWindowSize(double fraction)
     {
-        if (_disposed || _isFullScreen || _isFixed || _handle == 0) return;
+        if (_disposed || _isFullScreen || _isFixed || _rotationAnimating ||
+            _handle == 0) return;
         _wheelZoomTimer.Stop();
         fraction = Math.Round(Math.Clamp(fraction, 0.35, 0.95), 2);
         if (!_aspectController.ResizeToWorkAreaFraction(fraction)) return;
@@ -1060,19 +1061,21 @@ internal sealed class NativePreviewWindow : IDisposable
 
     private void QueueSmoothWheelZoom(int wheelDelta)
     {
-        if (_disposed || _isFullScreen || _isFixed || _handle == 0) return;
+        if (_disposed || _isFullScreen || _isFixed || _rotationAnimating ||
+            _handle == 0) return;
         // Preserve precision for touchpads which send sub-120 wheel deltas.
         // Subsequent input updates one target instead of immediately running
         // SetWindowPos once for every raw wheel event.
         _wheelZoomTargetFraction = Math.Clamp(
-            _wheelZoomTargetFraction + wheelDelta / 120.0 * 0.035,
+            _wheelZoomTargetFraction + wheelDelta / 120.0 * 0.05,
             0.35, 0.95);
         if (!_wheelZoomTimer.IsEnabled) _wheelZoomTimer.Start();
     }
 
     private void OnWheelZoomTick(object? sender, EventArgs e)
     {
-        if (_disposed || _isFullScreen || _isFixed || _handle == 0)
+        if (_disposed || _isFullScreen || _isFixed || _rotationAnimating ||
+            _handle == 0)
         {
             _wheelZoomTimer.Stop();
             return;
@@ -1471,8 +1474,10 @@ internal sealed class NativePreviewWindow : IDisposable
         var (stageX, stageY) = PhoneRotationStageGeometry.CenteredBounds(
             outer.Left, outer.Top, outer.Right, outer.Bottom,
             outerSideW, outerSideH);
-        // A reflow queued BEFORE the animation may otherwise wake up just
-        // after the final geometry is committed, inflating the phone shell.
+        // Wheel zoom and aspect reflow must not race the two deliberate
+        // HWND resizes used by this animation (stage entry and final exit).
+        _wheelZoomTimer.Stop();
+        _wheelZoomTargetFraction = _sizeFraction;
         _aspectController.CancelQueuedResize();
         // Set the animation guard BEFORE SetWindowPos dispatches synchronous
         // WM_SIZE/WM_WINDOWPOSCHANGED. A queued aspect-controller reflow used

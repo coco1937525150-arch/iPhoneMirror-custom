@@ -28,6 +28,7 @@ internal sealed class RecordingLayoutEditorWindow : Window
     private readonly TextBlock _readout = new() { TextWrapping = TextWrapping.Wrap };
     private readonly BitmapSource _shell;
     private readonly bool _landscape;
+    private const double ZoomStep = 0.05;
     private double _backgroundWidth = 1280, _backgroundHeight = 720;
     private double _centerX = .5, _centerY = .5, _scale = 1.0;
     private int _rotationDegrees;
@@ -113,9 +114,9 @@ internal sealed class RecordingLayoutEditorWindow : Window
         var reset = new Button { Content = "居中 / 重置", Padding = new Thickness(16, 10, 16, 10), Margin = new Thickness(6) };
         reset.Click += (_, _) => { _centerX = _centerY = .5; _scale = 1; Redraw(); };
         var plus = new Button { Content = "放大 +", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(6) };
-        plus.Click += (_, _) => { _scale = Math.Min(4, _scale * 1.1); Redraw(); };
+        plus.Click += (_, _) => AdjustZoom(1);
         var minus = new Button { Content = "缩小 −", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(6) };
-        minus.Click += (_, _) => { _scale = Math.Max(.1, _scale / 1.1); Redraw(); };
+        minus.Click += (_, _) => AdjustZoom(-1);
         var rotateLeft = new Button { Content = "左旋 90°", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(4) };
         rotateLeft.Click += (_, _) => Rotate(-90);
         var rotateRight = new Button { Content = "右旋 90°", Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(4) };
@@ -241,10 +242,21 @@ internal sealed class RecordingLayoutEditorWindow : Window
         e.Handled = true;
     }
 
+    private void AdjustZoom(int steps)
+    {
+        if (steps == 0) return;
+        // Five PERCENTAGE POINTS per click/notch, not a multiplicative 10%
+        // jump. Keep the existing .1..4 limits and layout-safety clamp.
+        _scale = Math.Clamp(
+            Math.Round(_scale + steps * ZoomStep, 3, MidpointRounding.AwayFromZero),
+            .1, 4);
+        Redraw();
+    }
+
     private void Zoom(object sender, MouseWheelEventArgs e)
     {
-        _scale = Math.Clamp(_scale * (e.Delta > 0 ? 1.1 : 1 / 1.1), .1, 4);
-        Redraw();
+        var notches = Math.Sign(e.Delta) * Math.Max(1, Math.Abs(e.Delta) / 120);
+        AdjustZoom(notches);
         e.Handled = true;
     }
 }

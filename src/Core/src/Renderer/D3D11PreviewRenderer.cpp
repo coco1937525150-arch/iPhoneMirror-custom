@@ -2047,8 +2047,20 @@ struct D3D11PreviewRenderer::Impl {
         // Reset the temporary transform on the SAME present that already
         // contains the new landscape/portrait geometry. A separate reset
         // before the resize would reveal a black or off-center intermediate.
+        // A final quarter-turn handoff resets the DComp matrix while
+        // presenting the FIRST frame rendered at the new HWND dimensions.
+        // That handoff cannot use DO_NOT_WAIT: dropping its Present would
+        // expose the previous frame under the new identity matrix (flash).
+        bool rotation_handoff_pending = false;
+        {
+            std::scoped_lock lock(visual_rotation_mutex);
+            rotation_handoff_pending = !visual_rotation_request.active &&
+                visual_rotation_request.generation != applied_visual_generation;
+        }
         apply_visual_rotation_if_needed(true);
-        const auto present_result = swap_chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+        const auto present_result = rotation_handoff_pending
+            ? swap_chain->Present(1, 0)
+            : swap_chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
         if (present_result != DXGI_ERROR_WAS_STILL_DRAWING)
             check(present_result, "Present");
         release_shared_gpu_frame();
