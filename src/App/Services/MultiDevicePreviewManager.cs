@@ -162,10 +162,18 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         // Initializing every window as 1206x2622 creates a stale portrait
         // viewport until a *new* size-change callback arrives.
         var isSelected = DeviceViewModel.UdidEquals(viewModel.SelectedDevice?.Udid, device.Udid);
-        var initialWidth = isSelected && viewModel.SourceVideoWidth > 0
+        var sourceWidth = isSelected && viewModel.SourceVideoWidth > 0
             ? viewModel.SourceVideoWidth : 1206U;
-        var initialHeight = isSelected && viewModel.SourceVideoHeight > 0
+        var sourceHeight = isSelected && viewModel.SourceVideoHeight > 0
             ? viewModel.SourceVideoHeight : 2622U;
+        // iOS sometimes starts a detached preview while already landscape.
+        // The shell PNG is a portrait physical device and should first be
+        // constructed in its canonical portrait geometry before its automatic
+        // counterclockwise turn. Keep the ACTUAL frame dimensions separately.
+        var initialWidth = device.IsWireless
+            ? Math.Min(sourceWidth, sourceHeight) : sourceWidth;
+        var initialHeight = device.IsWireless
+            ? Math.Max(sourceWidth, sourceHeight) : sourceHeight;
         var profile = DeviceCornerProfileResolver.Resolve(device.ProductType, initialWidth, initialHeight);
         var frameProfile = DeviceFrameProfileResolver.Resolve(device.ProductType, initialWidth, initialHeight);
         var cornerRadius = profile.IsRounded ? profile.RadiusRatio : 0;
@@ -202,6 +210,12 @@ internal sealed class MultiDevicePreviewManager : IDisposable
             return (false, LocalizationService.Get("PreviewRendererAttachFailed"));
         }
         _windows[device.Udid] = window;
+        // Enable only for true wireless AirPlay mirrors. A MediaCast screen,
+        // wired QuickTime capture or user-controlled rotation stays manual.
+        window.EnableAirPlayAutomaticRotation(device.IsWireless);
+        if (device.IsWireless && (sourceWidth != initialWidth ||
+            sourceHeight != initialHeight))
+            window.SetSourceDimensions(sourceWidth, sourceHeight);
         if (_protectionStates.TryGetValue(device.Udid, out var protection))
             window.SetProtectedContent(protection.IsProtected,
                 protection.AudioDisplay);
