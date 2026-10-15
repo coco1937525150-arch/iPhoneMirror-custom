@@ -792,6 +792,10 @@ struct D3D11PreviewRenderer::Impl {
             check(composition_target->SetRoot(composition_visual.Get()),
                 "IDCompositionTarget SetRoot");
             check(composition_device->Commit(), "IDCompositionDevice Commit");
+            // A device/visual recreation starts with a NEW identity matrix.
+            // Re-apply the most recently requested phone transform even if
+            // its generation was already applied to the now-destroyed visual.
+            applied_visual_generation = std::numeric_limits<std::uint64_t>::max();
         } else {
             (void)factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
         }
@@ -2159,11 +2163,13 @@ struct D3D11PreviewRenderer::Impl {
                 // video and black flash. Finish ResizeBuffers first and
                 // reset the DComp matrix with the newly sized rendered frame.
                 bool waiting_for_rotation_resize = false;
+                bool pending_rotation_handoff = false;
                 {
                     std::scoped_lock lock(visual_rotation_mutex);
-                    if (!visual_rotation_request.active &&
+                    pending_rotation_handoff = !visual_rotation_request.active &&
                         visual_rotation_request.generation !=
-                            applied_visual_generation) {
+                            applied_visual_generation;
+                    if (pending_rotation_handoff) {
                         RECT final_rect{};
                         if (GetClientRect(window, &final_rect)) {
                             waiting_for_rotation_resize =
@@ -2226,8 +2232,11 @@ struct D3D11PreviewRenderer::Impl {
                         continue;
                     }
                 }
+                // The final transform reset is not optional: even if the
+                // decoder repeats the SAME timestamp, redraw and submit the
+                // new-sized frame until the pending handoff has committed.
                 const bool force_refresh = refresh_requested.exchange(false,
-                    std::memory_order_acq_rel);
+                    std::memory_order_acq_rel) || pending_rotation_handoff;
                 auto frame = provider ? provider() : nullptr;
                 // A still iPhone screen may not produce fresh decoded frames.
                 // Rotate/resize the retained frame instead of briefly painting
@@ -2241,7 +2250,15 @@ struct D3D11PreviewRenderer::Impl {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     continue;
                 }
-                const bool output_mode_changed = update_output_mode(*frame);
+                // HDR/SDR transitions call ResizeBuffers or rebuild D3D.
+                // Doing either while the phone is turning can destroy its
+                // intact shell/backbuffer. Defer output mode changes until
+                // the 1s DirectComposition transition has completed.
+                const bool defer_output_switch =
+                    hold_swap_chain_resize.load(std::memory_order_acquire) ||
+                    pending_rotation_handoff;
+                const bool output_mode_changed = !defer_output_switch &&
+                    update_output_mode(*frame);
                 if (!output_state.target_valid || !target) {
                     refresh_requested.store(true, std::memory_order_release);
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -2254,6 +2271,16 @@ struct D3D11PreviewRenderer::Impl {
                 }
                 const auto render_started = std::chrono::steady_clock::now();
                 render(*frame);
+                // If a transient GPU upload/Present could not perform the
+                // final visual commit, retry the retained frame next loop,
+                // without waiting for the iPhone to emit a NEW timestamp.
+                if (pending_rotation_handoff) {
+                    std::scoped_lock lock(visual_rotation_mutex);
+                    if (!visual_rotation_request.active &&
+                        visual_rotation_request.generation !=
+                            applied_visual_generation)
+                        refresh_requested.store(true, std::memory_order_release);
+                }
                 const auto render_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - render_started).count();
                 last_timestamp = frame->timestamp_100ns;

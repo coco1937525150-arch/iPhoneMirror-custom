@@ -4617,6 +4617,34 @@ Equal(true,
         StringComparison.Ordinal),
     "fast wireless orientation polls stay independent of device enumeration and repeated source sizes");
 
+// Regression: the 150ms orientation probe must share the native-status
+// single-flight gate with the old 2s status refresh. A late old status must
+// never override a newer AirPlay landscape frame.
+var viewModelSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "ViewModels", "MainViewModel.cs"));
+Equal(true,
+    viewModelSource.Contains(
+        "Interlocked.CompareExchange(ref _activeStatusPollInFlight, 1, 0) != 0)",
+        StringComparison.Ordinal) &&
+    !viewModelSource.Contains("_wirelessOrientationPollInFlight",
+        StringComparison.Ordinal) &&
+    viewModelSource.Contains("CurrentSessionHandle == originalSession",
+        StringComparison.Ordinal) &&
+    viewModelSource.Contains("CurrentSessionHandle != sessionAtStart",
+        StringComparison.Ordinal),
+    "fast and slow AirPlay orientation status reads share a nonoverlapping gate");
+Equal(true,
+    previewRendererCode.Contains("pending_rotation_handoff", StringComparison.Ordinal) &&
+    previewRendererCode.Contains("const bool output_mode_changed = !defer_output_switch &&",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains(
+        "applied_visual_generation = std::numeric_limits<std::uint64_t>::max();",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains(
+        "refresh_requested.store(true, std::memory_order_release);",
+        StringComparison.Ordinal),
+    "D3D retains one transform across rebuilds, defers format switches and retries pending handoff");
+
 // The temporary DComp square, portrait original and final landscape HWND
 // MUST share the very same desktop center. Clamping its square to work-area
 // margins used to move that center by 100-200px on right-edge monitors.

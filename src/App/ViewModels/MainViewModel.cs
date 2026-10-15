@@ -3416,7 +3416,9 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
     private int _activeStatusPollInFlight;
 
-    private int _wirelessOrientationPollInFlight;
+    // The fast 150ms orientation probe and the ordinary 2s status refresh
+    // share ONE single-flight gate. Independent gates could race and report
+    // older frame dimensions after a newer rotation, causing shell flicker.
 
     // Poll only native frame dimensions for an active detached AirPlay view.
     // Full ApplyCaptureStatus also manages stalls, status text and recovery:
@@ -3426,7 +3428,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     {
         if (_disposed || !IsWirelessSelected || IsMediaCastSelected ||
             CurrentSessionHandle == 0 ||
-            Interlocked.CompareExchange(ref _wirelessOrientationPollInFlight, 1, 0) != 0)
+            Interlocked.CompareExchange(ref _activeStatusPollInFlight, 1, 0) != 0)
             return;
         var sessionAtStart = CurrentSessionHandle;
         try
@@ -3454,7 +3456,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         }
         finally
         {
-            Interlocked.Exchange(ref _wirelessOrientationPollInFlight, 0);
+            Interlocked.Exchange(ref _activeStatusPollInFlight, 0);
         }
     }
 
