@@ -1518,6 +1518,29 @@ internal sealed class NativePreviewWindow : IDisposable
         if (!_rotationAnimating) return;
         _rotationTimer.Stop();
         var turns = (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0);
+        if (turns == 0)
+        {
+            // A left/right reversal during the 1000ms animation returns to
+            // the SAME exact user-sized window. The old completion applied
+            // _rotationScale even to a net-zero turn, shrinking the bezel
+            // suddenly at the last frame (visible flicker and size jump).
+            var old = _rotationOriginalBounds;
+            var oldW = Math.Max(1, old.Right - old.Left);
+            var oldH = Math.Max(1, old.Bottom - old.Top);
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, _rotationOriginalClientWidth,
+                _rotationOriginalClientHeight, 1.0f, true);
+            _ = SetWindowPos(_handle, 0, old.Left, old.Top, oldW, oldH,
+                SwpNoActivate | SwpNoZOrder);
+            _rotationAnimating = false;
+            _aspectController.CancelQueuedResize();
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
+            ApplyRotatedDimensions(reflow: false);
+            Log("independent_window_rotation_reversed_to_original_size",
+                ("width", oldW), ("height", oldH));
+            return;
+        }
         var nextRotation = ((_rotation + turns) % 4 + 4) % 4;
         var swapped = (turns & 1) != 0;
         var width = swapped ? _rotationOriginalClientHeight : _rotationOriginalClientWidth;
@@ -1534,6 +1557,19 @@ internal sealed class NativePreviewWindow : IDisposable
         var cy = ((long)_rotationOriginalBounds.Top + _rotationOriginalBounds.Bottom) / 2;
         var finalX = (int)(cx - finalW / 2L);
         var finalY = (int)(cy - finalH / 2L);
+        var finalMonitor = MonitorFromWindow(_handle, MonitorDefaultToNearest);
+        var finalMonitorInfo = new MonitorInfo
+        {
+            Size = (uint)Marshal.SizeOf<MonitorInfo>(),
+        };
+        if (finalMonitor != 0 && GetMonitorInfoW(finalMonitor, ref finalMonitorInfo))
+        {
+            var work = finalMonitorInfo.WorkArea;
+            finalX = Math.Clamp(finalX, work.Left,
+                Math.Max(work.Left, work.Right - finalW));
+            finalY = Math.Clamp(finalY, work.Top,
+                Math.Max(work.Top, work.Bottom - finalH));
+        }
 
         // The reference animation rotates the WHOLE device inside a fixed
         // fitted stage. Keep the ORIGINAL portrait backbuffer untouched
