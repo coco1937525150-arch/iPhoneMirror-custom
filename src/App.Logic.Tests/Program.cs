@@ -4421,6 +4421,11 @@ Equal(true,
     mediaOutputFinalizationCode.Contains("line.Contains(\"error\", StringComparison.OrdinalIgnoreCase)",
         StringComparison.Ordinal),
     "recording waits for producer shutdown before FFmpeg EOF and does not report a channel layout hint as encoder failure");
+Equal(true,
+    mediaOutputFinalizationCode.Contains(
+        "alphamerge=shortest=1:repeatlast=0[phone_video]",
+        StringComparison.Ordinal),
+    "phone alpha mask stops when finite AirPlay video ends, even without audio");
 
 
 // The editor must follow the chosen output canvas dimensions, not the
@@ -5174,6 +5179,50 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
             frameColor.R > frameColor.B + 75,
             "recorded transparent phone shell retains the visible bezel");
 
+    }
+
+    // The old FFmpeg alphamerge default repeats the infinite-loop shell
+    // matte forever after video stdin EOF. A regular 0.8s AAC test can miss
+    // this. Force VIDEO-ONLY composition and require MP4 finalization without
+    // using the audio track as a hidden end-of-stream guard.
+    SaveTestBitmap(shellTestOverlay, shellPixels);
+    var videoOnlyMaskEncoder = new PngBitmapEncoder();
+    videoOnlyMaskEncoder.Frames.Add(BitmapFrame.Create(matteBitmap));
+    using (var restoredVideoOnlyMask = File.Create(shellTestMask))
+        videoOnlyMaskEncoder.Save(restoredVideoOnlyMask);
+    var videoOnlyShellRecording = Path.Combine(shellTestRoot,
+        "video-only-shell-eof.mp4");
+    string? videoOnlyShellError = null;
+    long videoOnlyShellPts = 0;
+    await using (var videoOnlyShellService = new MediaOutputService(
+        (_, w, h) =>
+        {
+            var pixels = new byte[checked((int)((ulong)w * h * 3 / 2))];
+            return new Nv12VideoFrame(w, h, w,
+                Interlocked.Add(ref videoOnlyShellPts, 1_000_000), pixels);
+        }, (_, _) => null,
+        (_, _, background, _) => new PhoneShellComposition(
+            shellTestOverlay, background, 24, 16, 144, 208, 320, 240,
+            ApertureMaskFile: shellTestMask)))
+    {
+        videoOnlyShellService.StatusChanged += (message, failed) =>
+        {
+            if (failed) videoOnlyShellError = message;
+        };
+        await videoOnlyShellService.StartAsync(1,
+            new MediaOutputRequest(MediaOutputKind.Recording,
+                videoOnlyShellRecording, 160, 160, 10, 500,
+                IncludePhoneShell: true, BackgroundImage: shellTestBackground),
+            installedFfmpegCapabilities with { HasAacEncoder = false });
+        await Task.Delay(850);
+        await videoOnlyShellService.StopAsync().WaitAsync(TimeSpan.FromSeconds(25));
+        Equal<string?>(null, videoOnlyShellError,
+            "infinite-loop aperture mask must not stall video-only MP4 finalization");
+        var videoOnlyBytes = File.ReadAllBytes(videoOnlyShellRecording);
+        Equal(true, videoOnlyBytes.AsSpan().IndexOf("ftyp"u8) >= 0 &&
+            videoOnlyBytes.AsSpan().IndexOf("moov"u8) >= 0 &&
+            videoOnlyBytes.AsSpan().IndexOf("vide"u8) >= 0,
+            "video-only phone shell finalizes a usable indexed MP4");
     }
 
     // Reproduce the user's real 1080x1920, 60fps, 6000kbps capture
