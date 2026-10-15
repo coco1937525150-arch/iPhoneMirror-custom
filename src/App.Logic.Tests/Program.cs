@@ -1742,10 +1742,10 @@ Equal(true,
         "var pendingTurns = _rotationAnimating",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains(
-        "var destinationLandscape = (destination & 1) != 0;",
+        "PhoneAutoRotationPolicy.DecideDelta(",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains(
-        "var delta = landscape ? (destination == 2 ? 1 : -1)",
+        "if (delta == 0)",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains(
         "if (!Rotate(delta))",
@@ -4517,6 +4517,28 @@ Equal(true, maximizedPortraitShell.Height >= 1880 &&
     maximizedPortraitShell.Top >= 5 &&
     maximizedPortraitShell.Bottom <= 1915,
     "default full-height shell minimizes avoidable white bands without clipping");
+
+// Exercise the actual production AirPlay rotation decision, rather than
+// searching only for method names. Negative/positive quarter turns must
+// respect existing manual direction and an in-progress animation target.
+foreach (var (committed, pending, landscape, expected) in new[]
+{
+    (0, 0, true, -1),    // playback: upright portrait -> left landscape
+    (3, 0, false, 1),    // playback ends: undo left turn
+    (1, 0, false, -1),   // manual right landscape -> upright portrait
+    (1, 0, true, 0),     // manual landscape already fits the AirPlay source
+    (0, -1, false, 1),   // source reverts during left-turn animation
+    (0, -1, true, 0),    // unchanged video while left-turn is underway
+    (2, 0, true, 1),    // upside-down portrait -> nearby landscape
+    (2, 0, false, 0),   // preserve a deliberate upside-down portrait state
+    (3, 0, true, 0),
+    (-1, 0, false, 1),   // wrap negative quarter-turns
+})
+{
+    Equal(expected,
+        PhoneAutoRotationPolicy.DecideDelta(committed, pending, landscape),
+        $"AirPlay auto rotation committed={committed} pending={pending} landscape={landscape}");
+}
 
 // Whole-phone DirectComposition animation uses CSS cubic-bezier(.76,0,.24,1)
 // over 1000ms, and retargeting must preserve the current eased visual angle.
