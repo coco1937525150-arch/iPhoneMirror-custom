@@ -4540,6 +4540,53 @@ foreach (var (committed, pending, landscape, expected) in new[]
         $"AirPlay auto rotation committed={committed} pending={pending} landscape={landscape}");
 }
 
+// The temporary DComp square, portrait original and final landscape HWND
+// MUST share the very same desktop center. Clamping its square to work-area
+// margins used to move that center by 100-200px on right-edge monitors.
+foreach (var (originalLeft, originalTop, originalRight, originalBottom,
+    targetWidth, targetHeight) in new[]
+{
+    (1340, 120, 1580, 620, 800, 800), // right-edge portrait -> square
+    (-2000, 80, -1480, 920, 950, 550), // secondary negative-X monitor
+    (60, -250, 540, 750, 700, 700), // near top edge: stage may overhang
+})
+{
+    var (stageX, stageY) = PhoneRotationStageGeometry.CenteredBounds(
+        originalLeft, originalTop, originalRight, originalBottom,
+        targetWidth, targetHeight);
+    Equal(true,
+        Math.Abs((stageX + targetWidth / 2.0) -
+            (originalLeft + originalRight) / 2.0) <= 0.5 &&
+        Math.Abs((stageY + targetHeight / 2.0) -
+            (originalTop + originalBottom) / 2.0) <= 0.5,
+        "rotation never moves the phone pivot when temporary/final HWND bounds change");
+}
+const int rotationTestWidth = 500, rotationTestHeight = 1000;
+const float rotationTestSide = 850;
+var rotationFinalFit = (float)Math.Min(1.0,
+    (rotationTestSide - 1) /
+    (Math.Sqrt(rotationTestWidth * rotationTestWidth +
+        rotationTestHeight * rotationTestHeight) + 4));
+double previousRotationScale = 1.01;
+for (var degrees = 0; degrees <= 90; degrees += 3)
+{
+    var visualScale = PhoneRotationStageGeometry.ScaleAtAngle(
+        rotationTestWidth, rotationTestHeight, rotationTestSide,
+        rotationFinalFit, degrees);
+    var radians = degrees * Math.PI / 180;
+    var projectedWidth = Math.Abs(rotationTestWidth * Math.Cos(radians)) +
+        Math.Abs(rotationTestHeight * Math.Sin(radians));
+    var projectedHeight = Math.Abs(rotationTestWidth * Math.Sin(radians)) +
+        Math.Abs(rotationTestHeight * Math.Cos(radians));
+    Equal(true, visualScale <= previousRotationScale + 0.00001 &&
+        projectedWidth * visualScale < rotationTestSide + 0.01 &&
+        projectedHeight * visualScale < rotationTestSide + 0.01,
+        "whole-phone scale remains monotone and its rotating bezel never exceeds the fixed stage");
+    previousRotationScale = visualScale;
+}
+Equal(true, Math.Abs(previousRotationScale - rotationFinalFit) < 0.001,
+    "final center-pivot scale exactly matches the renderer's landscape handoff");
+
 // Whole-phone DirectComposition animation uses CSS cubic-bezier(.76,0,.24,1)
 // over 1000ms, and retargeting must preserve the current eased visual angle.
 var rotationMotion = new PhoneRotationTimeline();
