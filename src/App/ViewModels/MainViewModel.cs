@@ -3416,13 +3416,47 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
     private int _activeStatusPollInFlight;
 
-    // A lightweight status-only path for detached AirPlay orientation. Do
-    // not call RefreshAsync() at 150ms cadence: every fifth inventory pass
-    // would unnecessarily enumerate devices and risk USB preview hitches.
-    internal Task RefreshWirelessOrientationStatusAsync() =>
-        !_disposed && IsWirelessSelected && CurrentSessionHandle != 0
-            ? RefreshActiveSessionStatusAsync()
-            : Task.CompletedTask;
+    private int _wirelessOrientationPollInFlight;
+
+    // Poll only native frame dimensions for an active detached AirPlay view.
+    // Full ApplyCaptureStatus also manages stalls, status text and recovery:
+    // running those operations every 150ms would introduce a new GUI hitch.
+    // USB and wireless INVENTORY remain on the existing two-second timer.
+    internal async Task RefreshWirelessOrientationStatusAsync()
+    {
+        if (_disposed || !IsWirelessSelected || IsMediaCastSelected ||
+            CurrentSessionHandle == 0 ||
+            Interlocked.CompareExchange(ref _wirelessOrientationPollInFlight, 1, 0) != 0)
+            return;
+        var sessionAtStart = CurrentSessionHandle;
+        try
+        {
+            var status = await Task.Run(GetSelectedCaptureStatus).ConfigureAwait(true);
+            if (_disposed || CurrentSessionHandle != sessionAtStart ||
+                status.Width == 0 || status.Height == 0 ||
+                !IsWirelessSelected) return;
+            if (_sourceVideoWidth == status.Width &&
+                _sourceVideoHeight == status.Height) return;
+
+            _sourceVideoWidth = status.Width;
+            _sourceVideoHeight = status.Height;
+            OnPropertyChanged(nameof(SourceVideoWidth));
+            OnPropertyChanged(nameof(SourceVideoHeight));
+            OnPropertyChanged(nameof(BluetoothDeviceOrientationDisplay));
+            if (SelectedDevice is { } selected)
+                DeviceVideoSizeChanged?.Invoke(
+                    selected.Udid, status.Width, status.Height);
+        }
+        catch (Exception error)
+        {
+            DiagnosticLogger.ExceptionOnce("wireless-orientation-status-refresh",
+                "capture", "wireless_orientation_status_refresh_failed", error);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _wirelessOrientationPollInFlight, 0);
+        }
+    }
 
     private async Task RefreshActiveSessionStatusAsync()
     {
