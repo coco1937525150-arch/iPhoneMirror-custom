@@ -1849,9 +1849,26 @@ internal sealed class MediaOutputService : IAsyncDisposable
 
         internal void Publish(ReadOnlyMemory<byte> frame, long sourceTimestamp100Ns = 0)
         {
-            // Native readback reuses its array. The writer may still be awaiting
-            // a pipe write when the next frame arrives, so publish an owned,
-            // immutable snapshot rather than a view of the producer's buffer.
+            // Video frames can be suppressed by iOS when the screen is still:
+            // native readback often returns the exact SAME timestamp at 60Hz.
+            // A redundant 1080p NV12 ToArray allocates ~3MB on the LOH.
+            // Avoid the extra allocation and GC pressure without inventing
+            // a new source frame. One reader publishes into this latch.
+            if (sourceTimestamp100Ns > 0)
+            {
+                lock (this)
+                {
+                    if (!_frame.IsEmpty && sourceTimestamp100Ns <= _lastSourceTimestamp)
+                    {
+                        ++_readSamples;
+                        _lastFailure = null;
+                        return;
+                    }
+                }
+            }
+            // A new frame gets an OWNED immutable copy: the native provider
+            // reuses its buffer, while FFmpeg may still be awaiting a pipe
+            // write that references the previous frame.
             var snapshot = frame.ToArray();
             lock (this)
             {

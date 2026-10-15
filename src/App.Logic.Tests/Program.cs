@@ -4771,6 +4771,12 @@ Equal(120L, sampledFrame.Timestamp100Ns,
     "recording latch snapshot carries source frame timestamp");
 Equal(3, sampledFrame.Frame.Length,
     "recording latch snapshot retains the owned frame");
+mediaFrameLatch.Publish(new byte[] { 99, 99, 99 }, 120);
+Equal((byte)4, mediaFrameLatch.GetSnapshot().Frame.Span[0],
+    "same-timestamp native readback reuses stable owned frame without reallocating");
+mediaFrameLatch.Publish(new byte[] { 7, 8, 9 }, 121);
+Equal((byte)7, mediaFrameLatch.GetSnapshot().Frame.Span[0],
+    "next distinct timestamp correctly publishes new recording pixels");
 
 void TestFlashZip()
 {
