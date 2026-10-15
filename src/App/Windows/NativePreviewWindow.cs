@@ -1671,19 +1671,31 @@ internal sealed class NativePreviewWindow : IDisposable
         var smallest = Math.Min(_sourceWidth, _sourceHeight);
         if (smallest == 0 || largest < smallest * 1.12) return;
         var landscape = _sourceWidth > _sourceHeight;
-        if (_autoAirPlayWasLandscape == landscape) return;
-        // Do not mark an orientation transition complete before the native
-        // visual transform actually begins. A minimized window, invalid DComp
-        // visual or reduced-motion rotation failure must be retried instead
-        // of permanently suppressing the landscape/portrait handoff.
-        var targetTurns = landscape ? 3 : 0;
-        if ((_rotation & 3) == targetTurns && !_rotationAnimating)
+        // The visual may already be turning when the iPhone reverses video
+        // orientation. Compare against the DESTINATION quarter-turn rather
+        // than the still-uncommitted base quarter-turn. A manual right-turn
+        // also counts as an already-horizontal shell; do not force a second
+        // left turn that would make the device portrait again.
+        var pendingTurns = _rotationAnimating
+            ? (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0)
+            : 0;
+        var destination = ((_rotation + pendingTurns) % 4 + 4) % 4;
+        var destinationLandscape = (destination & 1) != 0;
+        if (destinationLandscape == landscape)
         {
             _autoAirPlayWasLandscape = landscape;
             return;
         }
-        if (!Rotate(landscape ? -1 : 1))
+        // Default portrait -> landscape is always LEFT (-1).
+        // On return, undo the actual orientation: a manually rotated +90
+        // device returns with -1, and a -90 device with +1. This preserves
+        // the user's manual direction while avoiding accidental 180 turns.
+        var delta = landscape ? (destination == 2 ? 1 : -1)
+            : (destination == 1 ? -1 : 1);
+        if (!Rotate(delta))
         {
+            // A failed or temporarily unavailable DComp transition must not
+            // consume the orientation event. Retry it while this window lives.
             Log("independent_window_airplay_orientation_retry",
                 ("landscape", landscape), ("source_width", _sourceWidth),
                 ("source_height", _sourceHeight));
@@ -1694,7 +1706,8 @@ internal sealed class NativePreviewWindow : IDisposable
         }
         _autoAirPlayWasLandscape = landscape;
         Log("independent_window_airplay_orientation_auto",
-            ("landscape", landscape), ("source_width", _sourceWidth),
+            ("landscape", landscape), ("delta", delta),
+            ("source_width", _sourceWidth),
             ("source_height", _sourceHeight));
     }
 
