@@ -4664,9 +4664,9 @@ Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
 Equal(true, shellArgs.Any(x => x.Contains(
         "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)) &&
     shellArgs.Any(x => x.Contains("[4:v]format=gray[phone_mask]", StringComparison.Ordinal)) &&
-    shellArgs.Any(x => x.Contains("[phone_video_rgba][phone_mask]alphamerge[phone_video]",
+    shellArgs.Any(x => x.Contains("[phone_video_rgba][phone_mask]alphamerge=shortest=1:repeatlast=0[phone_video]",
         StringComparison.Ordinal)),
-    "recording applies true connected-aperture alpha before overlaying the original bezel");
+    "recording applies alpha aperture and terminates finite MP4 stream despite looping PNG matte");
 Equal(true, shellArgs.Any(arg => arg.Contains(
         "[2:v]scale=1280:1440:force_original_aspect_ratio=increase,crop=1280:1440,setsar=1[phone_bg]", StringComparison.Ordinal)) &&
     shellArgs.Any(arg => arg.Contains(
