@@ -1987,7 +1987,7 @@ std::int32_t IM_CALL im_session_copy_latest_video_frame_nv12(
         return static_cast<std::int32_t>(iPhoneMirror::Result::BufferTooSmall);
     return iPhoneMirror::media::detail::copy_nv12_frame_letterboxed_sdr(
         *frame, std::span<std::uint8_t>(buffer, *required), output_width,
-        output_height)
+        output_height, true /* upscale source to fill encoding canvas */)
         ? static_cast<std::int32_t>(iPhoneMirror::Result::Ok)
         : fail(iPhoneMirror::Result::ProtocolError,
             L"Invalid decoded NV12/P010 frame");
