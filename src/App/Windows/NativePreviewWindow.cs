@@ -415,7 +415,11 @@ internal sealed class NativePreviewWindow : IDisposable
                 ref darkTitleBar, sizeof(int));
         }
 
-        var initialWindowDimensions = _deviceFrameProfile.GetOuterDimensions(sourceWidth, sourceHeight);
+        // Movie-coded AirPlay frames must not change the physical bezel
+        // proportions on first show (including a landscape-only source).
+        var initialWindowDimensions = DeviceFrameProfileResolver
+            .GetStableWindowOuterDimensions(_deviceFrameProfile,
+                sourceWidth, sourceHeight, _rotation);
         _aspectController = new AspectRatioWindowController(_source,
             initialWindowDimensions.Width, initialWindowDimensions.Height,
             () => !_disposed && !_rotationAnimating && !_isFullScreen &&
@@ -1680,11 +1684,11 @@ internal sealed class NativePreviewWindow : IDisposable
         // Normalise to a portrait physical phone first, then apply exactly
         // one shell rotation. Blindly swapping the new landscape source a
         // second time caused portrait-aspect HWND reflows / giant bezels.
-        var portraitWidth = Math.Min(_sourceWidth, _sourceHeight);
-        var portraitHeight = Math.Max(_sourceWidth, _sourceHeight);
-        var width = (_rotation & 1) != 0 ? portraitHeight : portraitWidth;
-        var height = (_rotation & 1) != 0 ? portraitWidth : portraitHeight;
-        var outer = _deviceFrameProfile.GetOuterDimensions(width, height);
+        // Keep the physical 16 Pro Max shell at its fixed native aspect
+        // despite transient 16:9/9:16/4K AirPlay content dimensions. The
+        // D3D11 renderer fits movie pixels within this unchanged aperture.
+        var outer = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+            _deviceFrameProfile, _sourceWidth, _sourceHeight, _rotation);
         _aspectController.SetSourceDimensions(outer.Width, outer.Height, reflow);
     }
 

@@ -4566,6 +4566,37 @@ foreach (var (committed, pending, landscape, expected) in new[]
         $"AirPlay auto rotation committed={committed} pending={pending} landscape={landscape}");
 }
 
+// Regression: real-world AirPlay movie playback must NEVER stretch the
+// physical 16 Pro Max bezel when returning from zoomed landscape to portrait.
+// Video dimensions can jump 1320x2868 -> 1920x1080 -> 1080x1920 while
+// the 994x2048 PNG shell's enclosing HWND keeps one fixed aspect.
+var stableShell = DeviceFrameProfileResolver.ActiveIPhoneShell;
+var initialShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1320, 2868, 0);
+var wideVideoShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1920, 1080, 0);
+var returnedShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1080, 1920, 0);
+double initialBodyAspect = initialShell.Width / (double)initialShell.Height;
+Equal(true, Math.Abs(initialBodyAspect - 994.0 / 2048) < 0.002,
+    "bundled iPhone 16 Pro Max body matches the original PNG ratio");
+Equal(true, Math.Abs(wideVideoShell.Width / (double)wideVideoShell.Height -
+        initialBodyAspect) < 0.0005 &&
+    Math.Abs(returnedShell.Width / (double)returnedShell.Height -
+        initialBodyAspect) < 0.0005,
+    "AirPlay landscape movies, zoom and portrait return do not widen the shell");
+var landscapeShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1920, 1080, 1);
+Equal(true, Math.Abs(landscapeShell.Height / (double)landscapeShell.Width -
+        initialBodyAspect) < 0.0005,
+    "landscape phone remains a rigid 90-degree rotation of the portrait body");
+// Other devices have no fixed 16 Pro Max shell, so keep their real source
+// geometry rather than accidentally forcing unrelated panels to this aspect.
+var unframedMovie = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    DeviceFrameProfile.None, 1920, 1080, 0);
+Equal(true, unframedMovie.Width == 1080 && unframedMovie.Height == 1920,
+    "unframed media keeps its own content aspect rather than iPhone-shell ratio");
+
 // The temporary DComp square, portrait original and final landscape HWND
 // MUST share the very same desktop center. Clamping its square to work-area
 // margins used to move that center by 100-200px on right-edge monitors.

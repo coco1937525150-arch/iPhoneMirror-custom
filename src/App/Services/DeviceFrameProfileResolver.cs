@@ -41,6 +41,38 @@ internal static class DeviceFrameProfileResolver
     internal static DeviceFrameProfile ActiveIPhoneShell =>
         IPhoneImportedShell;
 
+    /// <summary>
+    /// The bundled 994x2048 iPhone 16 Pro Max bezel has ONE physical aspect.
+    /// AirPlay may replace its 1320x2868 portrait display frames with 16:9,
+    /// 9:16 or 4K encoded movie frames. Those are CONTENT dimensions, not
+    /// a new phone chassis. Keep the independent HWND/body's proportions
+    /// fixed while its screen aperture letterboxes the incoming video.
+    /// </summary>
+    internal static (uint Width, uint Height) GetStableWindowOuterDimensions(
+        DeviceFrameProfile profile, uint sourceWidth, uint sourceHeight,
+        int quarterTurns)
+    {
+        if (sourceWidth == 0 || sourceHeight == 0)
+            return (sourceWidth, sourceHeight);
+
+        var shortEdge = Math.Min(sourceWidth, sourceHeight);
+        var longEdge = Math.Max(sourceWidth, sourceHeight);
+        if (profile == ActiveIPhoneShell)
+        {
+            // Reference screen geometry for the ORIGINAL embedded shell PNG:
+            // 1320x2868 inside the 994x2048 device-body artwork.
+            // Scale uniformly with the available source short edge; do NOT
+            // infer the long edge from the active AirPlay movie aspect.
+            longEdge = (uint)Math.Min(uint.MaxValue,
+                Math.Round(shortEdge * (2868.0 / 1320.0)));
+        }
+
+        var landscapeBody = (quarterTurns & 1) != 0;
+        return profile.GetOuterDimensions(
+            landscapeBody ? longEdge : shortEdge,
+            landscapeBody ? shortEdge : longEdge);
+    }
+
     internal static readonly DeviceFrameProfile IPad = new(
         "ipad", true,
         0.026, 0.026, 0.026, 0.060,
