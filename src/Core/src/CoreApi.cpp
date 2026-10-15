@@ -626,6 +626,57 @@ std::int32_t IM_CALL im_log_message(const wchar_t* message) {
     return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
 }
 
+std::int32_t IM_CALL im_diagnostic_start(const wchar_t* session_id,
+    const wchar_t* timeline_path) {
+    if (!session_id || !timeline_path)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Diagnostic session and output path are required");
+    const auto length = wcsnlen_s(session_id, 41);
+    if (length == 0 || length > 40)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Invalid diagnostic session ID");
+    std::string ascii_id;
+    ascii_id.reserve(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        if (session_id[i] > 0x7f)
+            return fail(iPhoneMirror::Result::InvalidArgument,
+                L"Invalid diagnostic session ID");
+        ascii_id.push_back(static_cast<char>(session_id[i]));
+    }
+    if (!iPhoneMirror::logging::start_diagnostics(ascii_id, timeline_path))
+        return fail(iPhoneMirror::Result::InternalError,
+            L"Could not open diagnostic timeline");
+    iPhoneMirror::logging::write_event(iPhoneMirror::logging::Level::Info,
+        "diagnostic", "flicker_started", "session_id=" + ascii_id);
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
+std::int32_t IM_CALL im_diagnostic_stop() {
+    if (!iPhoneMirror::logging::stop_diagnostics())
+        return fail(iPhoneMirror::Result::InternalError,
+            L"Diagnostic timeline was not active or could not be written");
+    iPhoneMirror::logging::write_event(iPhoneMirror::logging::Level::Info,
+        "diagnostic", "flicker_stopped");
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
+void IM_CALL im_diagnostic_set_context(std::uint64_t rotation_id,
+    std::uint64_t orientation_event_id) {
+    iPhoneMirror::logging::set_diagnostic_context(rotation_id,
+        orientation_event_id);
+}
+
+void IM_CALL im_diagnostic_event(std::uint32_t event_code,
+    std::uint64_t frame_id, std::uint64_t visual_generation,
+    std::int64_t value0, std::int64_t value1, std::int64_t value2,
+    std::int64_t value3, std::int32_t hresult) {
+    if (event_code < 1 || event_code > static_cast<std::uint32_t>(
+            iPhoneMirror::logging::DiagnosticEvent::DiagnosticOverflow)) return;
+    iPhoneMirror::logging::diagnostic_event(
+        static_cast<iPhoneMirror::logging::DiagnosticEvent>(event_code),
+        frame_id, visual_generation, value0, value1, value2, value3, hresult);
+}
+
 std::int32_t IM_CALL im_refresh_devices(iPhoneMirror::DeviceInfo* devices,
     std::uint32_t* count) {
     return im_refresh_devices_ex(devices, count, 0);

@@ -779,6 +779,8 @@ struct D3D11PreviewRenderer::Impl {
         const auto swap_result = create_swap_chain(swap_description.Format);
         check(swap_result, composition_mode
             ? "CreateSwapChainForComposition" : "CreateSwapChainForHwnd");
+        logging::diagnostic_event(logging::DiagnosticEvent::SwapChainCreated,
+            0, 0, target_width, target_height, swap_description.Format, 0, swap_result);
 
         if (composition_mode) {
             check(DCompositionCreateDevice(dxgi_device.Get(), IID_PPV_ARGS(&composition_device)),
@@ -787,6 +789,8 @@ struct D3D11PreviewRenderer::Impl {
                 "IDCompositionDevice CreateTargetForHwnd");
             check(composition_device->CreateVisual(&composition_visual),
                 "IDCompositionDevice CreateVisual");
+            logging::diagnostic_event(logging::DiagnosticEvent::VisualCreated,
+                0, visual_rotation_request.generation, target_width, target_height);
             check(composition_visual->SetContent(swap_chain.Get()),
                 "IDCompositionVisual SetContent");
             check(composition_target->SetRoot(composition_visual.Get()),
@@ -888,6 +892,8 @@ struct D3D11PreviewRenderer::Impl {
         if (composition_device) (void)composition_device->Commit();
 
         release_shared_gpu_frame();
+        if (target) logging::diagnostic_event(logging::DiagnosticEvent::TargetReleased,
+            0, 0, target_width, target_height);
         target.Reset();
         render_view.Reset();
         render_target.Reset();
@@ -910,9 +916,14 @@ struct D3D11PreviewRenderer::Impl {
         copy_pixel_shader.Reset();
         pixel_shader.Reset();
         vertex_shader.Reset();
+        if (composition_visual)
+            logging::diagnostic_event(logging::DiagnosticEvent::VisualDestroyed,
+                0, visual_rotation_request.generation);
         composition_visual.Reset();
         composition_target.Reset();
         composition_device.Reset();
+        if (swap_chain)
+            logging::diagnostic_event(logging::DiagnosticEvent::SwapChainDestroyed);
         swap_chain.Reset();
         factory.Reset();
         context.Reset();
@@ -935,6 +946,9 @@ struct D3D11PreviewRenderer::Impl {
 
     void rebuild_device_resources() {
         const auto removed_reason = device ? device->GetDeviceRemovedReason() : E_POINTER;
+        const auto started = std::chrono::steady_clock::now();
+        logging::diagnostic_event(logging::DiagnosticEvent::DeviceRebuildBegin,
+            0, 0, removed_reason, 0, 0, 0, removed_reason);
         logging::write(std::format(
             "d3d_preview device_rebuild_begin removed_hr=0x{:08X}",
             static_cast<unsigned>(removed_reason)));
@@ -944,6 +958,9 @@ struct D3D11PreviewRenderer::Impl {
             refresh_requested.store(true, std::memory_order_release);
             color_signature.store(0, std::memory_order_relaxed);
             logging::write("d3d_preview device_rebuild_complete");
+            logging::diagnostic_event(logging::DiagnosticEvent::DeviceRebuildEnd,
+                0, 0, std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - started).count());
         } catch (...) {
             release_device_resources();
             logging::write("d3d_preview device_rebuild_failed");
@@ -967,6 +984,8 @@ struct D3D11PreviewRenderer::Impl {
             back_buffer.Get(), nullptr, &replacement);
         if (FAILED(result)) return result;
         target = std::move(replacement);
+        logging::diagnostic_event(logging::DiagnosticEvent::TargetCreated,
+            0, 0, target_width, target_height);
         return S_OK;
     }
 
@@ -983,6 +1002,8 @@ struct D3D11PreviewRenderer::Impl {
         // is reset. ResizeBuffers requires every back-buffer reference gone.
         context->ClearState();
         context->Flush();
+        if (target) logging::diagnostic_event(logging::DiagnosticEvent::TargetReleased,
+            0, 0, target_width, target_height);
         target.Reset();
         render_view.Reset();
         render_target.Reset();
@@ -1087,8 +1108,16 @@ struct D3D11PreviewRenderer::Impl {
 
             void release_targets() noexcept { owner.release_swap_chain_targets(); }
             output::Failure resize(output::SurfaceFormat format) noexcept {
+                logging::diagnostic_event(logging::DiagnosticEvent::ResizeBegin,
+                    0, 0, owner.target_width, owner.target_height,
+                    owner.target_width, owner.target_height);
+                const auto started = std::chrono::steady_clock::now();
                 resize_hr = owner.swap_chain->ResizeBuffers(0,
                     owner.target_width, owner.target_height, dxgi_format(format), 0);
+                logging::diagnostic_event(logging::DiagnosticEvent::ResizeEnd,
+                    0, 0, owner.target_width, owner.target_height, dxgi_format(format),
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - started).count(), resize_hr);
                 return classify_output_failure(resize_hr);
             }
             output::Failure set_color_space(output::Mode mode) noexcept {
@@ -1128,6 +1157,10 @@ struct D3D11PreviewRenderer::Impl {
             return true;
         }
         if (result.applied) {
+            logging::diagnostic_event(logging::DiagnosticEvent::OutputModeChanged,
+                0, applied_visual_generation, hdr_surface_active() ? 1 : 0,
+                static_cast<std::int64_t>(output_state.actual_format),
+                static_cast<std::int64_t>(output_state.applied_color_space));
             color_signature.store(0, std::memory_order_relaxed);
             logging::write(std::format("d3d_preview output_switched output={}",
                 hdr_surface_active() ? "hdr_scrgb" : "sdr_bgra8"));
@@ -1492,7 +1525,16 @@ struct D3D11PreviewRenderer::Impl {
             else draw_black_background(rounded_window_enabled());
         }
         apply_visual_rotation_if_needed(true);
-        check(swap_chain->Present(1, 0), "Present black frame");
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentBegin,
+            0, applied_visual_generation, 0, target_width, target_height, 0);
+        const auto started = std::chrono::steady_clock::now();
+        const auto result = swap_chain->Present(1, 0);
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd,
+            0, applied_visual_generation, 0,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - started).count(),
+            target_width, target_height, result);
+        check(result, "Present black frame");
     }
 
     void apply_visual_rotation_if_needed(bool after_final_resize = false) noexcept {
@@ -1537,8 +1579,22 @@ struct D3D11PreviewRenderer::Impl {
         } else {
             matrix._11 = matrix._22 = 1.0F;
         }
-        if (FAILED(composition_visual->SetTransform(matrix)) ||
-            FAILED(composition_device->Commit())) {
+        const auto set_result = composition_visual->SetTransform(matrix);
+        logging::diagnostic_event(logging::DiagnosticEvent::VisualSetTransform,
+            0, request.generation, std::lround(matrix._11 * 1000000),
+            std::lround(matrix._12 * 1000000),
+            std::lround(matrix._21 * 1000000),
+            std::lround(matrix._22 * 1000000), set_result);
+        if (FAILED(set_result)) {
+            logging::write("d3d_preview whole_visual_rotation_commit_failed");
+            return;
+        }
+        const auto commit_result = composition_device->Commit();
+        logging::diagnostic_event(logging::DiagnosticEvent::VisualCommit,
+            0, request.generation, std::lround(matrix._31 * 1000),
+            std::lround(matrix._32 * 1000), std::lround(request.degrees * 1000),
+            std::lround(request.scale * 1000000), commit_result);
+        if (FAILED(commit_result)) {
             logging::write("d3d_preview whole_visual_rotation_commit_failed");
             return;
         }
@@ -1564,10 +1620,19 @@ struct D3D11PreviewRenderer::Impl {
         if (now < next_resize_allowed) return false;
         next_resize_allowed = now + std::chrono::milliseconds(16);
         context->OMSetRenderTargets(0, nullptr, nullptr);
+        logging::diagnostic_event(logging::DiagnosticEvent::ResizeBegin,
+            0, 0, width, height, target_width, target_height);
+        const auto resize_started = std::chrono::steady_clock::now();
+        if (target) logging::diagnostic_event(logging::DiagnosticEvent::TargetReleased,
+            0, 0, target_width, target_height);
         target.Reset();
         output_state.target_valid = false;
         const auto resize_result = swap_chain->ResizeBuffers(
             0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+        logging::diagnostic_event(logging::DiagnosticEvent::ResizeEnd,
+            0, 0, width, height, DXGI_FORMAT_UNKNOWN,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - resize_started).count(), resize_result);
         if (FAILED(resize_result)) {
             const auto target_result = try_recreate_target();
             output_state.target_valid = SUCCEEDED(target_result);
@@ -2062,9 +2127,22 @@ struct D3D11PreviewRenderer::Impl {
                 visual_rotation_request.generation != applied_visual_generation;
         }
         apply_visual_rotation_if_needed(true);
+        logging::diagnostic_event(logging::DiagnosticEvent::FrameSubmitted,
+            frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+            rotation_quarter_turns.load(std::memory_order_relaxed),
+            frame.timestamp_100ns == last_timestamp ? 1 : 0);
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentBegin,
+            frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+            target_width, target_height, rotation_handoff_pending ? 1 : 0);
+        const auto present_started = std::chrono::steady_clock::now();
         const auto present_result = rotation_handoff_pending
             ? swap_chain->Present(1, 0)
             : swap_chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd,
+            frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - present_started).count(),
+            target_width, target_height, present_result);
         if (present_result != DXGI_ERROR_WAS_STILL_DRAWING)
             check(present_result, "Present");
         release_shared_gpu_frame();
@@ -2072,7 +2150,13 @@ struct D3D11PreviewRenderer::Impl {
         // Count it as a drop, never inflate the displayed/encoded FPS.
         if (present_result == DXGI_ERROR_WAS_STILL_DRAWING) {
             ++skipped_present_frames;
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameDropped,
+                frame.sequence_id, applied_visual_generation, 1,
+                frame.timestamp_100ns, 0, 0, present_result);
         } else {
+            logging::diagnostic_event(logging::DiagnosticEvent::FramePresented,
+                frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+                target_width, target_height);
             const auto accepted_at = std::chrono::steady_clock::now();
             if (last_accepted_present_at.time_since_epoch().count() != 0)
                 latest_present_interval_ms = std::chrono::duration<double, std::milli>(
@@ -2269,6 +2353,13 @@ struct D3D11PreviewRenderer::Impl {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     continue;
                 }
+                if (last_frame && frame != last_frame &&
+                    frame->received_at > last_frame->received_at)
+                    logging::diagnostic_event(logging::DiagnosticEvent::FrameGap,
+                        frame->sequence_id, applied_visual_generation,
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            frame->received_at - last_frame->received_at).count(),
+                        frame->timestamp_100ns);
                 const auto render_started = std::chrono::steady_clock::now();
                 render(*frame);
                 // If a transient GPU upload/Present could not perform the
@@ -2299,6 +2390,9 @@ struct D3D11PreviewRenderer::Impl {
                 const auto removed_reason = device
                     ? device->GetDeviceRemovedReason() : E_POINTER;
                 if (FAILED(removed_reason)) {
+                    logging::diagnostic_event(logging::DiagnosticEvent::DeviceLost,
+                        0, applied_visual_generation, removed_reason,
+                        0, 0, 0, removed_reason);
                     output_state.last_failure = output::Failure::DeviceLost;
                     output_state.target_valid = false;
                     output_state.applied_color_space =
@@ -2401,6 +2495,10 @@ void D3D11PreviewRenderer::set_visual_rotation(float degrees,
         request.scale = visual_scale;
         request.active = active;
         ++request.generation;
+        logging::diagnostic_event(logging::DiagnosticEvent::VisualRequested,
+            0, request.generation, std::lround(degrees * 1000),
+            std::lround(visual_scale * 1000000),
+            std::lround(canvas_width), std::lround(canvas_height));
     }
     if (!active)
         impl_->refresh_requested.store(true, std::memory_order_release);

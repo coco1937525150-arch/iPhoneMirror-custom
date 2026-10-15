@@ -143,6 +143,7 @@ private:
     std::uint64_t fps_sample_frames_{};
     std::chrono::steady_clock::time_point last_video_at_{};
     std::uint64_t rejected_video_messages_{};
+    std::atomic_uint64_t received_video_sequence_{};
     std::uint64_t rejected_audio_messages_{};
 
     void clear_media() noexcept;

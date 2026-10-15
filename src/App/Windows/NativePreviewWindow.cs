@@ -35,6 +35,7 @@ internal sealed class NativePreviewWindow : IDisposable
     private const int WmRightButtonUp = 0x0205;
     private const int WmLeftButtonDoubleClick = 0x0203;
     private const int WmClose = 0x0010;
+    private const int WmSize = 0x0005;
     private const int WmEraseBackground = 0x0014;
     private const int WmMouseMove = 0x0200;
     private const int WmLeftButtonDown = 0x0201;
@@ -127,6 +128,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly MenuItem _muteOthersItem;
     private readonly MenuItem _rotateLeftItem;
     private readonly MenuItem _rotateRightItem;
+    private readonly MenuItem _startFlashDiagnosticItem;
+    private readonly MenuItem _stopFlashDiagnosticItem;
     private readonly MenuItem _closeItem;
     private readonly MenuItem? _imageSettingsItem;
     private readonly MenuItem? _projectionSettingsItem;
@@ -173,6 +176,10 @@ internal sealed class NativePreviewWindow : IDisposable
     private bool? _queuedAirPlayLandscape;
     private TimeSpan _queuedAirPlayAt;
     private bool _autoAirPlayWasLandscape;
+    private ulong _diagnosticOrientationId;
+    private ulong _diagnosticRotationId;
+    private TimeSpan _diagnosticRotationStartedAt;
+    private bool _ownsFlashDiagnostic;
     private WindowRect _rotationOriginalBounds;
     private int _rotationOriginalClientWidth;
     private int _rotationOriginalClientHeight;
@@ -302,6 +309,10 @@ internal sealed class NativePreviewWindow : IDisposable
         _rotateLeftItem.Click += (_, _) => Rotate(-1);
         _rotateRightItem = new MenuItem { Style = itemStyle };
         _rotateRightItem.Click += (_, _) => Rotate(1);
+        _startFlashDiagnosticItem = new MenuItem { Style = itemStyle };
+        _startFlashDiagnosticItem.Click += (_, _) => StartFlashDiagnostic();
+        _stopFlashDiagnosticItem = new MenuItem { Style = itemStyle };
+        _stopFlashDiagnosticItem.Click += async (_, _) => await StopFlashDiagnosticAsync();
         _closeItem = new MenuItem { Style = itemStyle };
         _closeItem.Click += (_, _) => QueueClose();
         if (managedContent is null)
@@ -326,6 +337,8 @@ internal sealed class NativePreviewWindow : IDisposable
         _contextMenu.Items.Add(_fullScreenItem);
         _contextMenu.Items.Add(_windowMenuItem);
         _contextMenu.Items.Add(_displayMenuItem);
+        _contextMenu.Items.Add(_startFlashDiagnosticItem);
+        _contextMenu.Items.Add(_stopFlashDiagnosticItem);
         if (_reverseControlMenuItem is not null) _contextMenu.Items.Add(_reverseControlMenuItem);
         if (_setAudioEnabled is not null) _contextMenu.Items.Add(_muteMenuItem);
         if (_projectionSettingsItem is not null) _contextMenu.Items.Add(_projectionSettingsItem);
@@ -740,6 +753,8 @@ internal sealed class NativePreviewWindow : IDisposable
             if (_queuedAirPlayLandscape != landscape &&
                 (landscape != committedLandscape || _rotationAnimating))
             {
+                _diagnosticOrientationId = FlashDiagnostics.NextOrientation(
+                    width, height, landscape);
                 _queuedAirPlayLandscape = landscape;
                 _queuedAirPlayAt = _rotationClock.Elapsed;
                 _airPlayOrientationTimer.Stop();
@@ -1002,6 +1017,10 @@ internal sealed class NativePreviewWindow : IDisposable
                 // flash while its swap chain is being resized/recreated.
                 handled = true;
                 return 1;
+            case WmSize:
+                FlashDiagnostics.Trace(10, lParam.ToInt64() & 0xffff,
+                    (lParam.ToInt64() >> 16) & 0xffff);
+                break;
             case WmClose:
                 handled = true;
                 QueueClose();
@@ -1181,6 +1200,10 @@ internal sealed class NativePreviewWindow : IDisposable
                 "IndependentWindowProjectionSettings");
         _rotateLeftItem.Header = LocalizationService.Get("IndependentWindowRotateLeft");
         _rotateRightItem.Header = LocalizationService.Get("IndependentWindowRotateRight");
+        _startFlashDiagnosticItem.Header = LocalizationService.Get("FlashDiagnosticStart");
+        _startFlashDiagnosticItem.IsEnabled = !FlashDiagnostics.Active;
+        _stopFlashDiagnosticItem.Header = LocalizationService.Get("FlashDiagnosticStop");
+        _stopFlashDiagnosticItem.IsEnabled = FlashDiagnostics.Active;
         _muteMenuItem.Header = LocalizationService.Get("IndependentWindowAudioMenu");
         _muteThisItem.Header = LocalizationService.Get(
             _isAudioEnabled?.Invoke() == false
@@ -1441,7 +1464,17 @@ internal sealed class NativePreviewWindow : IDisposable
             return true;
         }
 
+        var retargeting = _rotationAnimating;
         if (!_rotationAnimating && !BeginRotationAnimation()) return false;
+        var fromAngle = _rotationTimeline.Sample(_rotationClock.Elapsed);
+        _diagnosticRotationId = FlashDiagnostics.NextRotation(fromAngle,
+            _rotationTimeline.TargetDegrees + delta * 90.0,
+            _rotationOriginalClientWidth, _rotationOriginalClientHeight,
+            _diagnosticOrientationId);
+        _diagnosticRotationStartedAt = _rotationClock.Elapsed;
+        if (retargeting)
+            FlashDiagnostics.Trace(7, FlashDiagnostics.MilliDegrees(fromAngle),
+                FlashDiagnostics.MilliDegrees(_rotationTimeline.TargetDegrees + delta * 90.0));
         // Retarget from the CURRENT eased angle. A reverse click during the
         // animation does not snap back to zero or restart its phone texture.
         _rotationTimeline.Retarget(delta * 90.0, _rotationClock.Elapsed);
@@ -1450,6 +1483,44 @@ internal sealed class NativePreviewWindow : IDisposable
         SubscribeRotationRendering();
         _rotationTimer.Start();
         return true;
+    }
+
+    private void StartFlashDiagnostic()
+    {
+        try
+        {
+            FlashDiagnostics.Start();
+            _ownsFlashDiagnostic = true;
+            UpdateContextMenuLabels();
+            MessageBox.Show("闪屏诊断已开始。请复现问题，然后选择“结束诊断并导出 ZIP”。",
+                "iPhoneMirror", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"无法开始闪屏诊断：{error.Message}", "iPhoneMirror",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async Task StopFlashDiagnosticAsync()
+    {
+        try
+        {
+            _stopFlashDiagnosticItem.IsEnabled = false;
+            var path = await FlashDiagnostics.StopAndExportAsync();
+            _ownsFlashDiagnostic = false;
+            if (MessageBox.Show($"诊断 ZIP 已保存：\n{path}\n\n打开所在文件夹？",
+                    "iPhoneMirror", MessageBoxButton.YesNo,
+                    MessageBoxImage.Information) == MessageBoxResult.Yes)
+                Process.Start(new ProcessStartInfo("explorer.exe",
+                    $"/select,\"{path}\"") { UseShellExecute = true });
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"诊断导出失败：{error.Message}", "iPhoneMirror",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { UpdateContextMenuLabels(); }
     }
 
     private bool BeginRotationAnimation()
@@ -1576,6 +1647,10 @@ internal sealed class NativePreviewWindow : IDisposable
         var frameScale = PhoneRotationStageGeometry.ScaleAtAngle(
             _rotationOriginalClientWidth, _rotationOriginalClientHeight,
             _rotationCanvasWidth, _rotationScale, angle);
+        FlashDiagnostics.Trace(6, FlashDiagnostics.MilliDegrees(angle),
+            FlashDiagnostics.MilliDegrees(_rotationTimeline.TargetDegrees),
+            (long)Math.Round(frameScale * 1000000),
+            (long)_rotationClock.Elapsed.TotalMilliseconds);
         if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
                 angle, _rotationCanvasWidth, _rotationCanvasHeight,
                 frameScale, true))
@@ -1612,6 +1687,9 @@ internal sealed class NativePreviewWindow : IDisposable
             ApplyRotatedDimensions(reflow: false);
             Log("independent_window_rotation_reversed_to_original_size",
                 ("width", oldW), ("height", oldH));
+            FlashDiagnostics.Trace(8, _rotation, _rotationOriginalClientWidth,
+                _rotationOriginalClientHeight,
+                (long)(_rotationClock.Elapsed - _diagnosticRotationStartedAt).TotalMilliseconds);
             return;
         }
         var nextRotation = ((_rotation + turns) % 4 + 4) % 4;
@@ -1669,6 +1747,8 @@ internal sealed class NativePreviewWindow : IDisposable
         Log("independent_window_rotation_animation_completed",
             ("mode", WindowMode), ("quarter_turns", nextRotation),
             ("duration_ms", 1000), ("client_size", $"{finalClientW}x{finalClientH}"));
+        FlashDiagnostics.Trace(8, nextRotation, finalClientW, finalClientH,
+            (long)(_rotationClock.Elapsed - _diagnosticRotationStartedAt).TotalMilliseconds);
     }
 
     private void AbortRotationAnimation()
@@ -1677,6 +1757,8 @@ internal sealed class NativePreviewWindow : IDisposable
         _rotationTimer.Stop();
         UnsubscribeRotationRendering();
         _rotationAnimating = false;
+        FlashDiagnostics.Trace(9, _rotationOriginalClientWidth,
+            _rotationOriginalClientHeight);
         _aspectController.CancelQueuedResize();
         // Restore the unrotated HWND first; only then release DComp resize
         // protection. An early transform reset while still in the square
@@ -1738,6 +1820,8 @@ internal sealed class NativePreviewWindow : IDisposable
         var smallest = Math.Min(_sourceWidth, _sourceHeight);
         if (smallest == 0 || largest < smallest * 1.12) return;
         var landscape = _sourceWidth > _sourceHeight;
+        FlashDiagnostics.Trace(4, _sourceWidth, _sourceHeight,
+            landscape ? 1 : 0, (long)Math.Round(queuedAgeMs));
         // The visual may already be turning when the iPhone reverses video
         // orientation. Compare against the DESTINATION quarter-turn rather
         // than the still-uncommitted base quarter-turn. A manual right-turn
@@ -1786,6 +1870,8 @@ internal sealed class NativePreviewWindow : IDisposable
             ("mode", WindowMode), ("attached", _attached),
             ("full_screen", _isFullScreen));
         if (_rotationAnimating) AbortRotationAnimation();
+        if (_ownsFlashDiagnostic && FlashDiagnostics.Active)
+            _ = FlashDiagnostics.StopAndExportAsync();
         _disposed = true;
         _rotationTimer.Stop();
         UnsubscribeRotationRendering();

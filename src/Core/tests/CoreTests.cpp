@@ -17,6 +17,7 @@
 #include "iPhoneMirror/CoreApi.h"
 
 #include <Windows.h>
+#include <dxgi.h>
 
 #include <algorithm>
 #include <array>
@@ -2186,6 +2187,46 @@ void test_logging_shutdown_boundary() {
     std::filesystem::remove_all(failed_directory, error);
 }
 
+void test_flash_diagnostic_timeline() {
+    namespace logging = iPhoneMirror::logging;
+    const auto path = std::filesystem::temp_directory_path() /
+        (L"iPhoneMirror-flash-test-" + std::to_wstring(GetCurrentProcessId()) + L".jsonl");
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    check(!logging::diagnostics_active(), "high-frequency tracing defaults off");
+    check(logging::start_diagnostics("1234abcd", path),
+        "diagnostic timeline starts in a writable path");
+    check(!logging::start_diagnostics("another", path),
+        "a second start cannot replace an active diagnostic session");
+    logging::set_diagnostic_context(12, 7);
+    logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd,
+        42, 9, 123456, 300, 1920, 1080, DXGI_ERROR_WAS_STILL_DRAWING);
+    logging::diagnostic_event(logging::DiagnosticEvent::VisualCommit,
+        0, 9, 25, 50, 90000, 1000000, E_FAIL);
+    check(logging::stop_diagnostics(), "diagnostic writer flushes on stop");
+    check(!logging::diagnostics_active(), "high-frequency tracing turns off after stop");
+    const auto stopped_size = std::filesystem::file_size(path, error);
+    logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd, 99);
+    check(stopped_size == std::filesystem::file_size(path, error),
+        "events after stop never append to the timeline");
+    std::ifstream stream(path, std::ios::binary);
+    const std::string contents{
+        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    check(contents.find("\"event\":\"diagnostic_start\"") != std::string::npos &&
+        contents.find("\"qpc_frequency\":") != std::string::npos &&
+        contents.find("\"orientation_event_id\":7") != std::string::npos &&
+        contents.find("\"rotation_id\":12") != std::string::npos &&
+        contents.find("\"visual_generation\":9") != std::string::npos &&
+        contents.find("\"frame_id\":42") != std::string::npos &&
+        contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
+        "native timeline correlates frame, visual, rotation, QPC and session events");
+    stream.close();
+    check(logging::start_diagnostics("1234abce", path),
+        "diagnostic timeline can be started again after export");
+    check(logging::stop_diagnostics(), "restarted timeline stops cleanly");
+    std::filesystem::remove(path, error);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2238,6 +2279,7 @@ int main(int argc, char** argv) {
         test_wireless_valid_video_recovers_false_disconnect();
         test_media_command_queue();
         test_logging_shutdown_boundary();
+        test_flash_diagnostic_timeline();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
         return 2;

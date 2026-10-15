@@ -263,6 +263,7 @@ public partial class App : Application
         }
         _singleInstanceCoordinator?.Dispose();
         _singleInstanceCoordinator = null;
+        FlashDiagnostics.WaitForPendingExport();
         DiagnosticLogger.Shutdown(e.ApplicationExitCode);
         base.OnExit(e);
     }

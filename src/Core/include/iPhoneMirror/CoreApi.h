@@ -257,6 +257,17 @@ IM_API std::uint32_t IM_CALL im_api_version();
 // Persists a single sanitized application/UI diagnostic in the shared log.
 // Messages are limited to 4096 UTF-16 code units and may not be empty.
 IM_API std::int32_t IM_CALL im_log_message(const wchar_t* message);
+// Optional bounded QPC timeline for the in-app flash diagnostic workflow.
+IM_API std::int32_t IM_CALL im_diagnostic_start(
+    const wchar_t* session_id, const wchar_t* timeline_path);
+IM_API std::int32_t IM_CALL im_diagnostic_stop();
+IM_API void IM_CALL im_diagnostic_set_context(
+    std::uint64_t rotation_id, std::uint64_t orientation_event_id);
+IM_API void IM_CALL im_diagnostic_event(
+    std::uint32_t event_code, std::uint64_t frame_id,
+    std::uint64_t visual_generation, std::int64_t value0,
+    std::int64_t value1, std::int64_t value2, std::int64_t value3,
+    std::int32_t hresult);
 
 // On input, *count is the number of entries available in devices. On output it
 // is the number of devices discovered. Passing devices == nullptr is a count query.

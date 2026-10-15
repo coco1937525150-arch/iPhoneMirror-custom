@@ -102,6 +102,7 @@ struct SdrRgb {
 } // namespace detail
 
 struct DecodedFrame {
+    std::uint64_t sequence_id{};
     std::uint32_t width{};
     std::uint32_t height{};
     // Byte stride for both NV12 and P010. P010 therefore normally reports at

@@ -191,6 +191,8 @@
     <system:String x:Key="IndependentWindowClose">Close</system:String>
     <system:String x:Key="IndependentWindowRotateLeft">Rotate left</system:String>
     <system:String x:Key="IndependentWindowRotateRight">Rotate right</system:String>
+    <system:String x:Key="FlashDiagnosticStart">Start flash diagnostics</system:String>
+    <system:String x:Key="FlashDiagnosticStop">Stop and export diagnostic ZIP</system:String>
     <system:String x:Key="IndependentWindowMute">Mute</system:String>
     <system:String x:Key="IndependentWindowMuteThis">Mute this window</system:String>
     <system:String x:Key="IndependentWindowUnmuteThis">Unmute this window</system:String>

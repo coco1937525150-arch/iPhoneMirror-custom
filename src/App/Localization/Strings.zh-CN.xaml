@@ -191,6 +191,8 @@
     <system:String x:Key="IndependentWindowClose">关闭</system:String>
     <system:String x:Key="IndependentWindowRotateLeft">向左旋转</system:String>
     <system:String x:Key="IndependentWindowRotateRight">向右旋转</system:String>
+    <system:String x:Key="FlashDiagnosticStart">开始闪屏诊断</system:String>
+    <system:String x:Key="FlashDiagnosticStop">结束诊断并导出 ZIP</system:String>
     <system:String x:Key="IndependentWindowMute">静音</system:String>
     <system:String x:Key="IndependentWindowMuteThis">静音该窗口</system:String>
     <system:String x:Key="IndependentWindowUnmuteThis">取消静音该窗口</system:String>

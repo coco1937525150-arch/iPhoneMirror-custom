@@ -303,6 +303,21 @@ internal sealed class NativeCore : IDisposable
     private static extern int im_log_message(
         [MarshalAs(UnmanagedType.LPWStr)] string message);
 
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl,
+        CharSet = CharSet.Unicode)]
+    private static extern int im_diagnostic_start(
+        [MarshalAs(UnmanagedType.LPWStr)] string sessionId,
+        [MarshalAs(UnmanagedType.LPWStr)] string timelinePath);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int im_diagnostic_stop();
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void im_diagnostic_set_context(
+        ulong rotationId, ulong orientationEventId);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void im_diagnostic_event(uint eventCode,
+        ulong frameId, ulong visualGeneration, long value0,
+        long value1, long value2, long value3, int hresult);
+
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int im_refresh_devices([Out] NativeDeviceInfo[]? devices, ref uint count);
 
@@ -575,6 +590,30 @@ internal sealed class NativeCore : IDisposable
         handle != 0 && hwnd != 0 &&
         im_session_set_window_visual_rotation(handle, hwnd,
             degrees, canvasWidth, canvasHeight, scale, active ? 1 : 0) == 0;
+
+    internal static void StartFlickerDiagnostics(string id, string timelinePath)
+    {
+        if (im_diagnostic_start(id, timelinePath) != 0)
+            throw new InvalidOperationException(GetLastError(
+                "无法启动底层闪屏诊断时间线。"));
+    }
+
+    internal static void StopFlickerDiagnostics()
+    {
+        if (im_diagnostic_stop() != 0)
+            throw new System.IO.IOException(GetLastError("底层诊断时间线写入失败。"));
+    }
+
+    internal static void SetFlickerDiagnosticContext(ulong rotationId,
+        ulong orientationEventId) =>
+        im_diagnostic_set_context(rotationId, orientationEventId);
+
+    internal static void TraceFlickerEvent(uint eventCode,
+        ulong frameId = 0, ulong visualGeneration = 0,
+        long value0 = 0, long value1 = 0, long value2 = 0,
+        long value3 = 0, int hresult = 0) =>
+        im_diagnostic_event(eventCode, frameId, visualGeneration,
+            value0, value1, value2, value3, hresult);
 
     internal static bool ForcePreviewRefresh()
     {

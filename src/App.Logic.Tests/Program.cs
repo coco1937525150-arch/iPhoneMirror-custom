@@ -38,6 +38,13 @@ static void Equal<T>(T expected, T actual, string name)
         throw new InvalidOperationException($"{name}: expected {expected}, got {actual}");
 }
 
+if (args is ["--flash-only"])
+{
+    TestFlashZip();
+    Console.WriteLine("Flash diagnostic ZIP tests passed");
+    return;
+}
+
 static void Sequence(IEnumerable<string> expected, IEnumerable<string> actual, string name)
 {
     if (!expected.SequenceEqual(actual, StringComparer.OrdinalIgnoreCase))
@@ -4729,6 +4736,78 @@ rotationMotion = new PhoneRotationTimeline();
 rotationMotion.Retarget(-90, TimeSpan.Zero);
 Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(1000)) + 90) < .001,
     "left rotation ends at -90 degrees without bounce or overshoot");
+
+rotationMotion = new PhoneRotationTimeline();
+for (var quarter = 0; quarter < 4; ++quarter)
+{
+    var now = TimeSpan.FromMilliseconds(quarter * 1000);
+    rotationMotion.Retarget(90, now);
+    var previous = rotationMotion.Sample(now);
+    for (var tick = 1; tick <= 20; ++tick)
+    {
+        var current = rotationMotion.Sample(now + TimeSpan.FromMilliseconds(tick * 50));
+        Equal(true, current >= previous && current <= (quarter + 1) * 90,
+            "successive 90 degree rotations never rebound or overshoot");
+        previous = current;
+    }
+}
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromSeconds(4)) - 360) < .001,
+    "four quarter turns finish at the original orientation");
+
+TestFlashZip();
+
+void TestFlashZip()
+{
+Equal(true, FlashDiagnostics.Redact(
+    "C:\\Users\\Alice\\secret.txt 00008110-0012345678901234 person@example.com " +
+    "https://private.example/media password=secret cookie=abc") is { } redacted &&
+    !redacted.Contains("Alice", StringComparison.Ordinal) &&
+    !redacted.Contains("00008110", StringComparison.Ordinal) &&
+    !redacted.Contains("person@example.com", StringComparison.Ordinal) &&
+    !redacted.Contains("private.example", StringComparison.Ordinal) &&
+    !redacted.Contains("secret", StringComparison.Ordinal) &&
+    !redacted.Contains("cookie=abc", StringComparison.Ordinal),
+    "diagnostic log export redacts paths, device IDs, account data and media URLs");
+var flashFixtureRoot = Path.Combine(Path.GetTempPath(),
+    "iphone-mirror-flash-" + Guid.NewGuid().ToString("N"));
+var flashFixtureFolder = Path.Combine(flashFixtureRoot, "iPhoneMirror-Flash-Diagnostics");
+Directory.CreateDirectory(flashFixtureFolder);
+try
+{
+    foreach (var name in new[] { "application.log", "capture.log", "BUILD_PROVENANCE.txt",
+        "diagnostic-summary.txt" })
+        File.WriteAllText(Path.Combine(flashFixtureFolder, name), "fixture");
+    foreach (var name in new[] { "rotation-events.jsonl", "timeline.jsonl" })
+        File.WriteAllText(Path.Combine(flashFixtureFolder, name), "{\"event\":\"rotation_started\"}\n");
+    foreach (var name in new[] { "render-statistics.json", "environment.json" })
+        File.WriteAllText(Path.Combine(flashFixtureFolder, name), "{\"valid\":true}");
+    var flashZip = FlashDiagnostics.CreateValidatedZip(flashFixtureFolder,
+        flashFixtureRoot, "diagnostics.zip", "fixture");
+    using (var archive = System.IO.Compression.ZipFile.OpenRead(flashZip))
+        Equal(8, archive.Entries.Count, "flash ZIP contains eight required files");
+    File.WriteAllText(Path.Combine(flashFixtureFolder, "timeline.jsonl"), "not JSON\n");
+    try
+    {
+        FlashDiagnostics.CreateValidatedZip(flashFixtureFolder, flashFixtureRoot,
+            "bad-timeline.zip", "fixture");
+        throw new Exception("invalid JSONL unexpectedly passed ZIP validation");
+    }
+    catch (JsonException) { }
+    Equal(false, File.Exists(Path.Combine(flashFixtureRoot, "bad-timeline.zip")),
+        "invalid JSONL never publishes a diagnostic ZIP");
+    File.Delete(Path.Combine(flashFixtureFolder, "capture.log"));
+    try
+    {
+        FlashDiagnostics.CreateValidatedZip(flashFixtureFolder, flashFixtureRoot,
+            "missing-log.zip", "fixture");
+        throw new Exception("missing capture log unexpectedly passed ZIP validation");
+    }
+    catch (InvalidDataException) { }
+    Equal(false, File.Exists(Path.Combine(flashFixtureRoot, "missing-log.zip")),
+        "missing required log never publishes a diagnostic ZIP");
+}
+finally { Directory.Delete(flashFixtureRoot, recursive: true); }
+}
 
 // Imported phone image may have a solid-black display. Verify that the
 // imported asset gains a truly transparent aperture without modifying the

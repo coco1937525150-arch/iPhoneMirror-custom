@@ -293,7 +293,11 @@ void WirelessClientStream::set_identity(std::wstring name, bool connected) {
                                           : L"AirPlay disconnected";
         }
     }
-    if (!connected) clear_media();
+    if (!connected) {
+        logging::diagnostic_event(logging::DiagnosticEvent::SourceInterrupted,
+            0, 0, 1);
+        clear_media();
+    }
 }
 
 void WirelessClientStream::set_metadata(
@@ -467,7 +471,16 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     std::span<const std::uint8_t> payload) {
     const auto received_at = std::chrono::steady_clock::now();
     auto frame = std::make_shared<media::DecodedFrame>();
+    const auto local_sequence = received_video_sequence_.fetch_add(
+        1, std::memory_order_relaxed) + 1;
+    frame->sequence_id = header.sequence != 0 ? header.sequence : local_sequence;
+    logging::diagnostic_event(logging::DiagnosticEvent::SourceFrameReceived,
+        frame->sequence_id, 0, header.width, header.height,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            received_at - started_at_).count() / 100);
     if (!detail::convert_i420_to_nv12(header, payload, frame->nv12, frame->stride)) {
+        logging::diagnostic_event(logging::DiagnosticEvent::SourceFrameDropped,
+            frame->sequence_id, 0, 1, header.width, header.height);
         if (++rejected_video_messages_ == 1)
             logging::write(std::format("wireless_video rejected device_fp={} size={}x{}",
                 anonymous_label(id_), header.width, header.height));
@@ -485,6 +498,10 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     frame->timestamp_100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         received_at - started_at_).count() / 100;
     frame->received_at = received_at;
+    logging::diagnostic_event(logging::DiagnosticEvent::SourceFrameDecoded,
+        frame->sequence_id, 0, header.width, header.height,
+        frame->timestamp_100ns, std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - received_at).count());
 
     std::scoped_lock lock(mutex_);
     // A valid decoded video packet from the SAME authenticated receiver IPC
@@ -496,6 +513,9 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     // already succeeded above before acquiring this lock.
     const bool recovered_after_disconnect = !connected_;
     if (recovered_after_disconnect) connected_ = true;
+    if (recovered_after_disconnect)
+        logging::diagnostic_event(logging::DiagnosticEvent::SourceResumed,
+            frame->sequence_id, 0, header.width, header.height);
     const bool format_changed = snapshot_.width != 0 && snapshot_.height != 0 &&
         (snapshot_.width != header.width || snapshot_.height != header.height);
     if (format_changed) {
