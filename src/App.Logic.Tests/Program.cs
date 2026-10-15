@@ -4755,6 +4755,13 @@ Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromSeconds(4)) - 360) < .00
     "four quarter turns finish at the original orientation");
 
 TestFlashZip();
+var mediaFrameLatch = new MediaOutputService.FrameLatch();
+mediaFrameLatch.Publish(new byte[] { 4, 5, 6 }, 120);
+var sampledFrame = mediaFrameLatch.GetSnapshot();
+Equal(120L, sampledFrame.Timestamp100Ns,
+    "recording latch snapshot carries source frame timestamp");
+Equal(3, sampledFrame.Frame.Length,
+    "recording latch snapshot retains the owned frame");
 
 void TestFlashZip()
 {

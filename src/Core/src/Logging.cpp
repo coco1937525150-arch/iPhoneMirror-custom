@@ -62,7 +62,7 @@ struct TraceDescriptor {
     std::array<const char*, 4> keys;
 };
 
-constexpr std::array<TraceDescriptor, 39> TraceEvents{{
+constexpr std::array<TraceDescriptor, 43> TraceEvents{{
     {"unknown", {"value0", "value1", "value2", "value3"}},
     {"diagnostic_start", {"qpc_frequency", "utc_filetime_100ns", "", ""}},
     {"diagnostic_stop", {"ring_events_lost", "", "", ""}},
@@ -102,6 +102,10 @@ constexpr std::array<TraceDescriptor, 39> TraceEvents{{
     {"gpu_texture_rebuilt", {"width", "height", "dxgi_format", "duration_us"}},
     {"frame_gap", {"interval_us", "source_timestamp_100ns", "", ""}},
     {"diagnostic_overflow", {"events_lost", "", "", ""}},
+    {"recording_source_stall", {"source_age_ms", "requested_fps", "source_frame_timestamp_100ns", ""}},
+    {"recording_frame_repeat", {"repeated_slots", "total_slots", "source_frame_timestamp_100ns", ""}},
+    {"recording_encoder_stall", {"write_duration_ms", "requested_fps", "slots", ""}},
+    {"recording_unstable_window", {"unique_fps_milli", "requested_fps", "repeated_slots", "max_write_ms"}},
 }};
 
 constexpr std::size_t TraceCapacity = 8192;

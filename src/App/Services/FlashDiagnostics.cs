@@ -202,6 +202,13 @@ internal static class FlashDiagnostics
                 max_video_frame_interval_ms = maximumVideoGap / 1000.0,
                 max_present_interval_ms = qpcFrequency > 0
                     ? maxPresentGap * 1000.0 / qpcFrequency : 0,
+                recording_source_stalls = Count("recording_source_stall"),
+                recording_repeat_events = Count("recording_frame_repeat"),
+                recording_encoder_stalls = Count("recording_encoder_stall"),
+                recording_unstable_windows = Count("recording_unstable_window"),
+                recording_stability = Count("recording_unstable_window") > 0
+                    ? "unstable_detected" : Count("recording_frame_repeat") > 0
+                        ? "repeated_frames_observed" : "not_proven_stable",
                 diagnostic_fps_delta = "unavailable_without_baseline",
             };
             WriteJson(Path.Combine(folder, "render-statistics.json"), stats);
@@ -226,6 +233,8 @@ internal static class FlashDiagnostics
             summary.AppendLine($"关联到旋转的 HWND 尺寸变化：{animationHwndResizes} 次；是否异常需核对各次旋转的阶段尺寸。");
             summary.AppendLine($"视频与渲染关联：{(Count("source_frame_received") > 0 && Count("frame_submitted") > 0 ? "有帧 ID 数据" : "数据不足")}。");
             summary.AppendLine($"环形缓冲区丢失事件：{ringEventsLost}；文件上限丢失事件：{fileEventsLost}。");
+            summary.AppendLine($"录制输入停顿：{stats.recording_source_stalls} 次；编码管道卡顿：{stats.recording_encoder_stalls} 次；不稳定窗口：{stats.recording_unstable_windows} 次。");
+            summary.AppendLine($"录制稳定性：{stats.recording_stability}。录制未启动时不能以此推断录制质量。");
             summary.AppendLine("Present 成功不代表该帧已经显示到屏幕。日志不能单独证明可见闪屏。");
             summary.AppendLine("visual_flash_not_confirmed");
             File.WriteAllText(Path.Combine(folder, "diagnostic-summary.txt"), summary.ToString(), Encoding.UTF8);

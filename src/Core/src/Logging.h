@@ -38,7 +38,8 @@ enum class DiagnosticEvent : std::uint16_t {
     SwapChainDestroyed, TargetCreated, TargetReleased, ResizeBegin,
     ResizeEnd, DeviceRebuildBegin, DeviceRebuildEnd, DeviceLost,
     PresentBegin, PresentEnd, OutputModeChanged, GpuTextureRebuilt,
-    FrameGap, DiagnosticOverflow,
+    FrameGap, DiagnosticOverflow, RecordingSourceStall,
+    RecordingFrameRepeat, RecordingEncoderStall, RecordingUnstableWindow,
 };
 
 [[nodiscard]] bool start_diagnostics(std::string_view id,

@@ -616,6 +616,14 @@ internal sealed class MediaOutputService : IAsyncDisposable
         ReadOnlyMemory<byte> lastFrame = default;
         var statsClock = Stopwatch.StartNew();
         long lastDistinctSourceFrames = 0;
+        long repeatedVideoSlots = 0;
+        long lastRepeatedVideoSlots = 0;
+        long lastWrittenSourceTimestamp = 0;
+        long lastFrameTimestamp = 0;
+        long maxEncoderWriteMilliseconds = 0;
+        var sourceWatch = Stopwatch.StartNew();
+        var lastNewSourceFrameAt = TimeSpan.Zero;
+        bool sourceStallReported = false;
         // Decouple the GPU->CPU frame readback from the pump timer. The
         // readback (materialize_gpu_frame + letterbox + SDR) is synchronous
         // and can exceed the frame interval on weak hardware, which delays
@@ -671,9 +679,18 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var dueBeforeRead = CalculateDueVideoFrames(outputClock.Elapsed,
                     request.FrameRate, framesWritten);
                 if (dueBeforeRead <= 0) continue;
-                var buffered = latch.Get();
+                var sample = latch.GetSnapshot();
+                var buffered = sample.Frame;
                 if (!buffered.IsEmpty)
+                {
                     lastFrame = buffered;
+                    lastFrameTimestamp = sample.Timestamp100Ns;
+                    if (lastFrameTimestamp > lastWrittenSourceTimestamp)
+                    {
+                        lastNewSourceFrameAt = sourceWatch.Elapsed;
+                        sourceStallReported = false;
+                    }
+                }
                 else if (lastFrame.IsEmpty)
                 {
                     if (firstFrameWait.Elapsed > TimeSpan.FromSeconds(5))
@@ -693,10 +710,39 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var schedule = CalculateVideoWritePlan(outputClock.Elapsed,
                     request.FrameRate, framesWritten);
                 framesWritten = schedule.FramesWrittenBaseline;
+                var sourceAgeMs = (sourceWatch.Elapsed - lastNewSourceFrameAt)
+                    .TotalMilliseconds;
+                if (!sourceStallReported && lastFrameTimestamp > 0 &&
+                    sourceAgeMs >= 250)
+                {
+                    FlashDiagnostics.Trace(39, (long)sourceAgeMs, request.FrameRate,
+                        lastFrameTimestamp);
+                    DiagnosticLogger.Warning("media_output", "recording_source_stalled",
+                        ("source_age_ms", Math.Round(sourceAgeMs)),
+                        ("fps", request.FrameRate));
+                    sourceStallReported = true;
+                }
                 for (long index = 0; index < schedule.FramesToWrite; ++index)
                 {
+                    if (lastFrameTimestamp > 0 &&
+                        lastFrameTimestamp <= lastWrittenSourceTimestamp)
+                        ++repeatedVideoSlots;
+                    var writeStart = Stopwatch.GetTimestamp();
                     await process.StandardInput.BaseStream.WriteAsync(lastFrame,
                         cancellationToken);
+                    var writeMs = Stopwatch.GetElapsedTime(writeStart).TotalMilliseconds;
+                    maxEncoderWriteMilliseconds = Math.Max(
+                        maxEncoderWriteMilliseconds, (long)Math.Ceiling(writeMs));
+                    if (writeMs >= 100)
+                    {
+                        FlashDiagnostics.Trace(41, (long)Math.Round(writeMs),
+                            request.FrameRate, schedule.FramesToWrite);
+                        DiagnosticLogger.Warning("media_output", "recording_encoder_write_stall",
+                            ("write_ms", Math.Round(writeMs)),
+                            ("fps", request.FrameRate));
+                    }
+                    if (lastFrameTimestamp > lastWrittenSourceTimestamp)
+                        lastWrittenSourceTimestamp = lastFrameTimestamp;
                     ++framesWritten;
                 }
                 if (statsClock.Elapsed >= TimeSpan.FromSeconds(5))
@@ -711,6 +757,25 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         ("distinct_source_frames", metrics.Distinct),
                         ("encoded_frame_slots", framesWritten),
                         ("timestamp_100ns", metrics.LastTimestamp100Ns));
+                    var repeatedInWindow = repeatedVideoSlots - lastRepeatedVideoSlots;
+                    FlashDiagnostics.Trace(40, repeatedInWindow, framesWritten,
+                        metrics.LastTimestamp100Ns);
+                    if (uniqueFps < request.FrameRate * 0.8 ||
+                        repeatedInWindow > request.FrameRate ||
+                        maxEncoderWriteMilliseconds >= 100)
+                    {
+                        FlashDiagnostics.Trace(42, (long)Math.Round(uniqueFps * 1000),
+                            request.FrameRate, repeatedInWindow,
+                            maxEncoderWriteMilliseconds);
+                        DiagnosticLogger.Warning("media_output",
+                            "recording_unstable_window",
+                            ("unique_fps", Math.Round(uniqueFps, 2)),
+                            ("nominal_fps", request.FrameRate),
+                            ("repeat_slots", repeatedInWindow),
+                            ("max_pipe_write_ms", maxEncoderWriteMilliseconds));
+                    }
+                    lastRepeatedVideoSlots = repeatedVideoSlots;
+                    maxEncoderWriteMilliseconds = 0;
                     lastDistinctSourceFrames = metrics.Distinct;
                     statsClock.Restart();
                 }
@@ -1799,6 +1864,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
                     ++_distinctSourceFrames;
                 }
             }
+        }
+
+        internal (ReadOnlyMemory<byte> Frame, long Timestamp100Ns) GetSnapshot()
+        {
+            lock (this) return (_frame, _lastSourceTimestamp);
         }
 
         internal ReadOnlyMemory<byte> Get()
