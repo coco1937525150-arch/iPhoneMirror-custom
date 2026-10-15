@@ -12,6 +12,7 @@ internal static class PipelineLogMonitor
 {
     private const int TailBytes = 256 * 1024;
     private const string Marker = "d3d_preview pipeline_health ";
+    private const string AirPlayMarker = "airplay_pipeline ";
 
     internal static string ReadRecent()
     {
@@ -28,14 +29,21 @@ internal static class PipelineLogMonitor
             if (start > 0) reader.ReadLine(); // Discard an incomplete first line.
             var latestByWindow = new Dictionary<string, (DateTime When, string Info)>(
                 StringComparer.Ordinal);
+            (DateTime When, string Info)? latestAirPlay = null;
             string? line;
             while ((line = reader.ReadLine()) is not null)
             {
                 var index = line.IndexOf(Marker, StringComparison.Ordinal);
-                if (index < 0 || line.Length < 23) continue;
+                var airplayIndex = line.IndexOf(AirPlayMarker, StringComparison.Ordinal);
+                if ((index < 0 && airplayIndex < 0) || line.Length < 23) continue;
                 if (!DateTime.TryParseExact(line[..23],
                     "yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeLocal, out var when)) continue;
+                if (airplayIndex >= 0)
+                {
+                    latestAirPlay = (when, line[(airplayIndex + AirPlayMarker.Length)..]);
+                    continue;
+                }
                 var text = line[(index + Marker.Length)..];
                 var hwndIndex = text.IndexOf("hwnd=", StringComparison.Ordinal);
                 if (hwndIndex < 0) continue;
@@ -43,14 +51,22 @@ internal static class PipelineLogMonitor
                 var key = hwndEnd < 0 ? text[hwndIndex..] : text[hwndIndex..hwndEnd];
                 latestByWindow[key] = (when, text);
             }
-            if (latestByWindow.Count == 0)
-                return "尚无实时渲染统计。启动投屏后等待约 1 秒；旧版构建不包含该采样。";
+            if (latestByWindow.Count == 0 && latestAirPlay is null)
+                return "尚无实时帧流统计。启动投屏后等待约 1 秒；旧版构建不包含该采样。";
             var now = DateTime.Now;
             var snapshots = latestByWindow.Values
                 .OrderByDescending(entry => entry.When)
                 .Take(3)
                 .ToArray();
             var result = new StringBuilder();
+            if (latestAirPlay is { } airplay)
+            {
+                var age = Math.Max(0, (now - airplay.When).TotalSeconds);
+                result.Append(age > 5 ? "[AirPlay 数据已过期] " : "[AirPlay 实时接收] ");
+                result.Append(airplay.When.ToString("HH:mm:ss", CultureInfo.InvariantCulture));
+                result.Append("  ");
+                result.AppendLine(airplay.Info);
+            }
             foreach (var entry in snapshots)
             {
                 var age = Math.Max(0, (now - entry.When).TotalSeconds);
@@ -59,6 +75,7 @@ internal static class PipelineLogMonitor
                 result.Append("  ");
                 result.AppendLine(entry.Info);
             }
+            result.AppendLine("callback_fps：AirPlay 解码后的帧回调速率；IPC 队列替换/丢弃见 replaced_video、dropped_video。");
             result.AppendLine("input_fps：渲染线程看到的新帧，不等于手机编码输出 FPS。");
             result.AppendLine("present_fps：成功提交速率，不等于 DWM 实际显示 FPS。");
             result.AppendLine("input_age_ms / present_age_ms：距最近一次新帧或提交的时间；静态画面也可能无新帧。");
