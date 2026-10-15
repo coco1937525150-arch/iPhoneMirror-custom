@@ -2165,6 +2165,24 @@ std::int32_t IM_CALL im_session_set_window_rotation(iPhoneMirror::SessionHandle 
     return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
 }
 
+std::int32_t IM_CALL im_session_set_window_video_stage_rotation(
+    iPhoneMirror::SessionHandle handle, void* hwnd, std::int32_t quarter_turns) {
+    if (quarter_turns < -1 || quarter_turns > 3)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Invalid staged video rotation");
+    auto context = find_multi_session(handle);
+    if (!context) return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown session handle");
+    std::shared_lock lifecycle_lock(context->lifecycle_mutex);
+    if (!context->capture || context->stopped)
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Session is stopped");
+    std::scoped_lock renderers_lock(context->renderers_mutex);
+    const auto found = context->renderers.find(static_cast<HWND>(hwnd));
+    if (found == context->renderers.end())
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown preview window");
+    found->second->set_video_stage_rotation(quarter_turns);
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
 std::int32_t IM_CALL im_session_set_window_visual_rotation(
     iPhoneMirror::SessionHandle handle, void* hwnd, float degrees,
     float canvas_width, float canvas_height, float visual_scale,

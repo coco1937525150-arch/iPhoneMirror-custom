@@ -470,6 +470,9 @@ internal sealed class NativeCore : IDisposable
     private static extern int im_session_set_window_rotation(ulong handle, nint hwnd,
         int quarterTurns);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int im_session_set_window_video_stage_rotation(
+        ulong handle, nint hwnd, int quarterTurns);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int im_session_set_window_visual_rotation(ulong handle,
         nint hwnd, float degrees, float canvasWidth, float canvasHeight,
         float visualScale, int active);
@@ -583,6 +586,11 @@ internal sealed class NativeCore : IDisposable
 
     internal static bool SetDeviceWindowRotation(ulong handle, nint hwnd, int turns) =>
         handle != 0 && hwnd != 0 && im_session_set_window_rotation(handle, hwnd, turns) == 0;
+
+    internal static bool SetDeviceWindowVideoStageRotation(
+        ulong handle, nint hwnd, int quarterTurns) =>
+        handle != 0 && hwnd != 0 && quarterTurns is >= -1 and <= 3 &&
+        im_session_set_window_video_stage_rotation(handle, hwnd, quarterTurns) == 0;
 
     internal static bool SetDeviceWindowVisualRotation(ulong handle, nint hwnd,
         float degrees, float canvasWidth, float canvasHeight, float scale,

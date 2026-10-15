@@ -652,6 +652,10 @@ struct D3D11PreviewRenderer::Impl {
     std::mutex image_adjustments_mutex;
     ImageAdjustments image_adjustments;
     std::atomic_int rotation_quarter_turns{};
+    // -1 = automatic. While the shell is still portrait and the AirPlay
+    // source has already become landscape, project its pixels sideways into
+    // the existing aperture BEFORE moving the whole DComp phone visual.
+    std::atomic_int staging_video_turns{-1};
     struct VisualRotationRequest {
         float degrees{};
         float canvas_width{};
@@ -1955,8 +1959,10 @@ struct D3D11PreviewRenderer::Impl {
         // The shell/aperture always use their own quarter-turn transform.
         const bool source_landscape = frame.width > frame.height;
         const bool opening_landscape = screen_area.width > screen_area.height;
-        const int video_turns = ((turns & 1) != 0 && source_landscape &&
-            opening_landscape) ? 0 : turns;
+        const auto staging_turns = staging_video_turns.load(std::memory_order_acquire);
+        const int video_turns = staging_turns >= 0
+            ? staging_turns
+            : ((turns & 1) != 0 && source_landscape && opening_landscape) ? 0 : turns;
         const bool swaps_axes = (video_turns & 1) != 0;
         const float source_aspect = swaps_axes
             ? static_cast<float>(frame.height) / frame.width
@@ -1966,7 +1972,8 @@ struct D3D11PreviewRenderer::Impl {
         // left visible gutters for 16:9 AirPlay video in the wider shell.
         // Only a landscape source in a landscape opening uses Cover here;
         // transitional and portrait previews retain their previous fitting.
-        const bool landscape_cover = framed && source_landscape && opening_landscape;
+        const bool landscape_cover = framed && source_landscape &&
+            (opening_landscape || staging_turns >= 0);
         const auto crop = landscape_cover
             ? landscape_cover_crop(source_aspect, target_aspect)
             : VideoCoverCrop{};
@@ -2522,7 +2529,16 @@ void D3D11PreviewRenderer::set_device_frame_profile(bool enabled, float side_ins
 
 void D3D11PreviewRenderer::set_rotation(std::int32_t quarter_turns) noexcept {
     if (!impl_) return;
+    // The discrete quarter-turn is the final, correctly sized frame. Retire
+    // the early-landscape content override before the final DComp handoff.
+    impl_->staging_video_turns.store(-1, std::memory_order_release);
     impl_->rotation_quarter_turns.store(quarter_turns, std::memory_order_relaxed);
+    impl_->refresh_requested.store(true, std::memory_order_release);
+}
+
+void D3D11PreviewRenderer::set_video_stage_rotation(std::int32_t turns) noexcept {
+    if (!impl_ || turns < -1 || turns > 3) return;
+    impl_->staging_video_turns.store(turns, std::memory_order_release);
     impl_->refresh_requested.store(true, std::memory_order_release);
 }
 

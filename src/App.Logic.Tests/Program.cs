@@ -4462,7 +4462,7 @@ Equal(true,
     "clockwise and counterclockwise shell PNG and aperture share the quarter-turn UV transform");
 
 Equal(true,
-    previewRendererCode.Contains("const int video_turns = ((turns & 1) != 0 && source_landscape &&",
+    previewRendererCode.Contains("const int video_turns = staging_turns >= 0",
         StringComparison.Ordinal) &&
     previewRendererCode.Contains("opening_landscape) ? 0 : turns;",
         StringComparison.Ordinal) &&
@@ -4651,6 +4651,15 @@ Equal(true,
         "refresh_requested.store(true, std::memory_order_release);",
         StringComparison.Ordinal),
     "D3D retains one transform across rebuilds, defers format switches and retries pending handoff");
+
+Equal(true,
+    nativePreviewWindowCode.Contains("SetDeviceWindowVideoStageRotation(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("var earlyVideoTurns = width > height",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("staging_video_turns.store(-1",
+        StringComparison.Ordinal),
+    "landscape source is oriented into portrait shell before whole-phone animation");
 
 // The temporary DComp square, portrait original and final landscape HWND
 // MUST share the very same desktop center. Clamping its square to work-area

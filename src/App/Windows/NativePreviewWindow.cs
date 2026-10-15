@@ -745,6 +745,29 @@ internal sealed class NativePreviewWindow : IDisposable
         _sourceHeight = height;
         if (changed && _autoRotateAirPlay && width != 0 && height != 0)
         {
+            // As soon as AirPlay advertises landscape, project the movie
+            // sideways inside the UNROTATED portrait shell. Keep this exact
+            // content orientation while the 1000ms DComp transform rotates
+            // shell, aperture and movie rigidly together. At the final
+            // quarter-turn native set_rotation clears this override.
+            // A return to portrait removes an unfinished staging hint.
+            var pendingTurns = _rotationAnimating
+                ? (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0)
+                : 0;
+            var pendingDelta = PhoneAutoRotationPolicy.DecideDelta(
+                _rotation, pendingTurns, width > height);
+            var earlyVideoTurns = width > height &&
+                (_rotation & 1) == 0 && pendingDelta != 0
+                ? ((-pendingDelta % 4) + 4) % 4 : -1;
+            if (_sessionHandle != 0 && _handle != 0 &&
+                !NativeCore.SetDeviceWindowVideoStageRotation(
+                    _sessionHandle, _handle, earlyVideoTurns))
+                Log("independent_window_video_stage_rotation_failed",
+                    ("quarter_turns", earlyVideoTurns));
+            else
+                Log("independent_window_video_stage_rotation",
+                    ("quarter_turns", earlyVideoTurns),
+                    ("source_width", width), ("source_height", height));
             // Reset the 120ms confirmation ONLY if portrait/landscape
             // polarity changes. Frequent resolution re-negotiations within
             // the same orientation must not postpone the animation forever.
@@ -1796,6 +1819,9 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (_managedContent is not null || _disposed) return;
         _autoRotateAirPlay = enabled;
+        if (!enabled && _sessionHandle != 0 && _handle != 0)
+            _ = NativeCore.SetDeviceWindowVideoStageRotation(
+                _sessionHandle, _handle, -1);
         _queuedAirPlayLandscape = null;
         _airPlayOrientationTimer.Stop();
         if (enabled && _sourceWidth != 0 && _sourceHeight != 0)

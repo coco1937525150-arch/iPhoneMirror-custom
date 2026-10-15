@@ -58,6 +58,10 @@ public:
         float bottom_inset, float outer_corner_radius, std::int32_t cutout_kind,
         float cutout_width, float cutout_height, float cutout_top) noexcept;
     void set_rotation(std::int32_t quarter_turns) noexcept;
+    // Preorient an AirPlay landscape movie inside the still-portrait shell.
+    // The whole DComp phone then rotates with unchanged relative video UVs.
+    // -1 disables staging; any final discrete rotation automatically clears it.
+    void set_video_stage_rotation(std::int32_t quarter_turns) noexcept;
     // Rotate the complete DirectComposition visual (video + PNG + aperture),
     // without modifying AirPlay video frames or independent-window controls.
     // While active, preserve the existing swap-chain dimensions until the
