@@ -13,6 +13,7 @@
 #include "Capture/WirelessCaptureSession.h"
 #include "Device/AppleUsbDiscovery.h"
 #include "Logging.h"
+#include "Renderer/RotationPresentGeometry.h"
 #include "IpcProtocol.h"
 #include "iPhoneMirror/CoreApi.h"
 
@@ -2187,6 +2188,26 @@ void test_logging_shutdown_boundary() {
     std::filesystem::remove_all(failed_directory, error);
 }
 
+void test_phone_rotation_final_present_geometry_gate() {
+    using iPhoneMirror::renderer::should_defer_phone_present;
+    // Captured native flash: final 1132x549 HWND, OLD 549x1132
+    // BackBuffer and new landscape shader orientation on frame 1492.
+    check(should_defer_phone_present(false, 549, 1132, 1132, 549),
+        "final landscape HWND cannot present a stale portrait BackBuffer");
+    check(should_defer_phone_present(true, 549, 1132, 1132, 549),
+        "non-square final HWND is protected even before the visual reset");
+    check(should_defer_phone_present(false, 1132, 549, 549, 1132),
+        "final portrait HWND cannot present a stale landscape BackBuffer");
+    check(!should_defer_phone_present(true, 549, 1132, 1263, 1263),
+        "intentional square DComp animation preserves unresized phone texture");
+    check(!should_defer_phone_present(true, 1132, 549, 1263, 1263),
+        "square DComp stage also permits landscape phone texture");
+    check(!should_defer_phone_present(false, 1132, 549, 1132, 549),
+        "first correctly sized post-handoff frame can be presented");
+    check(should_defer_phone_present(false, 1132, 549, 0, 0),
+        "zero-sized window cannot publish a stale frame");
+}
+
 void test_flash_diagnostic_timeline() {
     namespace logging = iPhoneMirror::logging;
     const auto path = std::filesystem::temp_directory_path() /
@@ -2280,6 +2301,7 @@ int main(int argc, char** argv) {
         test_media_command_queue();
         test_logging_shutdown_boundary();
         test_flash_diagnostic_timeline();
+        test_phone_rotation_final_present_geometry_gate();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
         return 2;

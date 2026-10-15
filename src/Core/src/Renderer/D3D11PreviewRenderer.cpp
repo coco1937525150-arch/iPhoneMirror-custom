@@ -1,5 +1,6 @@
 #include "Renderer/D3D11PreviewRenderer.h"
 #include "Renderer/OutputModeState.h"
+#include "Renderer/RotationPresentGeometry.h"
 
 #include "Logging.h"
 
@@ -2121,10 +2122,34 @@ struct D3D11PreviewRenderer::Impl {
         // That handoff cannot use DO_NOT_WAIT: dropping its Present would
         // expose the previous frame under the new identity matrix (flash).
         bool rotation_handoff_pending = false;
+        bool visual_rotation_active = false;
         {
             std::scoped_lock lock(visual_rotation_mutex);
-            rotation_handoff_pending = !visual_rotation_request.active &&
+            visual_rotation_active = visual_rotation_request.active;
+            rotation_handoff_pending = !visual_rotation_active &&
                 visual_rotation_request.generation != applied_visual_generation;
+        }
+        // The render-loop's earlier HWND/target comparison can become stale
+        // after WPF sends the final SetWindowPos on its UI thread. On the
+        // third 2026-10-15 flash trace, the 1132x549 HWND received a Present
+        // of the OLD 549x1132 buffer with the NEW quarter-turn 0.3ms before
+        // ResizeBuffers. Never submit that intermediate geometry to DWM.
+        // During the 1s animation, a square HWND intentionally contains
+        // the unresized phone swap-chain and remains permitted.
+        if (composition_mode) {
+            RECT present_client{};
+            if (GetClientRect(window, &present_client) &&
+                should_defer_phone_present(visual_rotation_active,
+                    target_width, target_height,
+                    present_client.right - present_client.left,
+                    present_client.bottom - present_client.top)) {
+                refresh_requested.store(true, std::memory_order_release);
+                logging::diagnostic_event(logging::DiagnosticEvent::FrameDropped,
+                    frame.sequence_id, applied_visual_generation, 2,
+                    frame.timestamp_100ns, target_width, target_height);
+                release_shared_gpu_frame();
+                return;
+            }
         }
         apply_visual_rotation_if_needed(true);
         logging::diagnostic_event(logging::DiagnosticEvent::FrameSubmitted,
