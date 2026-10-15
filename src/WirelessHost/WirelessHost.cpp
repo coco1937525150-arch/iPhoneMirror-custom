@@ -492,6 +492,36 @@ class AirPlayCallback final : public IAirServerCallback {
 public:
     explicit AirPlayCallback(IpcWriter& writer) : writer_(writer) {}
 
+    // Incoming callback rate is measured before the IPC writer and before the
+    // renderer. This separates sender/decoder stalls from UI Present stalls.
+    void sampleVideoPipeline(std::uint64_t callback_index) {
+        const auto now_ms = GetTickCount64();
+        auto previous_ms = video_report_tick_ms_.load(std::memory_order_relaxed);
+        if (previous_ms == 0) {
+            if (video_report_tick_ms_.compare_exchange_strong(previous_ms,
+                    now_ms, std::memory_order_relaxed))
+                video_report_last_index_.store(callback_index, std::memory_order_relaxed);
+            return;
+        }
+        if (now_ms < previous_ms || now_ms - previous_ms < 1000) return;
+        if (!video_report_tick_ms_.compare_exchange_strong(previous_ms,
+                now_ms, std::memory_order_relaxed)) return;
+        const auto previous_index = video_report_last_index_.exchange(callback_index,
+            std::memory_order_relaxed);
+        const auto elapsed_ms = now_ms - previous_ms;
+        const double callback_fps = elapsed_ms > 0
+            ? static_cast<double>(callback_index - previous_index) * 1000.0 /
+                static_cast<double>(elapsed_ms)
+            : 0.0;
+        diagnostic(std::format(
+            "airplay_pipeline callback_fps={:.2f} callback_total={} "
+            "rejected={} send_failures={} {}",
+            callback_fps, callback_index,
+            rejected_video_.load(std::memory_order_relaxed),
+            send_failures_.load(std::memory_order_relaxed),
+            writer_.summary()));
+    }
+
     void connected(const char* remote_name, const char* remote_device_id) override {
         iPhoneMirror::wireless::MessageHeader header;
         header.type = iPhoneMirror::wireless::MessageType::Connected;
@@ -550,6 +580,7 @@ public:
         const char* remote_device_id) override {
         const auto callback_index = video_callbacks_.fetch_add(1,
             std::memory_order_relaxed) + 1;
+        sampleVideoPipeline(callback_index);
         if (!data) {
             rejected_video_.fetch_add(1, std::memory_order_relaxed);
             diagnostic("video callback rejected: null frame");
@@ -1030,6 +1061,8 @@ private:
     PlaybackState playback_;
     std::atomic_uint64_t audio_callbacks_{};
     std::atomic_uint64_t video_callbacks_{};
+    std::atomic_uint64_t video_report_tick_ms_{};
+    std::atomic_uint64_t video_report_last_index_{};
     std::atomic_uint64_t log_callbacks_{};
     std::atomic_uint64_t connected_callbacks_{};
     std::atomic_uint64_t disconnected_callbacks_{};

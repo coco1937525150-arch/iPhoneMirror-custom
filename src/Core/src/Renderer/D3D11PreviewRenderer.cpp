@@ -688,6 +688,16 @@ struct D3D11PreviewRenderer::Impl {
     std::uint32_t monitor_refresh_hz{120};
     std::chrono::steady_clock::time_point next_refresh_probe{};
     std::uint64_t skipped_present_frames{};
+    // Per-render-window pipeline telemetry. Count distinct decoded frames seen
+    // by this renderer, not AirPlay packets (which belong to WirelessHost).
+    std::uint64_t pipeline_observed_frames{};
+    std::uint64_t pipeline_last_sequence{};
+    std::uint64_t pipeline_last_reported_input{};
+    std::uint64_t pipeline_last_reported_present{};
+    std::uint64_t pipeline_last_reported_skipped{};
+    std::uint64_t pipeline_geometry_deferrals{};
+    std::chrono::steady_clock::time_point pipeline_last_report{};
+    std::chrono::steady_clock::time_point pipeline_last_input_at{};
 
     Impl(HWND value, FrameProvider frame_provider)
         : window(value), provider(std::move(frame_provider)) {
@@ -2176,6 +2186,7 @@ struct D3D11PreviewRenderer::Impl {
                     present_client.right - present_client.left,
                     present_client.bottom - present_client.top)) {
                 refresh_requested.store(true, std::memory_order_release);
+                ++pipeline_geometry_deferrals;
                 logging::diagnostic_event(logging::DiagnosticEvent::FrameDropped,
                     frame.sequence_id, applied_visual_generation, 2,
                     frame.timestamp_100ns, target_width, target_height);
@@ -2282,9 +2293,54 @@ struct D3D11PreviewRenderer::Impl {
         return 60;
     }
 
+    // Emit only once per second: capture.log remains bounded and telemetry
+    // itself cannot overwhelm the renderer. The input metric measures unique
+    // decoded frames sampled by this renderer, NOT sender-encoded FPS.
+    void publish_pipeline_health(std::chrono::steady_clock::time_point now) {
+        if (pipeline_last_report.time_since_epoch().count() == 0) {
+            pipeline_last_report = now;
+            return;
+        }
+        const auto elapsed = std::chrono::duration<double>(
+            now - pipeline_last_report).count();
+        if (elapsed < 1.0) return;
+        const auto input_delta = pipeline_observed_frames - pipeline_last_reported_input;
+        const auto present_delta = rendered_frames - pipeline_last_reported_present;
+        const auto skipped_delta = skipped_present_frames - pipeline_last_reported_skipped;
+        const auto age_ms = [now](std::chrono::steady_clock::time_point when) {
+            return when.time_since_epoch().count() == 0 ? -1LL :
+                static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - when).count());
+        };
+        const auto input_age = age_ms(pipeline_last_input_at);
+        const auto present_age = age_ms(last_accepted_present_at);
+        const char* state = input_age < 0 ? "AWAITING_INPUT" :
+            input_age >= 500 ? "INPUT_IDLE_OR_STALLED" :
+            present_age < 0 ? "AWAITING_PRESENT" :
+            present_age >= 500 ? "PRESENT_STALLED" : "ACTIVE";
+        logging::write(std::format(
+            "d3d_preview pipeline_health hwnd=0x{:X} input_fps={:.2f} "
+            "present_fps={:.2f} present_skipped={} geometry_deferred={} "
+            "input_age_ms={} present_age_ms={} render={}x{} "
+            "requested_cap={} monitor_cap={} rotation={} state={}",
+            reinterpret_cast<std::uintptr_t>(window),
+            static_cast<double>(input_delta) / elapsed,
+            static_cast<double>(present_delta) / elapsed,
+            skipped_delta, pipeline_geometry_deferrals,
+            input_age, present_age, target_width, target_height,
+            max_fps.load(std::memory_order_relaxed),
+            monitor_refresh_hz,
+            rotation_quarter_turns.load(std::memory_order_relaxed), state));
+        pipeline_last_report = now;
+        pipeline_last_reported_input = pipeline_observed_frames;
+        pipeline_last_reported_present = rendered_frames;
+        pipeline_last_reported_skipped = skipped_present_frames;
+    }
+
     void run(std::stop_token token) noexcept {
         while (!token.stop_requested()) {
             try {
+                publish_pipeline_health(std::chrono::steady_clock::now());
                 if (!IsWindow(window)) break;
                 if (output_state.last_failure == output::Failure::DeviceLost ||
                     !device || !context || !swap_chain) {
@@ -2385,6 +2441,12 @@ struct D3D11PreviewRenderer::Impl {
                 if ((!frame || frame->timestamp_100ns == 0) &&
                     (force_refresh || target_resized))
                     frame = last_frame;
+                if (frame && frame->timestamp_100ns != 0 &&
+                    frame->sequence_id != pipeline_last_sequence) {
+                    pipeline_last_sequence = frame->sequence_id;
+                    ++pipeline_observed_frames;
+                    pipeline_last_input_at = std::chrono::steady_clock::now();
+                }
                 if (!frame || frame->timestamp_100ns == 0) {
                     if (target_resized) present_black();
                     if (force_refresh) refresh_requested.store(true, std::memory_order_release);

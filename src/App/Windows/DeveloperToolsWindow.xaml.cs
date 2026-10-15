@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -34,6 +36,7 @@ public partial class DeveloperToolsWindow : Wpf.Ui.Controls.FluentWindow,
     public string StatusText { get => _statusText; private set => Set(ref _statusText, value); }
     public string OpacityText => $"{_owner.Opacity:P0}";
     public string DiagnosticsText { get; private set; } = string.Empty;
+    public string PipelineStatusText { get; private set; } = string.Empty;
 
     internal DeveloperToolsWindow(MainWindow owner)
     {
@@ -196,6 +199,66 @@ public partial class DeveloperToolsWindow : Wpf.Ui.Controls.FluentWindow,
         OnPropertyChanged(nameof(OpenWindows));
         OnPropertyChanged(nameof(DiagnosticsText));
         OnPropertyChanged(nameof(OpacityText));
+        PipelineStatusText = PipelineLogMonitor.ReadRecent() +
+            Environment.NewLine + (FlashDiagnostics.Active
+                ? "详细逐帧诊断：正在记录。" : "详细逐帧诊断：未启动（常规日志继续记录）。");
+        OnPropertyChanged(nameof(PipelineStatusText));
+    }
+
+    private void OnStartPipelineDiagnostics(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!FlashDiagnostics.Active)
+                FlashDiagnostics.Start();
+            StatusText = "逐帧诊断已开始。请复现冻结、黑屏、旋转或录制问题。";
+            RefreshDiagnostics();
+        }
+        catch (Exception error)
+        {
+            StatusText = "启动诊断失败：" + error.Message;
+            DiagnosticLogger.Exception("pipeline", "start_failed", error);
+        }
+    }
+
+    private async void OnStopPipelineDiagnostics(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!FlashDiagnostics.Active)
+            {
+                StatusText = "没有正在运行的逐帧诊断；实时日志仍保存在日志目录。";
+                return;
+            }
+            StatusText = "正在停止并导出日志 ZIP…";
+            var path = await FlashDiagnostics.StopAndExportAsync();
+            StatusText = "诊断 ZIP 已导出：" + path;
+            RefreshDiagnostics();
+        }
+        catch (Exception error)
+        {
+            StatusText = "导出诊断失败：" + error.Message;
+            DiagnosticLogger.Exception("pipeline", "export_failed", error);
+        }
+    }
+
+    private void OnOpenLogFolder(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(DiagnosticLogger.DirectoryPath);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = DiagnosticLogger.DirectoryPath,
+                UseShellExecute = true,
+            });
+            StatusText = "已打开全部日志目录。";
+        }
+        catch (Exception error)
+        {
+            StatusText = "打开日志目录失败：" + error.Message;
+            DiagnosticLogger.Exception("pipeline", "open_folder_failed", error);
+        }
     }
 
     private void OnSurfaceClick(object sender, RoutedEventArgs e)
