@@ -1388,19 +1388,19 @@ internal sealed class NativePreviewWindow : IDisposable
             ("mode", WindowMode), ("enabled", _cornersEnabled));
     }
 
-    private void Rotate(int delta)
+    private bool Rotate(int delta)
     {
-        if (_disposed || _handle == 0) return;
+        if (_disposed || _handle == 0) return false;
         if (_managedContent is not null || _sessionHandle == 0 ||
             _isFullScreen || IsIconic(_handle))
         {
             // Media-cast windows have a separate managed visual and retain
             // the previous non-phone quarter-turn behavior.
-            if (_managedContent is null) return;
+            if (_managedContent is null) return false;
             _rotation = ((_rotation + delta) % 4 + 4) % 4;
             _managedContent.LayoutTransform = new RotateTransform(_rotation * 90);
             ApplyRotatedDimensions();
-            return;
+            return true;
         }
 
         // Windows reduced-motion setting skips interpolation but still keeps
@@ -1408,20 +1408,21 @@ internal sealed class NativePreviewWindow : IDisposable
         if (!SystemParameters.MenuAnimation)
         {
             var next = ((_rotation + delta) % 4 + 4) % 4;
-            if (NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, next))
-            {
-                _rotation = next;
-                ApplyRotatedDimensions();
-            }
-            return;
+            if (!NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, next))
+                return false;
+            _rotation = next;
+            ApplyRotatedDimensions();
+            return true;
         }
 
-        if (!_rotationAnimating && !BeginRotationAnimation()) return;
+        if (!_rotationAnimating && !BeginRotationAnimation()) return false;
         // Retarget from the CURRENT eased angle. A reverse click during the
         // animation does not snap back to zero or restart its phone texture.
         _rotationTimeline.Retarget(delta * 90.0, _rotationClock.Elapsed);
         UpdateRotationVisual();
+        if (!_rotationAnimating) return false;
         _rotationTimer.Start();
+        return true;
     }
 
     private bool BeginRotationAnimation()
@@ -1671,16 +1672,30 @@ internal sealed class NativePreviewWindow : IDisposable
         if (smallest == 0 || largest < smallest * 1.12) return;
         var landscape = _sourceWidth > _sourceHeight;
         if (_autoAirPlayWasLandscape == landscape) return;
-        // Manual rotation may already match the new physical orientation.
-        // In that case update the automatic state without rotating TWICE.
-        _autoAirPlayWasLandscape = landscape;
+        // Do not mark an orientation transition complete before the native
+        // visual transform actually begins. A minimized window, invalid DComp
+        // visual or reduced-motion rotation failure must be retried instead
+        // of permanently suppressing the landscape/portrait handoff.
         var targetTurns = landscape ? 3 : 0;
         if ((_rotation & 3) == targetTurns && !_rotationAnimating)
+        {
+            _autoAirPlayWasLandscape = landscape;
             return;
+        }
+        if (!Rotate(landscape ? -1 : 1))
+        {
+            Log("independent_window_airplay_orientation_retry",
+                ("landscape", landscape), ("source_width", _sourceWidth),
+                ("source_height", _sourceHeight));
+            if (!_disposed && _autoRotateAirPlay && _handle != 0 &&
+                _sessionHandle != 0)
+                _airPlayOrientationTimer.Start();
+            return;
+        }
+        _autoAirPlayWasLandscape = landscape;
         Log("independent_window_airplay_orientation_auto",
             ("landscape", landscape), ("source_width", _sourceWidth),
             ("source_height", _sourceHeight));
-        Rotate(landscape ? -1 : 1);
     }
 
     private void ApplyDeviceFrameProfile()
