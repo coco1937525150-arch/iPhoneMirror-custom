@@ -50,6 +50,9 @@
                            Style="{StaticResource SubWindowTitle}"/>
                 <TextBlock Text="{Binding SelectedName}"
                            Style="{StaticResource SubWindowSubtitle}"/>
+                <TextBlock x:Name="Pre6BuildIdentityText"
+                           Visibility="Collapsed" FontSize="10" Margin="0,4,0,0"
+                           Foreground="{DynamicResource MutedTextBrush}"/>
                 <TextBlock Text="{Binding MediaOutputCapabilitiesText}" FontSize="10"
                            Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,5,0,0"/>
             </StackPanel>
