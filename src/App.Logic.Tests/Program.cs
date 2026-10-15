@@ -4446,7 +4446,9 @@ Equal(true,
     nativeRendererSource.Contains("referenceAperture.Sample(", StringComparison.Ordinal) &&
     nativeRendererSource.Contains("allow_aperture = true", StringComparison.Ordinal) &&
     nativeRendererSource.Contains("turns, false);", StringComparison.Ordinal) &&
-    nativeRendererSource.Contains("turns, true);", StringComparison.Ordinal),
+    nativeRendererSource.Contains(
+        "rounded, video_turns, true, crop.x, crop.y);",
+        StringComparison.Ordinal),
     "D3D11 preview uses the same connected-hole matte in direct and limited render passes");
 Equal(true,
     nativeRendererSource.Contains("if (turns == 1) return float2(uv.y, 1.0 - uv.x);",
