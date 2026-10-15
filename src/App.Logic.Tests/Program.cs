@@ -1732,6 +1732,32 @@ Equal(true, completionSource.Contains("finalAngle, finalClientW, finalClientH",
     "rotation keeps whole-phone DComp transform through HWND resize, then atomically commits native orientation without duplicate aspect reflow");
 
 Equal(true,
+    nativePreviewWindowCode.Contains(
+        "CompositionTarget.Rendering += OnRotationRendering;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "CompositionTarget.Rendering -= OnRotationRendering;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "PhoneRotationStageGeometry.CenteredBounds(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "PhoneRotationStageGeometry.ScaleAtAngle(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "_lastCompositionRotationTick != TimeSpan.Zero",
+        StringComparison.Ordinal),
+    "DComp phone-body animation shares one immutable pivot and follows WPF render ticks with safe fallback");
+var nativeRecordingApiSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "CoreApi.cpp"));
+Equal(true,
+    nativeRecordingApiSource.Contains(
+        "output_height, true /* upscale source to fill encoding canvas */)",
+        StringComparison.Ordinal),
+    "1080p recording explicitly upscales real 498x1080 AirPlay input instead of creating a permanently letterboxed source");
+
+
+Equal(true,
     nativePreviewWindowCode.Contains("EnableAirPlayAutomaticRotation(bool enabled)",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains("OnAirPlayOrientationSettled(",
