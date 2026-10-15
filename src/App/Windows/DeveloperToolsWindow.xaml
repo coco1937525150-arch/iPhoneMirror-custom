@@ -192,6 +192,32 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- Always-on native log + opt-in high-resolution trace, in one place. -->
+                    <Border Style="{StaticResource SettingsSection}" Padding="16" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="总日志与帧流诊断"
+                                       Style="{StaticResource SubWindowSectionTitle}"/>
+                            <TextBlock Text="持续显示每秒渲染帧率、渲染线程新帧速率、帧龄与提交停顿；需要逐帧排查时启动详细追踪。"
+                                       Style="{StaticResource SubWindowSubtitle}"
+                                       TextWrapping="Wrap"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <Button Content="开始详细诊断" Click="OnStartPipelineDiagnostics"
+                                        MinWidth="126" Margin="0,0,8,0"/>
+                                <Button Content="停止并导出 ZIP" Click="OnStopPipelineDiagnostics"
+                                        MinWidth="126" Margin="0,0,8,0"/>
+                                <Button Content="打开全部日志目录" Click="OnOpenLogFolder"
+                                        MinWidth="138"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding PipelineStatusText}"
+                                       FontFamily="Cascadia Mono,Consolas" FontSize="11"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       TextWrapping="Wrap" Margin="0,12,0,0"/>
+                            <TextBlock Text="详细诊断导出会包含 application.log、capture.log、逐帧时间线、旋转事件及统计文件；每次问题复现前开始，复现后停止导出。"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                        </StackPanel>
+                    </Border>
+
                     <Border Style="{StaticResource SettingsSection}" Padding="16" Margin="0,12,0,0">
                         <StackPanel>
                             <TextBlock Text="{DynamicResource DeveloperToolsInspectorSection}"
