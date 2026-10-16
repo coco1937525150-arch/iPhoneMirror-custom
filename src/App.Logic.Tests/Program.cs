@@ -4851,12 +4851,13 @@ try
         File.WriteAllText(Path.Combine(flashFixtureFolder, name), "fixture");
     foreach (var name in new[] { "rotation-events.jsonl", "timeline.jsonl" })
         File.WriteAllText(Path.Combine(flashFixtureFolder, name), "{\"event\":\"rotation_started\"}\n");
-    foreach (var name in new[] { "render-statistics.json", "environment.json" })
+    foreach (var name in new[] { "render-statistics.json", "environment.json",
+        "flash-markers.json" })
         File.WriteAllText(Path.Combine(flashFixtureFolder, name), "{\"valid\":true}");
     var flashZip = FlashDiagnostics.CreateValidatedZip(flashFixtureFolder,
         flashFixtureRoot, "diagnostics.zip", "fixture");
     using (var archive = System.IO.Compression.ZipFile.OpenRead(flashZip))
-        Equal(8, archive.Entries.Count, "flash ZIP contains eight required files");
+        Equal(9, archive.Entries.Count, "flash ZIP contains all nine required files, including flash markers");
     File.WriteAllText(Path.Combine(flashFixtureFolder, "timeline.jsonl"), "not JSON\n");
     try
     {
@@ -4880,6 +4881,26 @@ try
 }
 finally { Directory.Delete(flashFixtureRoot, recursive: true); }
 }
+
+// Native high precision trace preserves the WPF/DirectComposition time
+// order. The actual visual-flash marker must be correlated with geometry
+// and manual rotation tags rather than reusing an earlier AirPlay event.
+var flashDiagnosticSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Services", "FlashDiagnostics.cs"));
+var flashLoggingSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "Logging.cpp"));
+Equal(true,
+    nativePreviewWindowCode.Contains("FlashDiagnostics.MarkVisibleFlash()",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("autoTriggered ? _diagnosticOrientationId : 0",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("Rotate(delta, autoTriggered: true)",
+        StringComparison.Ordinal) &&
+    flashDiagnosticSource.Contains("flash-markers.json", StringComparison.Ordinal) &&
+    flashDiagnosticSource.Contains("MarkLookbackMs = 1500", StringComparison.Ordinal) &&
+    flashLoggingSource.Contains("\"frame_geometry\"", StringComparison.Ordinal) &&
+    flashLoggingSource.Contains("\"frame_client_geometry\"", StringComparison.Ordinal),
+    "flash marking and manual/auto orientation are correlated with per-frame GPU geometry");
 
 // Imported phone image may have a solid-black display. Verify that the
 // imported asset gains a truly transparent aperture without modifying the
@@ -5200,6 +5221,36 @@ Throws<InvalidDataException>(() =>
             _ => new IPhoneMirror.App.Interop.AudioPacket(
                 7, 48000, 2, 16, new byte[4]), 7),
     "non-advancing audio sequence is rejected");
+
+// Temporary cleanup is limited to the recording's own app-owned partial.
+// Successful MOV and unrelated files must always survive.
+var cleanupRoot = Path.Combine(Path.GetTempPath(),
+    $"iphone-mirror-cleanup-{Guid.NewGuid():N}");
+Directory.CreateDirectory(cleanupRoot);
+try
+{
+    var completedMov = Path.Combine(cleanupRoot, "iPhoneMirror_capture.mov");
+    var partialMov = PendingRecordingStore.CreateStagingPath(completedMov);
+    var unrelatedMov = Path.Combine(cleanupRoot, "some-other-video.mov");
+    File.WriteAllBytes(completedMov, [1, 2, 3]);
+    File.WriteAllBytes(partialMov, [4, 5]);
+    File.WriteAllBytes(unrelatedMov, [6, 7]);
+    PendingRecordingStore.CleanupOwnTemporaryArtifacts(completedMov, cleanupRoot);
+    Equal(false, File.Exists(partialMov),
+        "cleanup removes the completed recording's matching partial MOV");
+    Equal(true, File.Exists(completedMov) && File.Exists(unrelatedMov),
+        "cleanup preserves completed MOV and all unrelated user videos");
+    File.Delete(completedMov);
+    File.Delete(unrelatedMov);
+    PendingRecordingStore.CleanupOwnTemporaryArtifacts(completedMov, cleanupRoot);
+    Equal(false, Directory.Exists(cleanupRoot),
+        "empty owned pending folder is removed non-recursively");
+}
+finally
+{
+    if (Directory.Exists(cleanupRoot))
+        Directory.Delete(cleanupRoot, recursive: true);
+}
 
 var pendingDirectory = Path.Combine(Path.GetTempPath(),
     $"iphone-mirror-pending-test-{Guid.NewGuid():N}");
