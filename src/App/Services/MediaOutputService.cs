@@ -26,7 +26,8 @@ internal sealed record MediaOutputRequest(
     bool IncludePhoneShell = false,
     string? BackgroundImage = null,
     string? PhoneShellImage = null,
-    bool UseBackgroundCanvas = false);
+    bool UseBackgroundCanvas = false,
+    bool TransparentPhoneShellRecording = false);
 
 internal sealed record MediaOutputCapabilities(
     bool FfmpegAvailable,
@@ -41,6 +42,7 @@ internal sealed record MediaOutputCapabilities(
     string Detail)
 {
     internal IReadOnlyList<string> H264EncoderCandidates { get; init; } = [];
+    internal bool HasProRes4444Encoder { get; init; }
 
     // Audio is optional: the capture pipeline can explicitly pass -an when
     // no PCM packet is available. Keep video-only output available with a
@@ -262,9 +264,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 // the other, which previously surfaced only as a broken pipe.
                 var encoderWidth = (uint)(composition?.OutputWidth ?? (int)request.Width);
                 var encoderHeight = (uint)(composition?.OutputHeight ?? (int)request.Height);
-                capabilities = await ResolveWorkingEncoderAsync(capabilities,
-                    encoderWidth, encoderHeight, cancellationToken, request.FrameRate);
-                if (!capabilities.HasH264Encoder)
+                if (!request.TransparentPhoneShellRecording)
+                    capabilities = await ResolveWorkingEncoderAsync(capabilities,
+                        encoderWidth, encoderHeight, cancellationToken, request.FrameRate);
+                if (!request.TransparentPhoneShellRecording && !capabilities.HasH264Encoder)
                     throw new InvalidOperationException(
                         $"没有可用的 H.264 编码器支持最终录制画布 {encoderWidth}×{encoderHeight}。" +
                         " 请换较小的背景图或安装支持 libx264 的 FFmpeg。");
@@ -273,7 +276,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
                     ("source_height", request.Height),
                     ("canvas_width", encoderWidth), ("canvas_height", encoderHeight),
                     ("fps", request.FrameRate),
-                    ("encoder", capabilities.PreferredH264Encoder),
+                    ("encoder", request.TransparentPhoneShellRecording
+                        ? "prores_ks/yuva444p10le" : capabilities.PreferredH264Encoder),
                     ("audio", includeAudio), ("shell", request.IncludePhoneShell),
                     ("background_canvas", composition is not null));
                 audioPipe = audioPipeName is null ? null : new NamedPipeServerStream(
@@ -1290,9 +1294,14 @@ internal sealed class MediaOutputService : IAsyncDisposable
         {
             // File paths are ProcessStartInfo.ArgumentList elements, never
             // interpolated into a filter expression or passed through a shell.
-            if (composition.BackgroundFile is { Length: > 0 } background)
+            if (!request.TransparentPhoneShellRecording &&
+                composition.BackgroundFile is { Length: > 0 } background)
                 args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
                     "-i", background]);
+            else if (request.TransparentPhoneShellRecording)
+                args.AddRange(["-f", "lavfi", "-i",
+                    $"color=c=black:s={composition.OutputWidth}x{composition.OutputHeight}:r={request.FrameRate}," +
+                    "format=rgba,colorchannelmixer=aa=0"]);
             else
                 args.AddRange(["-f", "lavfi", "-i",
                     $"color=c=white:s={composition.OutputWidth}x{composition.OutputHeight}:r={request.FrameRate}"]);
@@ -1313,9 +1322,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
             args.AddRange(["-filter_complex",
                 // Resize the backdrop to the chosen output dimensions, independently
                 // from the native source frame. Crop only the background overflow.
-                $"[{bgIndex}:v]scale={composition.OutputWidth}:{composition.OutputHeight}:" +
-                "force_original_aspect_ratio=increase," +
-                $"crop={composition.OutputWidth}:{composition.OutputHeight},setsar=1[phone_bg];" +
+                (request.TransparentPhoneShellRecording
+                    ? $"[{bgIndex}:v]format=rgba[phone_bg];"
+                    : $"[{bgIndex}:v]scale={composition.OutputWidth}:{composition.OutputHeight}:" +
+                      "force_original_aspect_ratio=increase," +
+                      $"crop={composition.OutputWidth}:{composition.OutputHeight},setsar=1[phone_bg];") +
                 // Cover the entire shell viewport. 'decrease' + black pad
                 // exposed the background through the top/bottom of the bezel.
                 // Crop ONLY the phone video; the background stays untouched.
@@ -1344,8 +1355,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 $"[phone_bg][phone_video]overlay={composition.ScreenX}:{composition.ScreenY}:" +
                 "shortest=1:eof_action=endall:format=auto[phone_screen];" +
                 (request.IncludePhoneShell
-                    ? $"[phone_screen][{shellIndex}:v]overlay=0:0:shortest=1," +
-                      "format=nv12[composited]"
+                    ? $"[phone_screen][{shellIndex}:v]overlay=0:0:shortest=1:format=auto," +
+                      (request.TransparentPhoneShellRecording
+                          ? "format=yuva444p10le[composited]"
+                          : "format=nv12[composited]")
                     : "[phone_screen]format=nv12[composited]")]);
             args.AddRange(["-map", "[composited]"]);
             if (includeAudio) args.AddRange(["-map", "0:a:0"]);
@@ -1362,16 +1375,25 @@ internal sealed class MediaOutputService : IAsyncDisposable
         {
             args.AddRange(["-map", "0:v:0", "-an"]);
         }
-        args.AddRange(["-c:v", capabilities.PreferredH264Encoder]);
-        AddEncoderOptions(args, capabilities.PreferredH264Encoder, request.Kind);
-        args.AddRange([
-            "-color_range", "pc", "-colorspace", "bt709",
-            "-color_primaries", "bt709", "-color_trc", "bt709",
-            "-pix_fmt", EncoderPixelFormat(capabilities.PreferredH264Encoder),
-            "-g", (request.FrameRate * 2).ToString(),
-            "-b:v", $"{request.BitrateKbps}k", "-maxrate", $"{request.BitrateKbps}k",
-            "-bufsize", $"{request.BitrateKbps * 2}k",
-        ]);
+        if (request.TransparentPhoneShellRecording)
+        {
+            // Keep alpha throughout the MOV recording; NV12 would discard it.
+            args.AddRange(["-c:v", "prores_ks", "-profile:v", "4444",
+                "-pix_fmt", "yuva444p10le", "-alpha_bits", "16", "-qscale:v", "9"]);
+        }
+        else
+        {
+            args.AddRange(["-c:v", capabilities.PreferredH264Encoder]);
+            AddEncoderOptions(args, capabilities.PreferredH264Encoder, request.Kind);
+            args.AddRange([
+                "-color_range", "pc", "-colorspace", "bt709",
+                "-color_primaries", "bt709", "-color_trc", "bt709",
+                "-pix_fmt", EncoderPixelFormat(capabilities.PreferredH264Encoder),
+                "-g", (request.FrameRate * 2).ToString(),
+                "-b:v", $"{request.BitrateKbps}k", "-maxrate", $"{request.BitrateKbps}k",
+                "-bufsize", $"{request.BitrateKbps * 2}k",
+            ]);
+        }
         if (includeAudio)
             args.AddRange(request.Kind == MediaOutputKind.Whip
                 ? ["-c:a", "libopus", "-ac", "2", "-b:a", "128k"]
@@ -1379,7 +1401,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
         switch (request.Kind)
         {
             case MediaOutputKind.Recording:
-                args.AddRange(["-movflags", "+faststart", "-y", request.Destination]);
+                if (request.TransparentPhoneShellRecording)
+                    args.AddRange(["-f", "mov", "-y", request.Destination]);
+                else
+                    args.AddRange(["-movflags", "+faststart", "-y", request.Destination]);
                 break;
             case MediaOutputKind.Rtmp:
                 args.AddRange(["-f", "flv", request.Destination]);
@@ -1433,6 +1458,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             $"{Path.GetFileName(path)} / {preferredEncoder}")
         {
             H264EncoderCandidates = encoderCandidates,
+            HasProRes4444Encoder = HasToken(encoders, "prores_ks"),
         };
     }
 
@@ -1580,6 +1606,12 @@ internal sealed class MediaOutputService : IAsyncDisposable
             throw new InvalidOperationException("A compatible FFmpeg H.264 encoder is unavailable.");
         if (!capabilities.Supports(request.Kind))
             throw new InvalidOperationException("The requested FFmpeg output protocol is unavailable.");
+        if (request.TransparentPhoneShellRecording &&
+            (request.Kind != MediaOutputKind.Recording || !request.IncludePhoneShell ||
+             !capabilities.HasProRes4444Encoder ||
+             !string.Equals(Path.GetExtension(request.Destination), ".mov", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException(
+                "透明带壳录制只能输出 MOV，必须启用手机壳且 FFmpeg 支持 prores_ks (4444)。");
         if (request.Width is < 160 or > 4096 || request.Height is < 160 or > 4096 ||
             (request.Width & 1) != 0 || (request.Height & 1) != 0)
             throw new ArgumentOutOfRangeException(nameof(request),
