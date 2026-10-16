@@ -2239,12 +2239,6 @@ void test_flash_diagnostic_timeline() {
         42, 9, 123456, 300, 1920, 1080, DXGI_ERROR_WAS_STILL_DRAWING);
     logging::diagnostic_event(logging::DiagnosticEvent::VisualCommit,
         0, 9, 25, 50, 90000, 1000000, E_FAIL);
-    // Test the PUBLIC C API, not just the native logger. Previously it
-    // discarded codes 39-49 while returning void, so no caller noticed.
-    im_diagnostic_event(43, 0, 0, 7, 1500, 750, 0, 0);
-    im_diagnostic_event(48, 0, 0, -1, 0, 0, 0, 0);
-    im_diagnostic_event(49, 0, 0, 0, 0, 0, 0, 0);
-    im_diagnostic_event(50, 0, 0, 555, 0, 0, 0, 0);
     check(logging::stop_diagnostics(), "diagnostic writer flushes on stop");
     check(!logging::diagnostics_active(), "high-frequency tracing turns off after stop");
     const auto stopped_size = std::filesystem::file_size(path, error);
@@ -2269,14 +2263,6 @@ void test_flash_diagnostic_timeline() {
         "timeline: visual generation missing");
     check(contents.find("\"frame_id\":42") != std::string::npos,
         "timeline: frame ID missing");
-    check(contents.find("\"event\":\"visible_flash_marked\"") != std::string::npos,
-        "timeline: visible flash event missing");
-    check(contents.find("\"marker_id\":7") != std::string::npos,
-        "timeline: flash marker ID missing");
-    check(contents.find("\"event\":\"rotation_requested\"") != std::string::npos,
-        "timeline: rotation request missing");
-    check(contents.find("\"event\":\"rotation_trigger\"") != std::string::npos,
-        "timeline: rotation trigger missing");
     check(contents.find("\"event\":\"unknown\"") == std::string::npos,
         "timeline: no unknown event unexpectedly present");
     check(contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
@@ -2285,6 +2271,56 @@ void test_flash_diagnostic_timeline() {
     check(logging::start_diagnostics("1234abce", path),
         "diagnostic timeline can be started again after export");
     check(logging::stop_diagnostics(), "restarted timeline stops cleanly");
+    std::filesystem::remove(path, error);
+}
+
+
+void test_flash_diagnostic_public_api() {
+    // Core.Tests links its own Logging.cpp for internal logger tests, but
+    // im_diagnostic_event is implemented in iPhoneMirror.Core.dll, which has
+    // an INDEPENDENT set of tracing globals. Start, emit, and stop entirely
+    // through the public DLL API to exercise the actual C# -> native path.
+    const auto path = std::filesystem::temp_directory_path() /
+        (L"iPhoneMirror-flash-api-test-" +
+            std::to_wstring(GetCurrentProcessId()) + L".jsonl");
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    check(im_diagnostic_start(L"1234abcf", path.c_str()) ==
+        static_cast<std::int32_t>(iPhoneMirror::Result::Ok),
+        "public native diagnostic API starts a timeline");
+    im_diagnostic_set_context(12, 7);
+    im_diagnostic_event(34, 42, 9, 123456, 300, 1920, 1080, 0);
+    im_diagnostic_event(43, 0, 0, 7, 1500, 750, 0, 0);
+    im_diagnostic_event(48, 0, 0, -1, 0, 0, 0, 0);
+    im_diagnostic_event(49, 0, 0, 0, 0, 0, 0, 0);
+    // Invalid code must be silently ignored, not serialized as "unknown".
+    im_diagnostic_event(50, 0, 0, 555, 0, 0, 0, 0);
+    check(im_diagnostic_stop() ==
+        static_cast<std::int32_t>(iPhoneMirror::Result::Ok),
+        "public native diagnostic API flushes and stops its own timeline");
+    std::ifstream stream(path, std::ios::binary);
+    const std::string contents{
+        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    check(contents.find("\"event\":\"diagnostic_start\"") != std::string::npos,
+        "public API timeline includes session start");
+    check(contents.find("\"event\":\"visible_flash_marked\"") != std::string::npos,
+        "public API preserves visible flash marker event");
+    check(contents.find("\"marker_id\":7") != std::string::npos,
+        "public API preserves marker ID");
+    check(contents.find("\"event\":\"rotation_requested\"") != std::string::npos,
+        "public API preserves rotation request");
+    check(contents.find("\"event\":\"rotation_trigger\"") != std::string::npos,
+        "public API preserves rotation trigger");
+    check(contents.find("\"orientation_event_id\":7") != std::string::npos &&
+        contents.find("\"rotation_id\":12") != std::string::npos,
+        "public API preserves rotation correlation context");
+    check(contents.find("\"frame_id\":42") != std::string::npos,
+        "public API preserves frame correlation");
+    check(contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
+        "public API timeline includes session stop");
+    check(contents.find("\"event\":\"unknown\"") == std::string::npos,
+        "public API ignores invalid event numbers");
+    stream.close();
     std::filesystem::remove(path, error);
 }
 
@@ -2341,6 +2377,7 @@ int main(int argc, char** argv) {
         test_media_command_queue();
         test_logging_shutdown_boundary();
         test_flash_diagnostic_timeline();
+        test_flash_diagnostic_public_api();
         test_phone_rotation_final_present_geometry_gate();
         test_landscape_video_cover_geometry();
     } catch (const std::exception& error) {
