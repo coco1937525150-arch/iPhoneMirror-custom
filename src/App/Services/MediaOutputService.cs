@@ -7,6 +7,10 @@ using IPhoneMirror.App.Interop;
 
 namespace IPhoneMirror.App.Services;
 
+// Measurements distinguish real source updates from nominal encoded frame slots.
+internal readonly record struct RecordingFrameMetrics(
+    double SourceFps, double WrittenSlotFps, long RepeatSlots, long MaxPipeWriteMs);
+
 internal enum MediaOutputKind
 {
     Recording,
@@ -92,6 +96,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
     private string _lastError = string.Empty;
 
     internal event Action<string, bool>? StatusChanged;
+    internal event Action<RecordingFrameMetrics>? RecordingMetricsChanged;
     internal bool IsRunning => _runTask is { IsCompleted: false };
     internal ulong SessionHandle { get; private set; }
 
@@ -621,6 +626,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
         ReadOnlyMemory<byte> lastFrame = default;
         var statsClock = Stopwatch.StartNew();
         long lastDistinctSourceFrames = 0;
+        long lastReportedSlots = 0;
         long repeatedVideoSlots = 0;
         long lastRepeatedVideoSlots = 0;
         long lastWrittenSourceTimestamp = 0;
@@ -779,6 +785,25 @@ internal sealed class MediaOutputService : IAsyncDisposable
                             ("repeat_slots", repeatedInWindow),
                             ("max_pipe_write_ms", maxEncoderWriteMilliseconds));
                     }
+                    // UI metrics are informational; a subscriber must never
+                    // be allowed to interrupt recording or FFmpeg output.
+                    if (request.Kind == MediaOutputKind.Recording)
+                    {
+                        var writtenSlotsPerSecond = (framesWritten - lastReportedSlots) /
+                            statsClock.Elapsed.TotalSeconds;
+                        try
+                        {
+                            RecordingMetricsChanged?.Invoke(new RecordingFrameMetrics(
+                                uniqueFps, writtenSlotsPerSecond, repeatedInWindow,
+                                maxEncoderWriteMilliseconds));
+                        }
+                        catch (Exception error)
+                        {
+                            DiagnosticLogger.Exception("media_output",
+                                "recording_metrics_subscriber_failed", error);
+                        }
+                    }
+                    lastReportedSlots = framesWritten;
                     lastRepeatedVideoSlots = repeatedVideoSlots;
                     maxEncoderWriteMilliseconds = 0;
                     lastDistinctSourceFrames = metrics.Distinct;

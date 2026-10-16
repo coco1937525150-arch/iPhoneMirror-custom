@@ -331,9 +331,15 @@
                 <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock x:Name="FeedbackText" Text="{Binding MediaOutputStatus}"
-                       VerticalAlignment="Center" TextWrapping="Wrap"
-                       Foreground="{DynamicResource MutedTextBrush}" FontSize="11"/>
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock x:Name="FeedbackText" Text="{Binding MediaOutputStatus}"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource MutedTextBrush}" FontSize="11"/>
+                <TextBlock Text="{Binding MediaOutputRecordingMetrics}" TextWrapping="Wrap"
+                           ToolTip="源更新率和写入帧槽率并不等于显示器的实际刷新率；重复帧不计为新源帧。"
+                           Foreground="{DynamicResource MutedTextBrush}" FontSize="10"
+                           Margin="0,4,0,0"/>
+            </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal">
                 <Button Content="{DynamicResource DiscardRecording}"
                         Click="OnDiscardClick" Style="{StaticResource ToolButton}"

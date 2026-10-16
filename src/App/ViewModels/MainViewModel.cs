@@ -184,6 +184,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     private string _decoderStatus = string.Empty;
     private string _decoderStatusTone = "Hidden";
     private string _mediaOutputStatus = string.Empty;
+    private string _mediaOutputRecordingMetrics = string.Empty;
     private string _mediaOutputTone = "Hidden";
     private string _mediaOutputCapabilitiesText = string.Empty;
     private bool _mediaOutputCapabilitiesLoaded;
@@ -1039,6 +1040,12 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     }
     public Visibility DecoderStatusVisibility =>
         DecoderStatusTone == "Hidden" ? Visibility.Collapsed : Visibility.Visible;
+    public string MediaOutputRecordingMetrics
+    {
+        get => _mediaOutputRecordingMetrics;
+        private set => Set(ref _mediaOutputRecordingMetrics, value);
+    }
+
     public string MediaOutputStatus
     {
         get => _mediaOutputStatus;
@@ -1191,6 +1198,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         _mediaOutput = new MediaOutputService(GetOutputNv12Frame,
             GetOutputAudioPacket);
         _mediaOutput.StatusChanged += OnMediaOutputStatusChanged;
+        _mediaOutput.RecordingMetricsChanged += OnRecordingMetricsChanged;
         _pendingRecordingPath = PendingRecordingStore.FindLatest();
         _virtualCamera = new VirtualCameraService(GetOutputVideoFrame);
         _virtualCamera.StatusChanged += OnMediaOutputStatusChanged;
@@ -6652,6 +6660,20 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    private void OnRecordingMetricsChanged(RecordingFrameMetrics sample)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            _ = dispatcher.BeginInvoke(() => OnRecordingMetricsChanged(sample));
+            return;
+        }
+        MediaOutputRecordingMetrics =
+            $"录制实测：源更新 {sample.SourceFps:F1} fps · " +
+            $"写入 {sample.WrittenSlotFps:F1} 帧槽/s · " +
+            $"重复 {sample.RepeatSlots} · 编码写入峰值 {sample.MaxPipeWriteMs} ms";
+    }
+
     private void OnMediaOutputStatusChanged(string message, bool failed)
     {
         var dispatcher = Application.Current?.Dispatcher;
@@ -6660,6 +6682,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             _ = dispatcher.BeginInvoke(() => OnMediaOutputStatusChanged(message, failed));
             return;
         }
+        if (message == "Recording") MediaOutputRecordingMetrics = string.Empty;
         var localized = message switch
         {
             "Recording" => LocalizationService.Get("MediaOutputRecording"),
