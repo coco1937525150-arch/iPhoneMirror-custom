@@ -632,6 +632,8 @@
     <system:String x:Key="WirelessResolutionLabel">連接解像度</system:String>
     <system:String x:Key="WirelessResolutionHelp">套用後將重新宣告 AirPlay 接收能力；弱網請選擇 720p 或 540p。</system:String>
     <system:String x:Key="WirelessProfileMaximum">原畫（最高 5120×2880 · 60 fps）</system:String>
+    <system:String x:Key="WirelessProfile3K">3K（3072×1728 · 60 fps，实验性）</system:String>
+    <system:String x:Key="WirelessProfile2K">2K / 1440p（2560×1440 · 60 fps）</system:String>
     <system:String x:Key="WirelessProfile1080p">1080p（推薦 · 60 fps）</system:String>
     <system:String x:Key="WirelessProfile720p">720p（流暢 · 30 fps）</system:String>
     <system:String x:Key="WirelessProfile540p">540p（弱網 · 30 fps）</system:String>

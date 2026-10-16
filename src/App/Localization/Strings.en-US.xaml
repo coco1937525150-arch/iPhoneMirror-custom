@@ -632,6 +632,8 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="WirelessResolutionLabel">Connection resolution</system:String>
     <system:String x:Key="WirelessResolutionHelp">Applying re-advertises the AirPlay receiver capability. Use 720p or 540p on a weak network.</system:String>
     <system:String x:Key="WirelessProfileMaximum">Original quality (up to 5120×2880 · 60 fps)</system:String>
+    <system:String x:Key="WirelessProfile3K">3K (3072×1728 · 60 fps, experimental)</system:String>
+    <system:String x:Key="WirelessProfile2K">2K / 1440p (2560×1440 · 60 fps)</system:String>
     <system:String x:Key="WirelessProfile1080p">1080p (recommended · 60 fps)</system:String>
     <system:String x:Key="WirelessProfile720p">720p (smooth · 30 fps)</system:String>
     <system:String x:Key="WirelessProfile540p">540p (weak network · 30 fps)</system:String>
