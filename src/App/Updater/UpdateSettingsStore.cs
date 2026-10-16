@@ -31,6 +31,7 @@ internal sealed class UpdateSettings
     // change its own topmost state without changing other open windows.
     public bool IndependentWindowAlwaysOnTop { get; set; }
     public bool MediaOutputIncludePhoneShell { get; set; } = true;
+    public bool MediaOutputTransparentShellRecording { get; set; }
     public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
     // Nullable for migrating existing background picture preferences.
     public bool? MediaOutputUseDefaultWhiteBackground { get; set; }
@@ -121,6 +122,7 @@ internal sealed class UpdateSettings
         ApplicationDisplayMode = ApplicationDisplayMode,
         IndependentWindowAlwaysOnTop = IndependentWindowAlwaysOnTop,
         MediaOutputIncludePhoneShell = MediaOutputIncludePhoneShell,
+        MediaOutputTransparentShellRecording = MediaOutputTransparentShellRecording,
         MediaOutputBackgroundImagePath = MediaOutputBackgroundImagePath,
         MediaOutputUseDefaultWhiteBackground = MediaOutputUseDefaultWhiteBackground,
         MediaOutputRecordingDirectory = MediaOutputRecordingDirectory,

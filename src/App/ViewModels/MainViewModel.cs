@@ -6248,15 +6248,17 @@ internal sealed class MainViewModel : INotifyPropertyChanged
     internal async Task<(bool Success, string Message)> StartRecordingAsync(
         uint width, uint height, int frameRate, int bitrateKbps,
         bool includePhoneShell = false, string? backgroundImage = null,
-        string? phoneShellImage = null, bool useBackgroundCanvas = false)
+        string? phoneShellImage = null, bool useBackgroundCanvas = false,
+        bool transparentPhoneShell = false)
     {
         if (PendingRecordingPath is not null)
             return (false, LocalizationService.Get("RecordingPendingSave"));
-        var path = PendingRecordingStore.CreatePath();
+        var path = PendingRecordingStore.CreatePath(transparentPhoneShell);
         var request = new MediaOutputRequest(MediaOutputKind.Recording, path,
             NormalizeOutputWidth(width), NormalizeOutputHeight(height), frameRate, bitrateKbps,
             IncludePhoneShell: includePhoneShell, BackgroundImage: backgroundImage,
-            PhoneShellImage: phoneShellImage, UseBackgroundCanvas: useBackgroundCanvas);
+            PhoneShellImage: phoneShellImage, UseBackgroundCanvas: useBackgroundCanvas,
+            TransparentPhoneShellRecording: transparentPhoneShell);
         var result = await StartMediaOutputAsync(request);
         if (result.Success) _pendingRecordingPath = path;
         else

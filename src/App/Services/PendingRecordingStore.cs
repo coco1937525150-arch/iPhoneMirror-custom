@@ -4,16 +4,18 @@ namespace IPhoneMirror.App.Services;
 
 internal static class PendingRecordingStore
 {
-    private const string PartialSuffix = ".partial.mp4";
+    private const string PartialSuffixMp4 = ".partial.mp4";
+    private const string PartialSuffixMov = ".partial.mov";
 
     internal static string DefaultDirectory => Path.Combine(
         Path.GetTempPath(), "iPhoneMirror", "PendingRecordings");
 
-    internal static string CreatePath()
+    internal static string CreatePath(bool transparentPhoneShell = false)
     {
         Directory.CreateDirectory(DefaultDirectory);
+        var extension = transparentPhoneShell ? ".mov" : ".mp4";
         return Path.Combine(DefaultDirectory,
-            $"iPhoneMirror_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.mp4");
+            $"iPhoneMirror_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{extension}");
     }
 
     internal static string CreateStagingPath(string completedPath)
@@ -23,7 +25,12 @@ internal static class PendingRecordingStore
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("A complete recording path is required.",
                 nameof(completedPath));
-        return Path.Combine(directory, name + PartialSuffix);
+        var extension = Path.GetExtension(completedPath);
+        if (!extension.Equals(".mov", StringComparison.OrdinalIgnoreCase) &&
+            !extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Only .mov and .mp4 are valid recording formats.",
+                nameof(completedPath));
+        return Path.Combine(directory, name + ".partial" + extension);
     }
 
     internal static string? FindLatest(string? directory = null)
@@ -33,10 +40,12 @@ internal static class PendingRecordingStore
         try
         {
             return new DirectoryInfo(directory)
-                .EnumerateFiles("*.mp4", SearchOption.TopDirectoryOnly)
+                .EnumerateFiles("*", SearchOption.TopDirectoryOnly)
                 .Where(file => file.Length > 0 &&
-                    !file.Name.EndsWith(PartialSuffix,
-                        StringComparison.OrdinalIgnoreCase))
+                    (file.Extension.Equals(".mov", StringComparison.OrdinalIgnoreCase) ||
+                     file.Extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)) &&
+                    !file.Name.EndsWith(PartialSuffixMp4, StringComparison.OrdinalIgnoreCase) &&
+                    !file.Name.EndsWith(PartialSuffixMov, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(file => file.LastWriteTimeUtc)
                 .Select(file => file.FullName)
                 .FirstOrDefault();

@@ -36,7 +36,8 @@ internal sealed class RecordingLayoutEditorWindow : Window
     private Point _dragOffset;
 
     internal RecordingLayoutEditorWindow(string backgroundPath, bool landscape = false,
-        uint sourceWidth = 1280, uint sourceHeight = 720)
+        uint sourceWidth = 1280, uint sourceHeight = 720,
+        bool transparentBackground = false)
     {
         _landscape = landscape;
         _rotationDegrees = landscape ? 90 : 0;
@@ -68,14 +69,14 @@ internal sealed class RecordingLayoutEditorWindow : Window
                 settings.MediaOutputShellRotationDegrees ?? _rotationDegrees);
         }
 
-        _preview.Background = Brushes.LightGray;
+        _preview.Background = transparentBackground ? CheckerboardBrush() : Brushes.LightGray;
         if (!string.IsNullOrWhiteSpace(backgroundPath) && File.Exists(backgroundPath))
         {
             _backgroundImage.Source = LoadImage(backgroundPath);
             _overlay.Background = Brushes.Transparent;
         }
         else
-            _overlay.Background = Brushes.White;
+            _overlay.Background = transparentBackground ? CheckerboardBrush() : Brushes.White;
         _preview.ClipToBounds = true;
         _preview.Children.Add(_backgroundImage);
         _overlay.ClipToBounds = true;
@@ -152,6 +153,25 @@ internal sealed class RecordingLayoutEditorWindow : Window
         host.Children.Add(actions);
         Content = host;
         Loaded += (_, _) => Redraw();
+    }
+
+    // Editor-only transparency visualization: never embedded in the MOV.
+    private static Brush CheckerboardBrush()
+    {
+        var group = new DrawingGroup();
+        group.Children.Add(new GeometryDrawing(Brushes.White, null,
+            new RectangleGeometry(new Rect(0, 0, 20, 20))));
+        group.Children.Add(new GeometryDrawing(Brushes.Gainsboro, null,
+            new RectangleGeometry(new Rect(0, 0, 10, 10))));
+        group.Children.Add(new GeometryDrawing(Brushes.Gainsboro, null,
+            new RectangleGeometry(new Rect(10, 10, 10, 10))));
+        return new DrawingBrush(group)
+        {
+            TileMode = TileMode.Tile,
+            Viewport = new Rect(0, 0, 20, 20),
+            ViewportUnits = BrushMappingMode.Absolute,
+            Stretch = Stretch.Fill
+        };
     }
 
     private static BitmapSource LoadImage(string path)
