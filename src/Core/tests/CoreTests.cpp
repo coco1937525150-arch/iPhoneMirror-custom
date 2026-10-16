@@ -2254,19 +2254,33 @@ void test_flash_diagnostic_timeline() {
     std::ifstream stream(path, std::ios::binary);
     const std::string contents{
         std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-    check(contents.find("\"event\":\"diagnostic_start\"") != std::string::npos &&
-        contents.find("\"qpc_frequency\":") != std::string::npos &&
-        contents.find("\"orientation_event_id\":7") != std::string::npos &&
-        contents.find("\"rotation_id\":12") != std::string::npos &&
-        contents.find("\"visual_generation\":9") != std::string::npos &&
-        contents.find("\"frame_id\":42") != std::string::npos &&
-        contents.find("\"event\":\"visible_flash_marked\"") != std::string::npos &&
-        contents.find("\"marker_id\":7") != std::string::npos &&
-        contents.find("\"event\":\"rotation_requested\"") != std::string::npos &&
-        contents.find("\"event\":\"rotation_trigger\"") != std::string::npos &&
-        contents.find("\"event\":\"unknown\"") == std::string::npos &&
-        contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
-        "native timeline correlates frame, visual, rotation, QPC and session events");
+    // Report each missing correlation field separately. A combined && check
+    // concealed whether the public API lost marker events or the writer
+    // emitted the wrong JSON shape, making Windows CI failures opaque.
+    check(contents.find("\"event\":\"diagnostic_start\"") != std::string::npos,
+        "timeline: diagnostic start missing");
+    check(contents.find("\"qpc_frequency\":") != std::string::npos,
+        "timeline: QPC frequency missing");
+    check(contents.find("\"orientation_event_id\":7") != std::string::npos,
+        "timeline: orientation ID missing");
+    check(contents.find("\"rotation_id\":12") != std::string::npos,
+        "timeline: rotation ID missing");
+    check(contents.find("\"visual_generation\":9") != std::string::npos,
+        "timeline: visual generation missing");
+    check(contents.find("\"frame_id\":42") != std::string::npos,
+        "timeline: frame ID missing");
+    check(contents.find("\"event\":\"visible_flash_marked\"") != std::string::npos,
+        "timeline: visible flash event missing");
+    check(contents.find("\"marker_id\":7") != std::string::npos,
+        "timeline: flash marker ID missing");
+    check(contents.find("\"event\":\"rotation_requested\"") != std::string::npos,
+        "timeline: rotation request missing");
+    check(contents.find("\"event\":\"rotation_trigger\"") != std::string::npos,
+        "timeline: rotation trigger missing");
+    check(contents.find("\"event\":\"unknown\"") == std::string::npos,
+        "timeline: no unknown event unexpectedly present");
+    check(contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
+        "timeline: diagnostic stop missing");
     stream.close();
     check(logging::start_diagnostics("1234abce", path),
         "diagnostic timeline can be started again after export");
