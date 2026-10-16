@@ -70,20 +70,26 @@
                            TextWrapping="Wrap" FontSize="10"
                            Foreground="{DynamicResource MutedTextBrush}"/>
                 <Grid x:Name="ShellOptionsPanel">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBox x:Name="BackgroundImageBox" Grid.Row="0" Grid.Column="0"
                              Style="{StaticResource RoundedTextBox}" Height="34" IsReadOnly="True"
                              ToolTip="默认白板无需选择文件；选择图片后使用自定义背景板。"/>
-                    <Button Grid.Row="0" Grid.Column="2" Style="{StaticResource ToolButton}"
+                    <Button x:Name="DefaultWhiteBackgroundButton" Grid.Row="0" Grid.Column="2" Style="{StaticResource ToolButton}"
                             Content="默认白板" Margin="0,0,8,0"
                             ToolTip="启用纯白色 9:16 画布（1080×1920），无需选择背景图片"
                             Click="OnUseDefaultWhiteBackgroundClick"/>
-                    <Button Grid.Row="0" Grid.Column="3" Style="{StaticResource ToolButton}"
+                    <Button x:Name="ChooseBackgroundButton" Grid.Row="0" Grid.Column="3" Style="{StaticResource ToolButton}"
                             Content="{DynamicResource MediaOutputChooseBackground}"
                             Click="OnChooseBackgroundClick"/>
+                    <CheckBox x:Name="TransparentShellRecordingBox" Grid.Row="1"
+                              Grid.Column="0" Grid.ColumnSpan="4" Margin="0,10,0,0"
+                              Content="透明带壳录制（MOV · ProRes 4444）"
+                              ToolTip="仅对本地录制生效：手机壳以外保留真正 Alpha 透明通道。推流仍使用普通背景。"
+                              Checked="OnTransparentShellChanged"
+                              Unchecked="OnTransparentShellChanged"/>
                 </Grid>
             </StackPanel>
         </Border>

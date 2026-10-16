@@ -19,6 +19,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     private (uint Width, uint Height)? _lastDefaultSize;
     private string _customBackgroundPath = string.Empty;
     private bool _useDefaultWhiteBackground;
+    private bool _restoringShellPreferences;
 
     internal MediaOutputSettingsWindow(MainViewModel viewModel, bool previewOnly = false)
     {
@@ -189,7 +190,10 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (Application.Current is not App app) return;
         var settings = app.UpdateSettings;
+        _restoringShellPreferences = true;
         IncludePhoneShellBox.IsChecked = settings.MediaOutputIncludePhoneShell;
+        TransparentShellRecordingBox.IsChecked =
+            settings.MediaOutputTransparentShellRecording;
         _customBackgroundPath = settings.MediaOutputBackgroundImagePath ?? string.Empty;
         _useDefaultWhiteBackground = settings.MediaOutputUseDefaultWhiteBackground ??
             string.IsNullOrWhiteSpace(_customBackgroundPath);
@@ -202,7 +206,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             if (RecordResolutionPresetBox is not null)
                 RecordResolutionPresetBox.SelectedIndex = 2;
         }
-        // Background selection remains available when the phone shell is hidden.
+        _restoringShellPreferences = false;
+        RefreshTransparentShellControls();
     }
 
     private void SaveShellPreferences()
@@ -210,6 +215,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (_previewOnly || Application.Current is not App app) return;
         app.UpdateSettings.MediaOutputIncludePhoneShell =
             IncludePhoneShellBox.IsChecked == true;
+        app.UpdateSettings.MediaOutputTransparentShellRecording =
+            TransparentShellRecordingBox.IsChecked == true;
         app.UpdateSettings.MediaOutputBackgroundImagePath = _customBackgroundPath;
         app.UpdateSettings.MediaOutputUseDefaultWhiteBackground = _useDefaultWhiteBackground;
         app.UpdateSettings.MediaOutputRecordingDirectory = RecordingDirectoryBox.Text.Trim();
@@ -218,8 +225,38 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
 
     private void OnShellModeChanged(object sender, RoutedEventArgs e)
     {
-        // This toggle changes only the phone overlay. Background controls stay
-        // enabled; persistence is handled by the normal save/start actions.
+        if (_restoringShellPreferences) return;
+        if (IncludePhoneShellBox.IsChecked != true &&
+            TransparentShellRecordingBox is not null)
+            TransparentShellRecordingBox.IsChecked = false;
+        RefreshTransparentShellControls();
+    }
+
+    private void OnTransparentShellChanged(object sender, RoutedEventArgs e)
+    {
+        if (_restoringShellPreferences) return;
+        if (TransparentShellRecordingBox?.IsChecked == true &&
+            IncludePhoneShellBox is not null)
+            IncludePhoneShellBox.IsChecked = true;
+        RefreshTransparentShellControls();
+        if (IsLoaded) SaveShellPreferences();
+    }
+
+    private void RefreshTransparentShellControls()
+    {
+        if (TransparentShellRecordingBox is null || BackgroundImageBox is null)
+            return;
+        var transparent = TransparentShellRecordingBox.IsChecked == true;
+        BackgroundImageBox.Text = transparent ? "无背景（真实 Alpha 透明）" :
+            _useDefaultWhiteBackground ? "默认白板（9:16）" : _customBackgroundPath;
+        if (DefaultWhiteBackgroundButton is not null)
+            DefaultWhiteBackgroundButton.IsEnabled = !transparent;
+        if (ChooseBackgroundButton is not null)
+            ChooseBackgroundButton.IsEnabled = !transparent;
+        if (EditRecordingLayoutButton is not null)
+            EditRecordingLayoutButton.ToolTip = transparent
+                ? "可拖动、旋转、按 5% 缩放手机壳；棋盘格仅用于透明预览"
+                : "拖动和缩放手机壳";
     }
 
     private void UpdateRecommendedRecordingBitrate()
@@ -337,7 +374,10 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         var canvasHeight = hasHeight ? Math.Clamp(height + (height & 1U), 160U, 4096U) : 1920U;
         var landscape = canvasWidth > canvasHeight;
         var editor = new RecordingLayoutEditorWindow(
-            SelectedBackgroundPath, landscape, canvasWidth, canvasHeight)
+            TransparentShellRecordingBox.IsChecked == true
+                ? string.Empty : SelectedBackgroundPath,
+            landscape, canvasWidth, canvasHeight,
+            transparentBackground: TransparentShellRecordingBox.IsChecked == true)
             { Owner = this };
         if (editor.ShowDialog() == true) SaveShellPreferences();
     }
@@ -402,11 +442,13 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             return;
         SaveShellPreferences();
         StopMediaOutputButton.Content = "完成录制";
+        var transparent = TransparentShellRecordingBox.IsChecked == true;
         var result = await _viewModel.StartRecordingAsync(
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
-            SelectedBackgroundPath, string.Empty,
-            useBackgroundCanvas: _useDefaultWhiteBackground ||
-                !string.IsNullOrWhiteSpace(_customBackgroundPath));
+            transparent ? string.Empty : SelectedBackgroundPath, string.Empty,
+            useBackgroundCanvas: !transparent &&
+                (_useDefaultWhiteBackground || !string.IsNullOrWhiteSpace(_customBackgroundPath)),
+            transparentPhoneShell: transparent);
         FeedbackText.Text = result.Message;
     }
 
@@ -506,11 +548,12 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
                     Environment.SpecialFolder.MyVideos), "iPhoneMirror");
             directory = Path.GetFullPath(directory);
             Directory.CreateDirectory(directory);
-            var filename = $"iPhoneMirror_{DateTime.Now:yyyyMMdd_HHmmss}.mp4";
-            var destination = Path.Combine(directory, filename);
+            var extension = string.Equals(Path.GetExtension(pending), ".mov",
+                StringComparison.OrdinalIgnoreCase) ? ".mov" : ".mp4";
+            var basename = $"iPhoneMirror_{DateTime.Now:yyyyMMdd_HHmmss}";
+            var destination = Path.Combine(directory, basename + extension);
             for (var counter = 1; File.Exists(destination); counter++)
-                destination = Path.Combine(directory,
-                    $"iPhoneMirror_{DateTime.Now:yyyyMMdd_HHmmss}_{counter}.mp4");
+                destination = Path.Combine(directory, $"{basename}_{counter}{extension}");
             try { File.Move(pending, destination, overwrite: false); }
             catch (IOException)
             {
