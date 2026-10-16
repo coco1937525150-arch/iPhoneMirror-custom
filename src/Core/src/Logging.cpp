@@ -62,7 +62,7 @@ struct TraceDescriptor {
     std::array<const char*, 4> keys;
 };
 
-constexpr std::array<TraceDescriptor, 43> TraceEvents{{
+constexpr std::array<TraceDescriptor, 50> TraceEvents{{
     {"unknown", {"value0", "value1", "value2", "value3"}},
     {"diagnostic_start", {"qpc_frequency", "utc_filetime_100ns", "", ""}},
     {"diagnostic_stop", {"ring_events_lost", "", "", ""}},
@@ -106,6 +106,13 @@ constexpr std::array<TraceDescriptor, 43> TraceEvents{{
     {"recording_frame_repeat", {"repeated_slots", "total_slots", "source_frame_timestamp_100ns", ""}},
     {"recording_encoder_stall", {"write_duration_ms", "requested_fps", "slots", ""}},
     {"recording_unstable_window", {"unique_fps_milli", "requested_fps", "repeated_slots", "max_write_ms"}},
+    {"visible_flash_marked", {"marker_id", "lookback_ms", "lookahead_ms", ""}},
+    {"frame_geometry", {"video_turns", "crop_x_ppm", "crop_y_ppm", "staging_turns"}},
+    {"frame_aperture", {"opening_x", "opening_y", "opening_width", "opening_height"}},
+    {"frame_viewport", {"viewport_x", "viewport_y", "viewport_width", "viewport_height"}},
+    {"frame_client_geometry", {"client_width", "client_height", "backbuffer_width", "backbuffer_height"}},
+    {"rotation_requested", {"delta", "trigger_auto", "committed_turns", "animating"}},
+    {"rotation_trigger", {"trigger_auto", "orientation_event_id", "", ""}},
 }};
 
 constexpr std::size_t TraceCapacity = 8192;

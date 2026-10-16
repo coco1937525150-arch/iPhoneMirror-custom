@@ -40,6 +40,8 @@ enum class DiagnosticEvent : std::uint16_t {
     PresentBegin, PresentEnd, OutputModeChanged, GpuTextureRebuilt,
     FrameGap, DiagnosticOverflow, RecordingSourceStall,
     RecordingFrameRepeat, RecordingEncoderStall, RecordingUnstableWindow,
+    VisualFlashMarked, FrameGeometry, FrameAperture, FrameViewport,
+    FrameClientGeometry, RotationRequested, RotationTrigger,
 };
 
 [[nodiscard]] bool start_diagnostics(std::string_view id,

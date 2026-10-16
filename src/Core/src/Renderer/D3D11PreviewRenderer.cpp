@@ -2002,6 +2002,36 @@ struct D3D11PreviewRenderer::Impl {
             viewport.Height = viewport.Width / source_aspect;
             viewport.TopLeftY += (screen_area.height - viewport.Height) * 0.5F;
         }
+        // Diagnostics only: correlate the actual shader UV transform, opening,
+        // viewport and HWND/backbuffer within the SAME decoded frame. This
+        // catches temporary misalignment that Present HRESULT alone misses.
+        // Bounded native trace writes asynchronously, never on the GPU thread.
+        if (logging::diagnostics_active()) {
+            const auto ppm = [](float value) -> std::int64_t {
+                return static_cast<std::int64_t>(std::llround(value * 1000000.0F));
+            };
+            const auto px = [](float value) -> std::int64_t {
+                return static_cast<std::int64_t>(std::llround(value));
+            };
+            const auto fid = frame.sequence_id;
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameGeometry,
+                fid, applied_visual_generation, video_turns,
+                ppm(crop.x), ppm(crop.y), staging_turns);
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameAperture,
+                fid, applied_visual_generation, px(screen_area.x), px(screen_area.y),
+                px(screen_area.width), px(screen_area.height));
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameViewport,
+                fid, applied_visual_generation, px(viewport.TopLeftX),
+                px(viewport.TopLeftY), px(viewport.Width), px(viewport.Height));
+            RECT actual_client{};
+            if (GetClientRect(window, &actual_client)) {
+                logging::diagnostic_event(logging::DiagnosticEvent::FrameClientGeometry,
+                    fid, applied_visual_generation,
+                    actual_client.right - actual_client.left,
+                    actual_client.bottom - actual_client.top,
+                    target_width, target_height);
+            }
+        }
         // For a genuinely matching iPhone source, extend video 1.5 physical
         // pixels beneath the PNG's antialiased aperture edge. The central-hole
         // alpha mask clips the overscan; no metal-frame/background pixels leak
