@@ -1781,7 +1781,7 @@ Equal(true,
         "if (delta == 0)",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains(
-        "if (!Rotate(delta))",
+        "if (!Rotate(delta, autoTriggered: true))",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains(
         "_autoAirPlayWasLandscape = landscape;",
@@ -1793,6 +1793,22 @@ Equal(true,
         "_deviceFrameProfile, _sourceWidth, _sourceHeight, _rotation);",
         StringComparison.Ordinal),
     "AirPlay auto-turn compares pending animation destination, handles user manual direction and retries rejected native turns");
+// Regression: lock/disconnect must remove the still-alive native HWND from
+// the desktop hit-test path WITHOUT discarding its reconnect geometry.
+Equal(true,
+    nativePreviewWindowCode.Contains(
+        "_ = ShowWindow(_handle, SwHide); // FIRST: leave the hit-test path",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_waitingForWirelessReconnect ? new nint(-1)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("if (!_attached) return;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("ShowWindow(_handle, SwShowNoActivate)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "if (_disposed || _handle == 0 || _waitingForWirelessReconnect) return;",
+        StringComparison.Ordinal),
+    "wireless disconnect makes borderless native preview click-through and hidden until actual rebind");
 var wirelessIndependentManagerSource = File.ReadAllText(Path.Combine(
     sourceDirectory, "App", "Services", "MultiDevicePreviewManager.cs"));
 Equal(true,

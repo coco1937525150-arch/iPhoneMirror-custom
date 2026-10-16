@@ -86,6 +86,7 @@ internal sealed class NativePreviewWindow : IDisposable
 
     private const int SwHide = 0;
     private const int SwShow = 5;
+    private const int SwShowNoActivate = 8;
     private const int SwRestore = 9;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
@@ -170,6 +171,7 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly Stopwatch _rotationClock = Stopwatch.StartNew();
     private PhoneRotationTimeline _rotationTimeline = new();
     private bool _rotationAnimating;
+    private bool _waitingForWirelessReconnect;
     private bool _rotationRenderingSubscribed;
     private TimeSpan _lastCompositionRotationTick;
     private readonly DispatcherTimer _airPlayOrientationTimer;
@@ -477,14 +479,58 @@ internal sealed class NativePreviewWindow : IDisposable
     internal void SetWaitingForWirelessReconnect(bool waiting)
     {
         if (_disposed || _handle == 0 || _managedContent is not null) return;
-        // Never present a stale frame as a live iPhone feed. The native session
-        // is already gone; only the user's window geometry is retained.
+        if (waiting)
+        {
+            // iOS lock disconnects the native visual but does not destroy
+            // its borderless HWND. An invisible, full-screen HWND still
+            // intercepts mouse clicks and right-clicks on the user's desktop.
+            _waitingForWirelessReconnect = true;
+            _contextMenu.IsOpen = false;
+            _contextMenu.PlacementTarget = null;
+            _wheelZoomTimer.Stop();
+            _airPlayOrientationTimer.Stop();
+            _queuedAirPlayLandscape = null;
+            _ = ShowWindow(_handle, SwHide); // FIRST: leave the hit-test path
+            if (_capturedMouseButtons != 0)
+            {
+                _capturedMouseButtons = 0;
+                _ = ReleaseCapture();
+                _pointerInput?.Invoke(new PreviewPointerEventArgs(
+                    PreviewPointerKind.Reset, 0, 0, 0, 0));
+            }
+            _keyboardInput?.Invoke(new PreviewKeyboardEventArgs(
+                PreviewKeyboardKind.Reset, 0));
+            if (_rotationAnimating) AbortRotationAnimation();
+            if (_isFullScreen)
+            {
+                _isFullScreen = false;
+                _ = RemovePropW(_handle, "iPhoneMirrorFullScreen");
+                _ = SetWindowLongPtrW(_handle, GwlStyle, _restoreStyle);
+                // Do not use SWP_SHOWWINDOW or ToggleFullScreen here: those
+                // would briefly resurrect the invisible desktop-sized HWND.
+                _ = SetWindowPos(_handle, 0,
+                    _restoreRectangle.Left, _restoreRectangle.Top,
+                    Math.Max(1, _restoreRectangle.Right - _restoreRectangle.Left),
+                    Math.Max(1, _restoreRectangle.Bottom - _restoreRectangle.Top),
+                    SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
+                FullScreenChanged?.Invoke(false);
+            }
+        }
+        else
+        {
+            // MultiDevicePreviewManager calls this only AFTER a successful
+            // RebindSession. Do not show if the new renderer was not attached.
+            if (!_attached) return;
+            _waitingForWirelessReconnect = false;
+            if (Volatile.Read(ref BossKeyHidden) == 0)
+                _ = ShowWindow(_handle, SwShowNoActivate);
+        }
         var title = waiting
             ? _windowTitle + " · " + LocalizationService.Get("StatusWaitingDevice")
             : _windowTitle;
         _ = SetWindowTextW(_handle, title);
         Log("independent_window_wireless_reconnect_wait",
-            ("waiting", waiting), ("mode", WindowMode));
+            ("waiting", waiting), ("mode", WindowMode), ("hidden", waiting));
     }
 
     internal bool RebindSession(ulong sessionHandle)
@@ -675,7 +721,7 @@ internal sealed class NativePreviewWindow : IDisposable
 
     internal void Activate()
     {
-        if (_disposed || _handle == 0) return;
+        if (_disposed || _handle == 0 || _waitingForWirelessReconnect) return;
         if (IsIconic(_handle)) _ = ShowWindow(_handle, SwRestore);
         else _ = ShowWindow(_handle, SwShow);
         if (!_attached && _attachPreview(_handle))
@@ -708,7 +754,8 @@ internal sealed class NativePreviewWindow : IDisposable
             return;
         }
 
-        _ = ShowWindow(_handle, SwShow);
+        if (!_waitingForWirelessReconnect)
+            _ = ShowWindow(_handle, SwShow);
     }
 
     internal static void SetAllBossKeyHidden(bool hidden)
@@ -877,6 +924,14 @@ internal sealed class NativePreviewWindow : IDisposable
             Log("autoplay_cancelled", ("message", "WM_QUERYCANCELAUTOPLAY"));
             return 1;
         }
+        if (_waitingForWirelessReconnect &&
+            (message == WmContextMenu || message == WmRightButtonUp ||
+             message == WmRightButtonDown || message == WmNcRightButtonDown ||
+             message == WmNcRightButtonUp))
+        {
+            handled = true;
+            return 0;
+        }
         if (IsPointerInputEnabledForWindow &&
             (message == WmKillFocus || message == WmCancelMode ||
              message == WmCaptureChanged ||
@@ -1020,7 +1075,8 @@ internal sealed class NativePreviewWindow : IDisposable
                 return 0;
             case WmNcHitTest when _managedContent is null:
                 handled = true;
-                return _isFullScreen || _isFixed ? HtClient : HitTestWindow(lParam);
+                return _waitingForWirelessReconnect ? new nint(-1) :
+                    _isFullScreen || _isFixed ? HtClient : HitTestWindow(lParam);
             case WmContextMenu:
             case WmRightButtonUp:
                 handled = true;
@@ -1330,7 +1386,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private bool IsUsbControlEnabledForWindow => _pointerInput is not null &&
         (_isUsbControlEnabled?.Invoke() ?? false);
     private bool IsPointerInputEnabledForWindow =>
-        IsReverseControlEnabledForWindow || IsUsbControlEnabledForWindow;
+        !_waitingForWirelessReconnect &&
+        (IsReverseControlEnabledForWindow || IsUsbControlEnabledForWindow);
     private bool IsPointerInputActive =>
         !_rotationAnimating && (IsReverseControlActive ||
         (IsUsbControlEnabledForWindow && GetForegroundWindow() == _handle));
