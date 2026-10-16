@@ -6289,7 +6289,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             return (false, LocalizationService.Get("RecordingPendingSave"));
         var path = PendingRecordingStore.CreatePath(transparentPhoneShell);
         var request = new MediaOutputRequest(MediaOutputKind.Recording, path,
-            NormalizeOutputWidth(width), NormalizeOutputHeight(height), frameRate, bitrateKbps,
+            NormalizeRecordingDimension(width), NormalizeRecordingDimension(height),
+            frameRate, bitrateKbps,
             IncludePhoneShell: includePhoneShell, BackgroundImage: backgroundImage,
             PhoneShellImage: phoneShellImage, UseBackgroundCanvas: useBackgroundCanvas,
             TransparentPhoneShellRecording: transparentPhoneShell,
@@ -6725,6 +6726,12 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         MediaOutputStatus = text;
         MediaOutputTone = tone;
     }
+
+    // Recording accepts portrait 1440x2560 (and up to 4096 pixels per axis).
+    // Never silently clamp a user-selected 1440p portrait height to 2160.
+    // Streaming / virtual camera retain their separate conservative limits.
+    private static uint NormalizeRecordingDimension(uint value) =>
+        Math.Clamp(value == 0 ? 720U : value & ~1U, 160U, 4096U);
 
     private static uint NormalizeOutputWidth(uint value) =>
         Math.Clamp(value == 0 ? 1280U : value & ~1U, 160U, 3840U);
