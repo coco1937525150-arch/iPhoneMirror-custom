@@ -4806,6 +4806,13 @@ for (var quarter = 0; quarter < 4; ++quarter)
 Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromSeconds(4)) - 360) < .001,
     "four quarter turns finish at the original orientation");
 
+Equal(true, File.ReadAllText(Path.Combine(sourceDirectory,
+        "App", "Windows", "MediaOutputSettingsWindow.xaml")).Contains(
+        "TransparentShellRecordingBox", StringComparison.Ordinal) &&
+    File.ReadAllText(Path.Combine(sourceDirectory,
+        "App", "Windows", "MediaOutputSettingsWindow.xaml.cs")).Contains(
+        "transparentPhoneShell: transparent", StringComparison.Ordinal),
+    "real settings window exposes an actionable transparent shell recording option");
 TestFlashZip();
 var mediaFrameLatch = new MediaOutputService.FrameLatch();
 mediaFrameLatch.Publish(new byte[] { 4, 5, 6 }, 120);
@@ -5037,6 +5044,41 @@ Equal(true, shellArgs.Any(arg => arg.Contains(
     "background remains uncropped while the phone video fills the complete shell opening");
 Equal(true, shellArgs.Contains("custom-background.png", StringComparer.Ordinal),
     "recording carries the selected background as an independent FFmpeg input");
+// ProRes 4444 is an optional recording-only path: it must never silently
+// convert the transparent shell to H.264/NV12 or emit a whiteboard.
+var alphaCapabilities = MediaOutputService.CreateCapabilities("ffmpeg.exe",
+    " V..... h264_mf\n V..... prores_ks\n A..... aac ",
+    "rtmp srt", "flv mpegts mov");
+Equal(true, alphaCapabilities.HasProRes4444Encoder,
+    "FFmpeg capability probe discovers transparent ProRes 4444 encoder");
+var transparentRequest = shellOutput with
+{
+    Destination = "iPhoneMirror_alpha.mov",
+    BackgroundImage = null,
+    TransparentPhoneShellRecording = true
+};
+var transparentArgs = MediaOutputService.BuildArguments(transparentRequest,
+    alphaCapabilities, audioPipePath: null, includeAudio: false,
+    composition: shellComposition with { BackgroundFile = null });
+Equal(true, transparentArgs.Contains("prores_ks", StringComparer.Ordinal) &&
+    transparentArgs.Contains("yuva444p10le", StringComparer.Ordinal) &&
+    transparentArgs.Contains("-alpha_bits", StringComparer.Ordinal) &&
+    transparentArgs.Contains("16", StringComparer.Ordinal) &&
+    transparentArgs.Contains("-f", StringComparer.Ordinal) &&
+    transparentArgs.Contains("mov", StringComparer.Ordinal) &&
+    transparentArgs.Any(arg => arg.Contains("colorchannelmixer=aa=0",
+        StringComparison.Ordinal)) &&
+    transparentArgs.Any(arg => arg.Contains("format=yuva444p10le[composited]",
+        StringComparison.Ordinal)) &&
+    !transparentArgs.Contains("h264_mf", StringComparer.Ordinal) &&
+    !transparentArgs.Any(arg => arg.Contains("color=c=white",
+        StringComparison.Ordinal)) &&
+    transparentArgs.Last() == "iPhoneMirror_alpha.mov",
+    "alpha-shell recording produces ProRes MOV with transparent pixels, not H.264 whiteboard");
+Equal(true, shellArgs.Contains("h264_mf", StringComparer.Ordinal) &&
+    !shellArgs.Contains("prores_ks", StringComparer.Ordinal),
+    "legacy MP4 shell output retains unchanged H.264 encoder");
+
 var rotatedShellArgs = MediaOutputService.BuildArguments(shellOutput,
     ffmpegCapabilities, composition: shellComposition with { VideoRotationDegrees = 90 });
 Equal(true, rotatedShellArgs.Any(arg => arg.Contains(
@@ -5179,6 +5221,22 @@ try
     File.SetLastWriteTimeUtc(partialPending, DateTime.UtcNow.AddMinutes(1));
     Equal(newerPending, PendingRecordingStore.FindLatest(pendingDirectory),
         "restart recovery ignores a newer non-empty partial recording");
+    var movPending = Path.Combine(pendingDirectory, "transparent.mov");
+    var movStaging = PendingRecordingStore.CreateStagingPath(movPending);
+    Equal(true, movStaging.EndsWith(".partial.mov", StringComparison.OrdinalIgnoreCase),
+        "transparent MOV uses its own safe staging extension");
+    File.WriteAllBytes(movPending, [9]);
+    File.WriteAllBytes(movStaging, [8]);
+    File.SetLastWriteTimeUtc(movPending, DateTime.UtcNow.AddSeconds(3));
+    File.SetLastWriteTimeUtc(movStaging, DateTime.UtcNow.AddMinutes(1));
+    Equal(movPending, PendingRecordingStore.FindLatest(pendingDirectory),
+        "restart recovery recognizes MOV and never accepts incomplete partial MOV");
+    Equal(true, PendingRecordingStore.CreatePath(true).EndsWith(".mov",
+        StringComparison.OrdinalIgnoreCase),
+        "transparent recording creates a MOV pending file");
+    Equal(true, PendingRecordingStore.CreatePath().EndsWith(".mp4",
+        StringComparison.OrdinalIgnoreCase),
+        "legacy recording still creates an MP4 pending file");
 }
 finally
 {
