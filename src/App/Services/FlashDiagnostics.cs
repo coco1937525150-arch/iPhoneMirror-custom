@@ -19,6 +19,9 @@ internal static class FlashDiagnostics
     private static Task<string>? _exportTask;
     private static long _nextRotationId;
     private static long _nextOrientationId;
+    private static long _nextFlashMarkerId;
+    internal const int MarkLookbackMs = 1500;
+    internal const int MarkLookaheadMs = 750;
     private static readonly Guid DocumentsFolder = new(
         "FDD39AD0-238F-46AF-ADB4-6C85480369C7");
     private static readonly Regex PrivateData = new(
@@ -83,6 +86,18 @@ internal static class FlashDiagnostics
     {
         if (Active) NativeCore.TraceFlickerEvent(code,
             value0: value0, value1: value1, value2: value2, value3: value3);
+    }
+
+    internal static ulong MarkVisibleFlash()
+    {
+        if (!Active) throw new InvalidOperationException("请先开始闪屏诊断。");
+        var id = (ulong)Interlocked.Increment(ref _nextFlashMarkerId);
+        // The click happens AFTER the observed flash. The native QPC marker
+        // allows reconstruction of its preceding 1.5s and following 750ms.
+        Trace(43, (long)id, MarkLookbackMs, MarkLookaheadMs);
+        DiagnosticLogger.Info("flash_diagnostics", "visible_flash_marked",
+            ("marker_id", id));
+        return id;
     }
 
     internal static long MilliDegrees(double angle) =>
@@ -174,6 +189,43 @@ internal static class FlashDiagnostics
                         1000.0 / qpcFrequency
                     : (double?)null;
             }).Where(value => value.HasValue).Select(value => value!.Value).ToArray();
+            // User markers are reports, not proof of DWM scanout behavior.
+            // All timestamps, including the marker, are native QPC ticks.
+            var marks = events.Where(e =>
+                e.GetProperty("event").GetString() == "visible_flash_marked").ToArray();
+            var markerWindows = marks.Select(mark =>
+            {
+                var tick = GetNumber(mark, "qpc_ticks");
+                var before = GetNumber(mark, "lookback_ms");
+                var after = GetNumber(mark, "lookahead_ms");
+                var startTick = qpcFrequency > 0
+                    ? tick - before * qpcFrequency / 1000 : tick;
+                var endTick = qpcFrequency > 0
+                    ? tick + after * qpcFrequency / 1000 : tick;
+                var matching = events.Where(e =>
+                    GetNumber(e, "qpc_ticks") >= startTick &&
+                    GetNumber(e, "qpc_ticks") <= endTick).ToArray();
+                return new
+                {
+                    marker_id = GetNumber(mark, "marker_id"),
+                    marker_qpc_ticks = tick,
+                    lookback_ms = before,
+                    lookahead_ms = after,
+                    total_events = matching.Length,
+                    rotation_ids = matching.Select(e => GetNumber(e, "rotation_id"))
+                        .Where(v => v != 0).Distinct().ToArray(),
+                    event_counts = matching.GroupBy(e =>
+                        e.GetProperty("event").GetString() ?? "unknown")
+                        .ToDictionary(g => g.Key, g => g.Count()),
+                    visual_flash_verified = false
+                };
+            }).ToArray();
+            WriteJson(Path.Combine(folder, "flash-markers.json"), new
+            {
+                session_id = session.Id,
+                markers = markerWindows,
+                warning = "User-reported visual flash. DWM scanout not verified."
+            });
             var animationHwndResizes = events.Count(e =>
                 e.GetProperty("event").GetString() == "hwnd_resize" &&
                 GetNumber(e, "rotation_id") != 0);
@@ -192,6 +244,14 @@ internal static class FlashDiagnostics
                 resize_buffers = Count("resize_begin"),
                 hwnd_resizes = Count("hwnd_resize"),
                 orientation_events = Count("orientation_detected"),
+                flash_markers = Count("visible_flash_marked"),
+                frame_geometry_events = Count("frame_geometry"),
+                manual_rotation_triggers = events.Count(e =>
+                    e.GetProperty("event").GetString() == "rotation_trigger" &&
+                    GetNumber(e, "trigger_auto") == 0),
+                automatic_rotation_triggers = events.Count(e =>
+                    e.GetProperty("event").GetString() == "rotation_trigger" &&
+                    GetNumber(e, "trigger_auto") == 1),
                 rotations_started = Count("rotation_started"),
                 rotations_completed = Count("rotation_completed"),
                 rotation_start_delay_ms = rotationStartDelays,
@@ -235,6 +295,9 @@ internal static class FlashDiagnostics
             summary.AppendLine($"环形缓冲区丢失事件：{ringEventsLost}；文件上限丢失事件：{fileEventsLost}。");
             summary.AppendLine($"录制输入停顿：{stats.recording_source_stalls} 次；编码管道卡顿：{stats.recording_encoder_stalls} 次；不稳定窗口：{stats.recording_unstable_windows} 次。");
             summary.AppendLine($"录制稳定性：{stats.recording_stability}。录制未启动时不能以此推断录制质量。");
+            summary.AppendLine($"用户闪屏标记：{markerWindows.Length} 个；向前 {MarkLookbackMs}ms / 向后 {MarkLookaheadMs}ms。");
+            summary.AppendLine($"逐帧几何事件：{stats.frame_geometry_events}；手动旋转：{stats.manual_rotation_triggers}；自动旋转：{stats.automatic_rotation_triggers}。");
+            summary.AppendLine("点击标记只表示用户观察到闪屏，仍需对照 DWM/录屏证据。");
             summary.AppendLine("Present 成功不代表该帧已经显示到屏幕。日志不能单独证明可见闪屏。");
             summary.AppendLine("visual_flash_not_confirmed");
             File.WriteAllText(Path.Combine(folder, "diagnostic-summary.txt"), summary.ToString(), Encoding.UTF8);
@@ -266,7 +329,7 @@ internal static class FlashDiagnostics
             {
                 var expected = new[] { "application.log", "capture.log",
                     "rotation-events.jsonl", "timeline.jsonl", "render-statistics.json",
-                    "environment.json", "BUILD_PROVENANCE.txt", "diagnostic-summary.txt" };
+                    "flash-markers.json", "environment.json", "BUILD_PROVENANCE.txt", "diagnostic-summary.txt" };
                 foreach (var item in expected)
                 {
                     var entry = archive.GetEntry("iPhoneMirror-Flash-Diagnostics/" + item) ??
