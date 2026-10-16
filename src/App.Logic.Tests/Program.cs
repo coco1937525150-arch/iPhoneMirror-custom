@@ -4005,8 +4005,14 @@ Equal(true, WirelessReceiverConfiguration.RequiresOriginalQualityWarning(
         WirelessReceiverConfiguration.DisplayProfiles[0]),
     "wireless original-quality profile requires a stability warning");
 Equal(false, WirelessReceiverConfiguration.RequiresOriginalQualityWarning(
-        WirelessReceiverConfiguration.DisplayProfiles[1]),
+        WirelessReceiverConfiguration.DefaultDisplayProfile),
     "wireless 1080p profile does not require the original-quality warning");
+Equal(true, WirelessReceiverConfiguration.IsSupportedDisplayProfile(3072, 1728, 60),
+    "3K AirPlay is advertised as a 3072x1728 60fps ceiling");
+Equal(true, WirelessReceiverConfiguration.IsSupportedDisplayProfile(2560, 1440, 60),
+    "2K AirPlay is advertised as a 2560x1440 60fps ceiling");
+Equal(false, WirelessReceiverConfiguration.IsSupportedDisplayProfile(2560, 1440, 120),
+    "2K AirPlay must not falsely advertise unverified 120fps");
 Equal(true, WirelessReceiverConfiguration.IsSupportedDisplayProfile(1280, 720, 30),
     "wireless 720p weak-network profile is supported");
 Equal(false, WirelessReceiverConfiguration.IsSupportedDisplayProfile(1280, 720, 60),
