@@ -41,6 +41,9 @@ internal sealed class UpdateSettings
     public uint MediaOutputRecordHeight { get; set; }
     public int MediaOutputRecordFps { get; set; } = 60;
     public int MediaOutputRecordBitrateKbps { get; set; } = 6000;
+    public uint VideoRenderWidth { get; set; }
+    public uint VideoRenderHeight { get; set; }
+    public int VideoRenderFps { get; set; }
     public uint MediaOutputStreamWidth { get; set; }
     public uint MediaOutputStreamHeight { get; set; }
     public int MediaOutputStreamFps { get; set; } = 60;
@@ -138,6 +141,9 @@ internal sealed class UpdateSettings
         MediaOutputRecordHeight = MediaOutputRecordHeight,
         MediaOutputRecordFps = MediaOutputRecordFps,
         MediaOutputRecordBitrateKbps = MediaOutputRecordBitrateKbps,
+        VideoRenderWidth = VideoRenderWidth,
+        VideoRenderHeight = VideoRenderHeight,
+        VideoRenderFps = VideoRenderFps,
         MediaOutputStreamWidth = MediaOutputStreamWidth,
         MediaOutputStreamHeight = MediaOutputStreamHeight,
         MediaOutputStreamFps = MediaOutputStreamFps,

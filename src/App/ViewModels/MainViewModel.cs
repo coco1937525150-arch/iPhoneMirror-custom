@@ -801,6 +801,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             else
                 SetSettingsStatus("PendingSettingsLocalFormat", value, SelectedFrameRate);
             OnPropertyChanged(nameof(TargetResolutionDisplay));
+            SaveLocalVideoPreferences();
         }
     }
 
@@ -817,7 +818,17 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             else
                 SetSettingsStatus("PendingSettingsFormat", SelectedResolutionPreset, value);
             OnPropertyChanged(nameof(TargetFpsDisplay));
+            SaveLocalVideoPreferences();
         }
+    }
+
+    private void SaveLocalVideoPreferences()
+    {
+        if (Application.Current is not App app) return;
+        app.UpdateSettings.VideoRenderWidth = _selectedResolutionPreset.Width;
+        app.UpdateSettings.VideoRenderHeight = _selectedResolutionPreset.Height;
+        app.UpdateSettings.VideoRenderFps = _selectedFrameRate;
+        _ = app.SaveUpdateSettings();
     }
 
     public double PlaybackVolume
@@ -1200,7 +1211,18 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             ("arch", RuntimeInformation.ProcessArchitecture),
             ("log_override", !string.IsNullOrWhiteSpace(
                 Environment.GetEnvironmentVariable("IPHONE_MIRROR_LOG_FILE")))));
-        _selectedResolutionPreset = ResolutionPresets[0];
+        // Restore the last local renderer preference rather than silently
+        // reverting to Native/Auto at each new application start.
+        if (Application.Current is App persistedVideoApp)
+        {
+            var prefs = persistedVideoApp.UpdateSettings;
+            _selectedResolutionPreset = ResolutionPresets.FirstOrDefault(p =>
+                p.Width == prefs.VideoRenderWidth && p.Height == prefs.VideoRenderHeight)
+                ?? ResolutionPresets[0];
+            _selectedFrameRate = FrameRates.Any(p => p.Value == prefs.VideoRenderFps)
+                ? prefs.VideoRenderFps : 0;
+        }
+        else _selectedResolutionPreset = ResolutionPresets[0];
         StartCommand = new RelayCommand(() => _ = StartAsync(),
             () => SelectedDevice is { IsWirelessOffline: false } && !HasCaptureSession &&
                 !IsCapturing && !IsMediaCasting &&
@@ -5835,7 +5857,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
     private void RestoreSelectedVideoControls(DeviceCaptureState? state)
     {
-        var frameRate = state?.FrameRate ?? 0;
+        var prefs = (Application.Current as App)?.UpdateSettings;
+        var frameRate = state?.FrameRate ?? prefs?.VideoRenderFps ?? 0;
         if (_selectedFrameRate != frameRate)
         {
             _selectedFrameRate = frameRate;
@@ -5843,8 +5866,11 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(TargetFpsDisplay));
         }
 
-        var preset = state is null ? ResolutionPresets[0] :
-            ResolutionPresets.FirstOrDefault(candidate =>
+        var preset = state is null
+            ? ResolutionPresets.FirstOrDefault(candidate =>
+                candidate.Width == (prefs?.VideoRenderWidth ?? 0) &&
+                candidate.Height == (prefs?.VideoRenderHeight ?? 0)) ?? ResolutionPresets[0]
+            : ResolutionPresets.FirstOrDefault(candidate =>
                 candidate.Width == state.RenderWidth &&
                 candidate.Height == state.RenderHeight) ?? ResolutionPresets[0];
         if (ReferenceEquals(_selectedResolutionPreset, preset)) return;
