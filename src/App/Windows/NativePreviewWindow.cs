@@ -130,6 +130,7 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly MenuItem _rotateRightItem;
     private readonly MenuItem _startFlashDiagnosticItem;
     private readonly MenuItem _stopFlashDiagnosticItem;
+    private readonly MenuItem _markFlashDiagnosticItem;
     private readonly MenuItem _closeItem;
     private readonly MenuItem? _imageSettingsItem;
     private readonly MenuItem? _projectionSettingsItem;
@@ -313,6 +314,8 @@ internal sealed class NativePreviewWindow : IDisposable
         _startFlashDiagnosticItem.Click += (_, _) => StartFlashDiagnostic();
         _stopFlashDiagnosticItem = new MenuItem { Style = itemStyle };
         _stopFlashDiagnosticItem.Click += async (_, _) => await StopFlashDiagnosticAsync();
+        _markFlashDiagnosticItem = new MenuItem { Style = itemStyle };
+        _markFlashDiagnosticItem.Click += (_, _) => MarkFlashDiagnostic();
         _closeItem = new MenuItem { Style = itemStyle };
         _closeItem.Click += (_, _) => QueueClose();
         if (managedContent is null)
@@ -338,6 +341,7 @@ internal sealed class NativePreviewWindow : IDisposable
         _contextMenu.Items.Add(_windowMenuItem);
         _contextMenu.Items.Add(_displayMenuItem);
         _contextMenu.Items.Add(_startFlashDiagnosticItem);
+        _contextMenu.Items.Add(_markFlashDiagnosticItem);
         _contextMenu.Items.Add(_stopFlashDiagnosticItem);
         if (_reverseControlMenuItem is not null) _contextMenu.Items.Add(_reverseControlMenuItem);
         if (_setAudioEnabled is not null) _contextMenu.Items.Add(_muteMenuItem);
@@ -1230,6 +1234,8 @@ internal sealed class NativePreviewWindow : IDisposable
         _startFlashDiagnosticItem.IsEnabled = !FlashDiagnostics.Active;
         _stopFlashDiagnosticItem.Header = LocalizationService.Get("FlashDiagnosticStop");
         _stopFlashDiagnosticItem.IsEnabled = FlashDiagnostics.Active;
+        _markFlashDiagnosticItem.Header = "标记刚才闪屏（回溯 1.5 秒）";
+        _markFlashDiagnosticItem.IsEnabled = FlashDiagnostics.Active;
         _muteMenuItem.Header = LocalizationService.Get("IndependentWindowAudioMenu");
         _muteThisItem.Header = LocalizationService.Get(
             _isAudioEnabled?.Invoke() == false
@@ -1463,7 +1469,7 @@ internal sealed class NativePreviewWindow : IDisposable
             ("mode", WindowMode), ("enabled", _cornersEnabled));
     }
 
-    private bool Rotate(int delta)
+    private bool Rotate(int delta, bool autoTriggered = false)
     {
         if (_disposed || _handle == 0) return false;
         if (_managedContent is not null || _sessionHandle == 0 ||
@@ -1491,12 +1497,17 @@ internal sealed class NativePreviewWindow : IDisposable
         }
 
         var retargeting = _rotationAnimating;
+        // Record the request BEFORE the square HWND stage is constructed.
+        FlashDiagnostics.Trace(48, delta, autoTriggered ? 1 : 0,
+            _rotation, retargeting ? 1 : 0);
         if (!_rotationAnimating && !BeginRotationAnimation()) return false;
         var fromAngle = _rotationTimeline.Sample(_rotationClock.Elapsed);
         _diagnosticRotationId = FlashDiagnostics.NextRotation(fromAngle,
             _rotationTimeline.TargetDegrees + delta * 90.0,
             _rotationOriginalClientWidth, _rotationOriginalClientHeight,
-            _diagnosticOrientationId);
+            autoTriggered ? _diagnosticOrientationId : 0);
+        FlashDiagnostics.Trace(49, autoTriggered ? 1 : 0,
+            autoTriggered ? (long)_diagnosticOrientationId : 0);
         _diagnosticRotationStartedAt = _rotationClock.Elapsed;
         if (retargeting)
             FlashDiagnostics.Trace(7, FlashDiagnostics.MilliDegrees(fromAngle),
@@ -1509,6 +1520,20 @@ internal sealed class NativePreviewWindow : IDisposable
         SubscribeRotationRendering();
         _rotationTimer.Start();
         return true;
+    }
+
+    private void MarkFlashDiagnostic()
+    {
+        try
+        {
+            var id = FlashDiagnostics.MarkVisibleFlash();
+            Log("independent_window_flash_marked", ("marker_id", id));
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"无法标记闪屏：{ex.Message}", "iPhoneMirror",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void StartFlashDiagnostic()
@@ -1866,7 +1891,7 @@ internal sealed class NativePreviewWindow : IDisposable
             _autoAirPlayWasLandscape = landscape;
             return;
         }
-        if (!Rotate(delta))
+        if (!Rotate(delta, autoTriggered: true))
         {
             // A failed or temporarily unavailable DComp transition must not
             // consume the orientation event. Retry it while this window lives.
