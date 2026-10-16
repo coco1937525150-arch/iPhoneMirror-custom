@@ -555,19 +555,40 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             for (var counter = 1; File.Exists(destination); counter++)
                 destination = Path.Combine(directory, $"{basename}_{counter}{extension}");
             try { File.Move(pending, destination, overwrite: false); }
-            catch (IOException)
+            catch (IOException) when (File.Exists(pending) && !File.Exists(destination))
             {
-                // Also works when the temporary staging volume is not the
-                // same physical disk as the user's chosen video folder.
-                await using var source = new FileStream(pending, FileMode.Open,
-                    FileAccess.Read, FileShare.Read, 1024 * 1024,
-                    FileOptions.Asynchronous | FileOptions.SequentialScan);
-                await using var target = new FileStream(destination, FileMode.CreateNew,
-                    FileAccess.Write, FileShare.None, 1024 * 1024,
-                    FileOptions.Asynchronous);
-                await source.CopyToAsync(target);
-                await target.FlushAsync();
-                File.Delete(pending);
+                // Cross-volume save must never create a half-written .mov in
+                // the user's output folder. Copy to a unique hidden staging
+                // file, flush and atomically rename after successful copying.
+                var working = Path.Combine(directory,
+                    "." + Path.GetFileName(destination) + ".partial-" +
+                    Guid.NewGuid().ToString("N"));
+                try
+                {
+                    await using (var source = new FileStream(pending, FileMode.Open,
+                        FileAccess.Read, FileShare.Read, 1024 * 1024,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan))
+                    await using (var target = new FileStream(working, FileMode.CreateNew,
+                        FileAccess.Write, FileShare.None, 1024 * 1024,
+                        FileOptions.Asynchronous))
+                    {
+                        await source.CopyToAsync(target);
+                        await target.FlushAsync();
+                    }
+                    File.Move(working, destination, overwrite: false);
+                    File.Delete(pending);
+                }
+                finally
+                {
+                    // Never delete the completed MOV/MP4. Only remove this
+                    // failed transient copy, and leave existing user files.
+                    if (File.Exists(working))
+                    {
+                        try { File.Delete(working); }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
+                    }
+                }
             }
             _viewModel.MarkPendingRecordingSaved(pending);
             FeedbackText.Text = LocalizationService.Format(

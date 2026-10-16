@@ -6276,9 +6276,11 @@ internal sealed class MainViewModel : INotifyPropertyChanged
 
     internal void MarkPendingRecordingSaved(string path)
     {
+        PendingRecordingStore.CleanupOwnTemporaryArtifacts(path);
         if (string.Equals(_pendingRecordingPath, path,
                 StringComparison.OrdinalIgnoreCase))
             _pendingRecordingPath = PendingRecordingStore.FindLatest();
+        OnPropertyChanged(nameof(PendingRecordingPath));
     }
 
     internal bool DiscardPendingRecording()
@@ -6288,6 +6290,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         try
         {
             File.Delete(path);
+            PendingRecordingStore.CleanupOwnTemporaryArtifacts(path);
             _pendingRecordingPath = PendingRecordingStore.FindLatest();
             OnPropertyChanged(nameof(PendingRecordingPath));
             return true;
