@@ -5116,6 +5116,23 @@ Equal(true, transparentArgs.Contains("prores_ks", StringComparer.Ordinal) &&
         StringComparison.Ordinal)) &&
     transparentArgs.Last() == "iPhoneMirror_alpha.mov",
     "alpha-shell recording produces ProRes MOV with transparent pixels, not H.264 whiteboard");
+var movQIndex = transparentArgs.ToList().IndexOf("-qscale:v");
+Equal(true, movQIndex >= 0 && movQIndex + 1 < transparentArgs.Count &&
+    transparentArgs[movQIndex + 1] == "18",
+    "balanced transparent MOV profile has a distinct ProRes quality setting");
+var compactArgs = MediaOutputService.BuildArguments(
+    transparentRequest with { TransparentMovQuality = 25 },
+    alphaCapabilities, audioPipePath: null, includeAudio: false,
+    composition: shellComposition with { BackgroundFile = null });
+Equal(true, compactArgs.Contains("25", StringComparer.Ordinal) &&
+    compactArgs.Contains("-alpha_bits", StringComparer.Ordinal),
+    "compact transparent MOV retains 16-bit alpha while raising compression");
+var originalQualityArgs = MediaOutputService.BuildArguments(
+    transparentRequest with { TransparentMovQuality = 9 },
+    alphaCapabilities, audioPipePath: null, includeAudio: false,
+    composition: shellComposition with { BackgroundFile = null });
+Equal(true, originalQualityArgs.Contains("9", StringComparer.Ordinal),
+    "high quality transparent MOV preserves the original ProRes quality");
 Equal(true, shellArgs.Contains("h264_mf", StringComparer.Ordinal) &&
     !shellArgs.Contains("prores_ks", StringComparer.Ordinal),
     "legacy MP4 shell output retains unchanged H.264 encoder");

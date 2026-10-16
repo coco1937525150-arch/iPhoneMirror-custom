@@ -194,6 +194,10 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         IncludePhoneShellBox.IsChecked = settings.MediaOutputIncludePhoneShell;
         TransparentShellRecordingBox.IsChecked =
             settings.MediaOutputTransparentShellRecording;
+        if (TransparentMovQualityBox is not null)
+            TransparentMovQualityBox.SelectedIndex =
+                settings.MediaOutputTransparentMovQuality == 9 ? 0 :
+                settings.MediaOutputTransparentMovQuality == 25 ? 2 : 1;
         _customBackgroundPath = settings.MediaOutputBackgroundImagePath ?? string.Empty;
         _useDefaultWhiteBackground = settings.MediaOutputUseDefaultWhiteBackground ??
             string.IsNullOrWhiteSpace(_customBackgroundPath);
@@ -217,6 +221,9 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             IncludePhoneShellBox.IsChecked == true;
         app.UpdateSettings.MediaOutputTransparentShellRecording =
             TransparentShellRecordingBox.IsChecked == true;
+        if (TransparentMovQualityBox?.SelectedItem is ComboBoxItem { Tag: string quality } &&
+            int.TryParse(quality, out var parsedQuality))
+            app.UpdateSettings.MediaOutputTransparentMovQuality = parsedQuality;
         app.UpdateSettings.MediaOutputBackgroundImagePath = _customBackgroundPath;
         app.UpdateSettings.MediaOutputUseDefaultWhiteBackground = _useDefaultWhiteBackground;
         app.UpdateSettings.MediaOutputRecordingDirectory = RecordingDirectoryBox.Text.Trim();
@@ -242,6 +249,11 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (IsLoaded) SaveShellPreferences();
     }
 
+    private void OnTransparentMovQualityChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsLoaded && !_restoringShellPreferences) SaveShellPreferences();
+    }
+
     private void RefreshTransparentShellControls()
     {
         if (TransparentShellRecordingBox is null || BackgroundImageBox is null)
@@ -249,6 +261,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         var transparent = TransparentShellRecordingBox.IsChecked == true;
         BackgroundImageBox.Text = transparent ? "无背景（真实 Alpha 透明）" :
             _useDefaultWhiteBackground ? "默认白板（9:16）" : _customBackgroundPath;
+        if (TransparentMovQualityBox is not null)
+            TransparentMovQualityBox.IsEnabled = transparent;
         if (DefaultWhiteBackgroundButton is not null)
             DefaultWhiteBackgroundButton.IsEnabled = !transparent;
         if (ChooseBackgroundButton is not null)
@@ -443,12 +457,14 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         SaveShellPreferences();
         StopMediaOutputButton.Content = "完成录制";
         var transparent = TransparentShellRecordingBox.IsChecked == true;
+        var movQuality = TransparentMovQualityBox.SelectedItem is ComboBoxItem { Tag: string q } &&
+            int.TryParse(q, out var selectedQuality) ? selectedQuality : 18;
         var result = await _viewModel.StartRecordingAsync(
             width, height, fps, bitrate, IncludePhoneShellBox.IsChecked == true,
             transparent ? string.Empty : SelectedBackgroundPath, string.Empty,
             useBackgroundCanvas: !transparent &&
                 (_useDefaultWhiteBackground || !string.IsNullOrWhiteSpace(_customBackgroundPath)),
-            transparentPhoneShell: transparent);
+            transparentPhoneShell: transparent, transparentMovQuality: movQuality);
         FeedbackText.Text = result.Message;
     }
 

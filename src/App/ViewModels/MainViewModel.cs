@@ -6249,7 +6249,7 @@ internal sealed class MainViewModel : INotifyPropertyChanged
         uint width, uint height, int frameRate, int bitrateKbps,
         bool includePhoneShell = false, string? backgroundImage = null,
         string? phoneShellImage = null, bool useBackgroundCanvas = false,
-        bool transparentPhoneShell = false)
+        bool transparentPhoneShell = false, int transparentMovQuality = 18)
     {
         if (PendingRecordingPath is not null)
             return (false, LocalizationService.Get("RecordingPendingSave"));
@@ -6258,7 +6258,8 @@ internal sealed class MainViewModel : INotifyPropertyChanged
             NormalizeOutputWidth(width), NormalizeOutputHeight(height), frameRate, bitrateKbps,
             IncludePhoneShell: includePhoneShell, BackgroundImage: backgroundImage,
             PhoneShellImage: phoneShellImage, UseBackgroundCanvas: useBackgroundCanvas,
-            TransparentPhoneShellRecording: transparentPhoneShell);
+            TransparentPhoneShellRecording: transparentPhoneShell,
+            TransparentMovQuality: transparentMovQuality);
         var result = await StartMediaOutputAsync(request);
         if (result.Success) _pendingRecordingPath = path;
         else

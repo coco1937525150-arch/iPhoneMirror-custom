@@ -27,7 +27,8 @@ internal sealed record MediaOutputRequest(
     string? BackgroundImage = null,
     string? PhoneShellImage = null,
     bool UseBackgroundCanvas = false,
-    bool TransparentPhoneShellRecording = false);
+    bool TransparentPhoneShellRecording = false,
+    int TransparentMovQuality = 18);
 
 internal sealed record MediaOutputCapabilities(
     bool FfmpegAvailable,
@@ -1379,7 +1380,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
         {
             // Keep alpha throughout the MOV recording; NV12 would discard it.
             args.AddRange(["-c:v", "prores_ks", "-profile:v", "4444",
-                "-pix_fmt", "yuva444p10le", "-alpha_bits", "16", "-qscale:v", "9"]);
+                "-pix_fmt", "yuva444p10le", "-alpha_bits", "16",
+                "-qscale:v", request.TransparentMovQuality.ToString()]);
         }
         else
         {
@@ -1612,6 +1614,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
              !string.Equals(Path.GetExtension(request.Destination), ".mov", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException(
                 "透明带壳录制只能输出 MOV，必须启用手机壳且 FFmpeg 支持 prores_ks (4444)。");
+        if (request.TransparentPhoneShellRecording &&
+            request.TransparentMovQuality is not (9 or 18 or 25))
+            throw new ArgumentOutOfRangeException(nameof(request),
+                "Transparent MOV quality must be 9, 18 or 25.");
         if (request.Width is < 160 or > 4096 || request.Height is < 160 or > 4096 ||
             (request.Width & 1) != 0 || (request.Height & 1) != 0)
             throw new ArgumentOutOfRangeException(nameof(request),

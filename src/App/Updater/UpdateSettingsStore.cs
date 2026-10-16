@@ -32,6 +32,7 @@ internal sealed class UpdateSettings
     public bool IndependentWindowAlwaysOnTop { get; set; }
     public bool MediaOutputIncludePhoneShell { get; set; } = true;
     public bool MediaOutputTransparentShellRecording { get; set; }
+    public int MediaOutputTransparentMovQuality { get; set; } = 18;
     public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
     // Nullable for migrating existing background picture preferences.
     public bool? MediaOutputUseDefaultWhiteBackground { get; set; }

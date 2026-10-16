@@ -70,7 +70,7 @@
                            TextWrapping="Wrap" FontSize="10"
                            Foreground="{DynamicResource MutedTextBrush}"/>
                 <Grid x:Name="ShellOptionsPanel">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
@@ -90,6 +90,18 @@
                               ToolTip="仅对本地录制生效：手机壳以外保留真正 Alpha 透明通道。推流仍使用普通背景。"
                               Checked="OnTransparentShellChanged"
                               Unchecked="OnTransparentShellChanged"/>
+                    <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="4"
+                                Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Text="透明 MOV 画质 / 体积" VerticalAlignment="Center"
+                                   Margin="0,0,10,0"/>
+                        <ComboBox x:Name="TransparentMovQualityBox" Width="230"
+                                  SelectedIndex="1" SelectionChanged="OnTransparentMovQualityChanged"
+                                  ToolTip="只影响透明 ProRes 4444 MOV：文件大小取决于画面复杂度，非固定码率。">
+                            <ComboBoxItem Content="高画质 · 较大文件" Tag="9"/>
+                            <ComboBoxItem Content="均衡 · 推荐" Tag="18"/>
+                            <ComboBoxItem Content="小体积 · 更高压缩" Tag="25"/>
+                        </ComboBox>
+                    </StackPanel>
                 </Grid>
             </StackPanel>
         </Border>
