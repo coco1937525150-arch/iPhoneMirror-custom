@@ -41,6 +41,11 @@ internal sealed class UpdateSettings
     public uint MediaOutputRecordHeight { get; set; }
     public int MediaOutputRecordFps { get; set; } = 60;
     public int MediaOutputRecordBitrateKbps { get; set; } = 6000;
+    public bool MediaOutputRecordBitrateAutomatic { get; set; }
+    public int MediaOutputStreamProtocolIndex { get; set; }
+    public uint MediaOutputVirtualCameraWidth { get; set; }
+    public uint MediaOutputVirtualCameraHeight { get; set; }
+    public int MediaOutputVirtualCameraFps { get; set; } = 30;
     public uint VideoRenderWidth { get; set; }
     public uint VideoRenderHeight { get; set; }
     public int VideoRenderFps { get; set; }
@@ -141,6 +146,11 @@ internal sealed class UpdateSettings
         MediaOutputRecordHeight = MediaOutputRecordHeight,
         MediaOutputRecordFps = MediaOutputRecordFps,
         MediaOutputRecordBitrateKbps = MediaOutputRecordBitrateKbps,
+        MediaOutputRecordBitrateAutomatic = MediaOutputRecordBitrateAutomatic,
+        MediaOutputStreamProtocolIndex = MediaOutputStreamProtocolIndex,
+        MediaOutputVirtualCameraWidth = MediaOutputVirtualCameraWidth,
+        MediaOutputVirtualCameraHeight = MediaOutputVirtualCameraHeight,
+        MediaOutputVirtualCameraFps = MediaOutputVirtualCameraFps,
         VideoRenderWidth = VideoRenderWidth,
         VideoRenderHeight = VideoRenderHeight,
         VideoRenderFps = VideoRenderFps,

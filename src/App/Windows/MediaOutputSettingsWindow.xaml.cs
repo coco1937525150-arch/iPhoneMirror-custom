@@ -51,7 +51,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (Application.Current is App settingsApp)
             RecordingDirectoryBox.Text = settingsApp.UpdateSettings.MediaOutputRecordingDirectory;
 
-        VirtualCameraFpsBox.SelectedIndex = 0;
+        // Virtual camera resolution and FPS are restored with other output options.
         if (_previewOnly)
         {
             FeedbackText.Text = LocalizationService.Get("DeveloperReadOnlyPreview");
@@ -237,7 +237,22 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         StreamFpsBox.Text = s.MediaOutputStreamFps is >= 10 and <= 60 ?
             s.MediaOutputStreamFps.ToString() : "60";
         RecordBitrateBox.Text = SafeBitrate(s.MediaOutputRecordBitrateKbps).ToString();
+        if (s.MediaOutputRecordBitrateAutomatic)
+        {
+            var automatic = RecordBitrateBox.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag as string, "recommend",
+                    StringComparison.Ordinal));
+            if (automatic is not null) RecordBitrateBox.SelectedItem = automatic;
+        }
         StreamBitrateBox.Text = SafeBitrate(s.MediaOutputStreamBitrateKbps).ToString();
+        var protocol = s.MediaOutputStreamProtocolIndex is >= 0 and <= 2 ?
+            s.MediaOutputStreamProtocolIndex : 0;
+        StreamProtocolBox.SelectedIndex = protocol;
+        var cameraWidth = s.MediaOutputVirtualCameraWidth;
+        var cameraHeight = s.MediaOutputVirtualCameraHeight;
+        if (ValidOutputSize(cameraWidth, cameraHeight))
+            SelectVirtualCameraResolution(cameraWidth, cameraHeight, updateSelection: true);
+        VirtualCameraFpsBox.SelectedIndex = s.MediaOutputVirtualCameraFps == 60 ? 1 : 0;
     }
 
     private static bool ValidOutputSize(uint w, uint h) =>
@@ -258,6 +273,24 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             app.UpdateSettings.MediaOutputTransparentMovQuality = parsedQuality;
         app.UpdateSettings.MediaOutputBackgroundImagePath = _customBackgroundPath;
         app.UpdateSettings.MediaOutputUseDefaultWhiteBackground = _useDefaultWhiteBackground;
+        app.UpdateSettings.MediaOutputRecordBitrateAutomatic = _useRecommendedRecordingBitrate;
+        if (StreamProtocolBox.SelectedIndex is >= 0 and <= 2)
+            app.UpdateSettings.MediaOutputStreamProtocolIndex = StreamProtocolBox.SelectedIndex;
+        if (VirtualCameraResolutionBox.SelectedItem is ComboBoxItem { Tag: string cameraSize })
+        {
+            var dimensions = cameraSize.Split('x');
+            if (dimensions.Length == 2 &&
+                uint.TryParse(dimensions[0], out var cw) &&
+                uint.TryParse(dimensions[1], out var ch) &&
+                ValidOutputSize(cw, ch))
+            {
+                app.UpdateSettings.MediaOutputVirtualCameraWidth = cw;
+                app.UpdateSettings.MediaOutputVirtualCameraHeight = ch;
+            }
+        }
+        if (VirtualCameraFpsBox.SelectedItem is ComboBoxItem { Tag: string cameraFps } &&
+            int.TryParse(cameraFps, out var cf) && cf is 30 or 60)
+            app.UpdateSettings.MediaOutputVirtualCameraFps = cf;
         app.UpdateSettings.MediaOutputRecordingDirectory = RecordingDirectoryBox.Text.Trim();
         if (uint.TryParse(RecordWidthBox.Text, out var rw) &&
             uint.TryParse(RecordHeightBox.Text, out var rh) && ValidOutputSize(rw, rh))
