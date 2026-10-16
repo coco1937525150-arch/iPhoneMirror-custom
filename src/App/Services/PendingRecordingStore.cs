@@ -81,6 +81,72 @@ internal static class PendingRecordingStore
         }
     }
 
+    /// <summary>
+    /// Best-effort deletion of ONLY this completed recording's own
+    /// destination-side intermediates. Never scan or delete arbitrary MOVs,
+    /// other recording basenames, or the user-selected output directory.
+    /// Called after File.Move succeeds (or a complete cross-volume copy is
+    /// atomically renamed into the final destination).
+    /// </summary>
+    internal static int CleanupSavedRecordingSidecars(string savedPath)
+    {
+        if (string.IsNullOrWhiteSpace(savedPath)) return 0;
+        var completed = Path.GetFullPath(savedPath);
+        var directory = Path.GetDirectoryName(completed);
+        var fileName = Path.GetFileName(completed);
+        var extension = Path.GetExtension(fileName);
+        if (string.IsNullOrWhiteSpace(directory) ||
+            !fileName.StartsWith("iPhoneMirror_", StringComparison.OrdinalIgnoreCase) ||
+            !(extension.Equals(".mov", StringComparison.OrdinalIgnoreCase) ||
+              extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)) ||
+            !File.Exists(completed))
+            return 0;
+
+        // FFmpeg and our cross-volume save use precisely these intermediate
+        // names. Copy sidecars also carry a 32-digit GUID to disambiguate.
+        var partialName = Path.GetFileNameWithoutExtension(fileName) +
+            ".partial" + extension;
+        var copyPrefix = "." + fileName + ".partial-";
+        var removed = 0;
+        try
+        {
+            foreach (var candidate in Directory.EnumerateFiles(directory,
+                         "*", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileName(candidate);
+                var isOwnStaging = name.Equals(partialName,
+                    StringComparison.OrdinalIgnoreCase);
+                var isOwnCrossVolumeCopy = name.StartsWith(copyPrefix,
+                    StringComparison.OrdinalIgnoreCase) &&
+                    Guid.TryParseExact(name[copyPrefix.Length..], "N", out _);
+                if (!isOwnStaging && !isOwnCrossVolumeCopy) continue;
+                try
+                {
+                    // Do not traverse or delete reparse-point targets.
+                    if ((File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0)
+                        continue;
+                    File.Delete(candidate);
+                    removed++;
+                }
+                catch (Exception error) when (error is IOException or
+                                               UnauthorizedAccessException)
+                {
+                    DiagnosticLogger.Warning("recording",
+                        "destination_sidecar_cleanup_failed",
+                        ("file", name), ("reason", error.GetType().Name));
+                }
+            }
+        }
+        catch (Exception error) when (error is IOException or
+                                       UnauthorizedAccessException)
+        {
+            DiagnosticLogger.Warning("recording",
+                "destination_sidecar_scan_failed",
+                ("reason", error.GetType().Name));
+        }
+        return removed;
+    }
+
     internal static string? FindLatest(string? directory = null)
     {
         directory ??= DefaultDirectory;

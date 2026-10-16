@@ -5268,6 +5268,44 @@ finally
         Directory.Delete(cleanupRoot, recursive: true);
 }
 
+// The USER-SELECTED recording directory is never deleted and never
+// swept for unrelated .mov files. A successful recording can only remove
+// same-basename partials and GUID-tagged cross-volume copy intermediates.
+var savedFolder = Path.Combine(Path.GetTempPath(),
+    $"iphone-mirror-saved-folder-{Guid.NewGuid():N}");
+Directory.CreateDirectory(savedFolder);
+try
+{
+    var finished = Path.Combine(savedFolder, "iPhoneMirror_20261016_191900.mov");
+    var sameNamePartial = Path.Combine(savedFolder,
+        "iPhoneMirror_20261016_191900.partial.mov");
+    var crossVolumeSidecar = Path.Combine(savedFolder,
+        "." + Path.GetFileName(finished) + ".partial-" + Guid.NewGuid().ToString("N"));
+    var anotherMov = Path.Combine(savedFolder, "my-valuable-video.mov");
+    var anotherAppMov = Path.Combine(savedFolder, "iPhoneMirror_old_session.mov");
+    var anotherAppPartial = Path.Combine(savedFolder,
+        "iPhoneMirror_old_session.partial.mov");
+    File.WriteAllBytes(finished, [1, 2, 3]);
+    File.WriteAllBytes(sameNamePartial, [8]);
+    File.WriteAllBytes(crossVolumeSidecar, [9]);
+    File.WriteAllBytes(anotherMov, [4, 5]);
+    File.WriteAllBytes(anotherAppMov, [6, 7]);
+    File.WriteAllBytes(anotherAppPartial, [10]);
+    Equal(2, PendingRecordingStore.CleanupSavedRecordingSidecars(finished),
+        "completed MOV removes only its two known same-session save intermediates");
+    Equal(true, File.Exists(finished) && File.Exists(anotherMov) &&
+        File.Exists(anotherAppMov) && File.Exists(anotherAppPartial) &&
+        Directory.Exists(savedFolder),
+        "completed MOV, older MOV, partials of other sessions and directory all survive");
+    Equal(0, PendingRecordingStore.CleanupSavedRecordingSidecars(finished),
+        "destination sidecar cleanup is idempotent");
+}
+finally
+{
+    if (Directory.Exists(savedFolder))
+        Directory.Delete(savedFolder, recursive: true);
+}
+
 var pendingDirectory = Path.Combine(Path.GetTempPath(),
     $"iphone-mirror-pending-test-{Guid.NewGuid():N}");
 Directory.CreateDirectory(pendingDirectory);

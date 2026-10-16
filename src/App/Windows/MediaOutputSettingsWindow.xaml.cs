@@ -590,8 +590,15 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
                     }
                 }
             }
+            var removedSidecars =
+                PendingRecordingStore.CleanupSavedRecordingSidecars(destination);
             _viewModel.MarkPendingRecordingSaved(pending);
-            FeedbackText.Text = LocalizationService.Format(
+            if (removedSidecars > 0)
+                DiagnosticLogger.Info("recording",
+                    "unneeded_destination_mov_sidecars_removed",
+                    ("count", removedSidecars),
+                    ("saved_file", Path.GetFileName(destination)));
+            FeedbackText = LocalizationService.Format(
                 "RecordingSavedFormat", destination);
             DiagnosticLogger.Info("recording", "saved_to_default_directory",
                 ("file", Path.GetFileName(destination)));
