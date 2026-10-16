@@ -2239,6 +2239,12 @@ void test_flash_diagnostic_timeline() {
         42, 9, 123456, 300, 1920, 1080, DXGI_ERROR_WAS_STILL_DRAWING);
     logging::diagnostic_event(logging::DiagnosticEvent::VisualCommit,
         0, 9, 25, 50, 90000, 1000000, E_FAIL);
+    // Test the PUBLIC C API, not just the native logger. Previously it
+    // discarded codes 39-49 while returning void, so no caller noticed.
+    im_diagnostic_event(43, 0, 0, 7, 1500, 750, 0, 0);
+    im_diagnostic_event(48, 0, 0, -1, 0, 0, 0, 0);
+    im_diagnostic_event(49, 0, 0, 0, 0, 0, 0, 0);
+    im_diagnostic_event(50, 0, 0, 555, 0, 0, 0, 0);
     check(logging::stop_diagnostics(), "diagnostic writer flushes on stop");
     check(!logging::diagnostics_active(), "high-frequency tracing turns off after stop");
     const auto stopped_size = std::filesystem::file_size(path, error);
@@ -2254,6 +2260,11 @@ void test_flash_diagnostic_timeline() {
         contents.find("\"rotation_id\":12") != std::string::npos &&
         contents.find("\"visual_generation\":9") != std::string::npos &&
         contents.find("\"frame_id\":42") != std::string::npos &&
+        contents.find("\"event\":\"visible_flash_marked\"") != std::string::npos &&
+        contents.find("\"marker_id\":7") != std::string::npos &&
+        contents.find("\"event\":\"rotation_requested\"") != std::string::npos &&
+        contents.find("\"event\":\"rotation_trigger\"") != std::string::npos &&
+        contents.find("\"event\":\"unknown\"") == std::string::npos &&
         contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
         "native timeline correlates frame, visual, rotation, QPC and session events");
     stream.close();

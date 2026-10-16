@@ -4905,6 +4905,8 @@ var flashDiagnosticSource = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "FlashDiagnostics.cs"));
 var flashLoggingSource = File.ReadAllText(Path.Combine(sourceDirectory,
     "Core", "src", "Logging.cpp"));
+var flashCoreApiSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "CoreApi.cpp"));
 Equal(true,
     nativePreviewWindowCode.Contains("FlashDiagnostics.MarkVisibleFlash()",
         StringComparison.Ordinal) &&
@@ -4915,7 +4917,9 @@ Equal(true,
     flashDiagnosticSource.Contains("flash-markers.json", StringComparison.Ordinal) &&
     flashDiagnosticSource.Contains("MarkLookbackMs = 1500", StringComparison.Ordinal) &&
     flashLoggingSource.Contains("\"frame_geometry\"", StringComparison.Ordinal) &&
-    flashLoggingSource.Contains("\"frame_client_geometry\"", StringComparison.Ordinal),
+    flashLoggingSource.Contains("\"frame_client_geometry\"", StringComparison.Ordinal) &&
+    flashCoreApiSource.Contains("DiagnosticEvent::RotationTrigger)) return;",
+        StringComparison.Ordinal),
     "flash marking and manual/auto orientation are correlated with per-frame GPU geometry");
 
 // Imported phone image may have a solid-black display. Verify that the

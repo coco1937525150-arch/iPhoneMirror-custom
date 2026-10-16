@@ -670,8 +670,13 @@ void IM_CALL im_diagnostic_event(std::uint32_t event_code,
     std::uint64_t frame_id, std::uint64_t visual_generation,
     std::int64_t value0, std::int64_t value1, std::int64_t value2,
     std::int64_t value3, std::int32_t hresult) {
+    // The original upper bound (DiagnosticOverflow=38) silently discarded
+    // all new events: recording 39-42, visible flash mark 43, geometry 44-47
+    // and rotation trigger 48-49. 2026-10-16 diagnostics captured the C#
+    // button clicks but emitted zero native markers. Keep API validation in
+    // sync with the LAST enum entry (descriptors are also indexed by code).
     if (event_code < 1 || event_code > static_cast<std::uint32_t>(
-            iPhoneMirror::logging::DiagnosticEvent::DiagnosticOverflow)) return;
+            iPhoneMirror::logging::DiagnosticEvent::RotationTrigger)) return;
     iPhoneMirror::logging::diagnostic_event(
         static_cast<iPhoneMirror::logging::DiagnosticEvent>(event_code),
         frame_id, visual_generation, value0, value1, value2, value3, hresult);

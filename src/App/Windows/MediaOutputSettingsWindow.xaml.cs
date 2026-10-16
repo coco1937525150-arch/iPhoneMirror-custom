@@ -598,7 +598,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
                     "unneeded_destination_mov_sidecars_removed",
                     ("count", removedSidecars),
                     ("saved_file", Path.GetFileName(destination)));
-            FeedbackText = LocalizationService.Format(
+            FeedbackText.Text = LocalizationService.Format(
                 "RecordingSavedFormat", destination);
             DiagnosticLogger.Info("recording", "saved_to_default_directory",
                 ("file", Path.GetFileName(destination)));
