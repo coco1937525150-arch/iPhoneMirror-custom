@@ -20,6 +20,8 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
     private string _customBackgroundPath = string.Empty;
     private bool _useDefaultWhiteBackground;
     private bool _restoringShellPreferences;
+    private bool _savedRecordingResolution;
+    private bool _savedStreamingResolution;
 
     internal MediaOutputSettingsWindow(MainViewModel viewModel, bool previewOnly = false)
     {
@@ -45,10 +47,10 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
                 p.MediaOutputShellCenterY, p.MediaOutputShellScale,
                 p.MediaOutputShellRotationDegrees);
         };
-        RecordFpsBox.Text = StreamFpsBox.Text = "60";
+        RestoreOutputPreferences();
         if (Application.Current is App settingsApp)
             RecordingDirectoryBox.Text = settingsApp.UpdateSettings.MediaOutputRecordingDirectory;
-        RecordBitrateBox.Text = StreamBitrateBox.Text = "6000";
+
         VirtualCameraFpsBox.SelectedIndex = 0;
         if (_previewOnly)
         {
@@ -101,12 +103,12 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (!IsLoaded && !force) return;
         var size = _viewModel.SuggestedMediaOutputSize();
         var previous = _lastDefaultSize;
-        var updateRecording = force || previous is null ||
+        var updateRecording = !_savedRecordingResolution && (force || previous is null ||
             (RecordWidthBox.Text == previous.Value.Width.ToString() &&
-             RecordHeightBox.Text == previous.Value.Height.ToString());
-        var updateStreaming = force || previous is null ||
+             RecordHeightBox.Text == previous.Value.Height.ToString()));
+        var updateStreaming = !_savedStreamingResolution && (force || previous is null ||
             (StreamWidthBox.Text == previous.Value.Width.ToString() &&
-             StreamHeightBox.Text == previous.Value.Height.ToString());
+             StreamHeightBox.Text == previous.Value.Height.ToString()));
         var previousResolution = previous is null ? null :
             $"{previous.Value.Width}x{previous.Value.Height}";
         var selectedResolution =
@@ -203,16 +205,46 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
             string.IsNullOrWhiteSpace(_customBackgroundPath);
         BackgroundImageBox.Text = _useDefaultWhiteBackground
             ? "默认白板（9:16）" : _customBackgroundPath;
-        if (_useDefaultWhiteBackground)
-        {
-            RecordWidthBox.Text = "1080";
-            RecordHeightBox.Text = "1920";
-            if (RecordResolutionPresetBox is not null)
-                RecordResolutionPresetBox.SelectedIndex = 2;
-        }
+        // Selecting a white background must not override a saved output size.
         _restoringShellPreferences = false;
         RefreshTransparentShellControls();
     }
+
+    private void RestoreOutputPreferences()
+    {
+        if (Application.Current is not App app) return;
+        var s = app.UpdateSettings;
+        _savedRecordingResolution = ValidOutputSize(s.MediaOutputRecordWidth, s.MediaOutputRecordHeight);
+        _savedStreamingResolution = ValidOutputSize(s.MediaOutputStreamWidth, s.MediaOutputStreamHeight);
+        if (_savedRecordingResolution)
+        {
+            RecordWidthBox.Text = s.MediaOutputRecordWidth.ToString();
+            RecordHeightBox.Text = s.MediaOutputRecordHeight.ToString();
+            var tag = $"{Math.Min(s.MediaOutputRecordWidth, s.MediaOutputRecordHeight)}x" +
+                $"{Math.Max(s.MediaOutputRecordWidth, s.MediaOutputRecordHeight)}";
+            var selected = RecordResolutionPresetBox.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag as string, tag, StringComparison.Ordinal))
+                ?? RecordResolutionPresetBox.Items.OfType<ComboBoxItem>().First();
+            RecordResolutionPresetBox.SelectedItem = selected;
+        }
+        if (_savedStreamingResolution)
+        {
+            StreamWidthBox.Text = s.MediaOutputStreamWidth.ToString();
+            StreamHeightBox.Text = s.MediaOutputStreamHeight.ToString();
+        }
+        RecordFpsBox.Text = s.MediaOutputRecordFps is >= 10 and <= 120 ?
+            s.MediaOutputRecordFps.ToString() : "60";
+        StreamFpsBox.Text = s.MediaOutputStreamFps is >= 10 and <= 60 ?
+            s.MediaOutputStreamFps.ToString() : "60";
+        RecordBitrateBox.Text = SafeBitrate(s.MediaOutputRecordBitrateKbps).ToString();
+        StreamBitrateBox.Text = SafeBitrate(s.MediaOutputStreamBitrateKbps).ToString();
+    }
+
+    private static bool ValidOutputSize(uint w, uint h) =>
+        w is >= 160 and <= 4096 && h is >= 160 and <= 4096 &&
+        (w & 1) == 0 && (h & 1) == 0;
+    private static int SafeBitrate(int bitrate) =>
+        bitrate is >= 500 and <= 150000 ? bitrate : 6000;
 
     private void SaveShellPreferences()
     {
@@ -227,6 +259,28 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         app.UpdateSettings.MediaOutputBackgroundImagePath = _customBackgroundPath;
         app.UpdateSettings.MediaOutputUseDefaultWhiteBackground = _useDefaultWhiteBackground;
         app.UpdateSettings.MediaOutputRecordingDirectory = RecordingDirectoryBox.Text.Trim();
+        if (uint.TryParse(RecordWidthBox.Text, out var rw) &&
+            uint.TryParse(RecordHeightBox.Text, out var rh) && ValidOutputSize(rw, rh))
+        {
+            app.UpdateSettings.MediaOutputRecordWidth = rw;
+            app.UpdateSettings.MediaOutputRecordHeight = rh;
+            _savedRecordingResolution = true;
+        }
+        if (uint.TryParse(StreamWidthBox.Text, out var sw) &&
+            uint.TryParse(StreamHeightBox.Text, out var sh) && ValidOutputSize(sw, sh))
+        {
+            app.UpdateSettings.MediaOutputStreamWidth = sw;
+            app.UpdateSettings.MediaOutputStreamHeight = sh;
+            _savedStreamingResolution = true;
+        }
+        if (int.TryParse(RecordFpsBox.Text, out var rf) && rf is >= 10 and <= 120)
+            app.UpdateSettings.MediaOutputRecordFps = rf;
+        if (int.TryParse(StreamFpsBox.Text, out var sf) && sf is >= 10 and <= 60)
+            app.UpdateSettings.MediaOutputStreamFps = sf;
+        if (int.TryParse(RecordBitrateBox.Text, out var rb) && rb is >= 500 and <= 150000)
+            app.UpdateSettings.MediaOutputRecordBitrateKbps = rb;
+        if (int.TryParse(StreamBitrateBox.Text, out var sb) && sb is >= 500 and <= 150000)
+            app.UpdateSettings.MediaOutputStreamBitrateKbps = sb;
         _ = app.SaveUpdateSettings();
     }
 
@@ -343,9 +397,7 @@ public partial class MediaOutputSettingsWindow : Wpf.Ui.Controls.FluentWindow
         if (_previewOnly) return;
         _useDefaultWhiteBackground = true;
         BackgroundImageBox.Text = "默认白板（9:16）";
-        RecordWidthBox.Text = "1080";
-        RecordHeightBox.Text = "1920";
-        RecordResolutionPresetBox.SelectedIndex = 2;
+        // Canvas selection is independent of the previously selected resolution.
         SaveShellPreferences();
     }
 

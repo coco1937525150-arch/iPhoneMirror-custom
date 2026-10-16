@@ -36,6 +36,15 @@ internal sealed class UpdateSettings
     public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
     // Nullable for migrating existing background picture preferences.
     public bool? MediaOutputUseDefaultWhiteBackground { get; set; }
+    // Persist the user's previous output selections; zero size means first use.
+    public uint MediaOutputRecordWidth { get; set; }
+    public uint MediaOutputRecordHeight { get; set; }
+    public int MediaOutputRecordFps { get; set; } = 60;
+    public int MediaOutputRecordBitrateKbps { get; set; } = 6000;
+    public uint MediaOutputStreamWidth { get; set; }
+    public uint MediaOutputStreamHeight { get; set; }
+    public int MediaOutputStreamFps { get; set; } = 60;
+    public int MediaOutputStreamBitrateKbps { get; set; } = 6000;
     public string MediaOutputRecordingDirectory { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "iPhoneMirror");
     public double MediaOutputShellCenterX { get; set; } = 0.5;
@@ -124,6 +133,15 @@ internal sealed class UpdateSettings
         IndependentWindowAlwaysOnTop = IndependentWindowAlwaysOnTop,
         MediaOutputIncludePhoneShell = MediaOutputIncludePhoneShell,
         MediaOutputTransparentShellRecording = MediaOutputTransparentShellRecording,
+        MediaOutputTransparentMovQuality = MediaOutputTransparentMovQuality,
+        MediaOutputRecordWidth = MediaOutputRecordWidth,
+        MediaOutputRecordHeight = MediaOutputRecordHeight,
+        MediaOutputRecordFps = MediaOutputRecordFps,
+        MediaOutputRecordBitrateKbps = MediaOutputRecordBitrateKbps,
+        MediaOutputStreamWidth = MediaOutputStreamWidth,
+        MediaOutputStreamHeight = MediaOutputStreamHeight,
+        MediaOutputStreamFps = MediaOutputStreamFps,
+        MediaOutputStreamBitrateKbps = MediaOutputStreamBitrateKbps,
         MediaOutputBackgroundImagePath = MediaOutputBackgroundImagePath,
         MediaOutputUseDefaultWhiteBackground = MediaOutputUseDefaultWhiteBackground,
         MediaOutputRecordingDirectory = MediaOutputRecordingDirectory,
