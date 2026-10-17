@@ -153,10 +153,22 @@ TraceRecord make_trace_record(DiagnosticEvent event, std::uint64_t frame_id,
     return record;
 }
 
+constexpr bool is_critical_trace_event(DiagnosticEvent event) noexcept {
+    return event == DiagnosticEvent::VisualFlashMarked ||
+        event == DiagnosticEvent::RotationRequested ||
+        event == DiagnosticEvent::RotationTrigger ||
+        event == DiagnosticEvent::OrientationDetected ||
+        event == DiagnosticEvent::OrientationConfirmed;
+}
+
 void enqueue_trace_locked(const TraceRecord& record) noexcept {
     if (trace_count == TraceCapacity) {
         ++trace_lost;
-        return;
+        if (!is_critical_trace_event(record.event)) return;
+        // Prefer the user marker over an old high-frequency render sample
+        // when the consumer falls behind. Preserve the bounded ring size.
+        trace_head = (trace_head + 1) % TraceCapacity;
+        --trace_count;
     }
     trace_ring[(trace_head + trace_count) % TraceCapacity] = record;
     ++trace_count;
@@ -166,6 +178,7 @@ void enqueue_trace_locked(const TraceRecord& record) noexcept {
 void write_trace_record(const TraceRecord& record) {
     if (record.event != DiagnosticEvent::SessionStop &&
         record.event != DiagnosticEvent::DiagnosticOverflow &&
+        !is_critical_trace_event(record.event) &&
         static_cast<std::streamoff>(trace_file.tellp()) >= TraceMaximumFileBytes) {
         trace_file_lost.fetch_add(1, std::memory_order_relaxed);
         return;

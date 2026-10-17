@@ -4907,6 +4907,15 @@ finally { Directory.Delete(flashFixtureRoot, recursive: true); }
 // Native high precision trace preserves the WPF/DirectComposition time
 // order. The actual visual-flash marker must be correlated with geometry
 // and manual rotation tags rather than reusing an earlier AirPlay event.
+// NV12 native conversion failures must not be reported as missing input.
+var nativeInteropText = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Interop", "NativeCore.cs"));
+Equal(true, nativeInteropText.Contains(
+    "NV12 frame acquisition failed (native result", StringComparison.Ordinal) &&
+    nativeInteropText.Contains(
+    "NativeResult.CaptureBackendUnavailable", StringComparison.Ordinal),
+    "NV12 failures distinguish startup wait from native conversion errors");
+
 var flashDiagnosticSource = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "FlashDiagnostics.cs"));
 var flashLoggingSource = File.ReadAllText(Path.Combine(sourceDirectory,
@@ -4927,6 +4936,18 @@ Equal(true,
     flashCoreApiSource.Contains("DiagnosticEvent::RotationTrigger)) return;",
         StringComparison.Ordinal),
     "flash marking and manual/auto orientation are correlated with per-frame GPU geometry");
+Equal(true,
+    flashLoggingSource.Contains("is_critical_trace_event(record.event)",
+        StringComparison.Ordinal) &&
+    flashLoggingSource.Contains("trace_head = (trace_head + 1) % TraceCapacity;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "independent_window_airplay_orientation_resync",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "!_airPlayOrientationTimer.IsEnabled",
+        StringComparison.Ordinal),
+    "trace overload preserves flash/rotation markers and AirPlay rechecks stale orientation");
 
 // Imported phone image may have a solid-black display. Verify that the
 // imported asset gains a truly transparent aperture without modifying the

@@ -1236,9 +1236,21 @@ internal sealed class NativeCore : IDisposable
             result = im_session_copy_latest_video_frame_nv12(handle.RawHandle, ref info,
                 _outputNv12FrameBuffer, ref size, width, height);
         }
-        if (result != 0 || _outputNv12FrameBuffer is null ||
-            info.PixelFormat != 2)
+        // Absence of an initial decoded frame is normal during startup.
+        // All other native failures (including GPU readback, format
+        // conversion or a stale session handle) must be visible to the
+        // recording reader instead of collapsing to the same "no NV12 data"
+        // message. im_last_error is thread-local to this native API call.
+        if (result == (int)NativeResult.CaptureBackendUnavailable)
             return null;
+        if (result != (int)NativeResult.Ok)
+            throw new InvalidOperationException(
+                $"NV12 frame acquisition failed (native result {result}): " +
+                GetLastError("Unknown native frame conversion error."));
+        if (_outputNv12FrameBuffer is null || info.PixelFormat != 2)
+            throw new InvalidOperationException(
+                $"NV12 frame acquisition returned invalid buffer/format " +
+                $"(pixel format {info.PixelFormat}, size {size}).");
         return new Nv12VideoFrame(info.Width, info.Height, info.Stride,
             info.Timestamp100Ns, _outputNv12FrameBuffer);
         }

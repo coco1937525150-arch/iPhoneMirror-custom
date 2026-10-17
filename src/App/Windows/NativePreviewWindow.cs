@@ -843,6 +843,24 @@ internal sealed class NativePreviewWindow : IDisposable
         }
         var pendingAutoTurn = _autoRotateAirPlay && width > 0 && height > 0 &&
             (width > height) != ((_rotation & 1) != 0);
+        // A cancelled/stale orientation timer can leave a persistent parity
+        // mismatch even when AirPlay keeps reporting IDENTICAL dimensions.
+        // Re-arm confirmation on subsequent status updates, not only when
+        // the source dimensions change. Never disturb a running animation.
+        if (pendingAutoTurn && !_rotationAnimating &&
+            !_airPlayOrientationTimer.IsEnabled && !_isFullScreen &&
+            !IsIconic(_handle))
+        {
+            var landscape = width > height;
+            _queuedAirPlayLandscape = landscape;
+            _queuedAirPlayAt = _rotationClock.Elapsed;
+            _diagnosticOrientationId = FlashDiagnostics.NextOrientation(
+                width, height, landscape);
+            _airPlayOrientationTimer.Start();
+            Log("independent_window_airplay_orientation_resync",
+                ("landscape", landscape), ("source_width", width),
+                ("source_height", height), ("rotation", _rotation));
+        }
         if (!_rotationAnimating && !pendingAutoTurn)
             ApplyRotatedDimensions();
         if (changed)
