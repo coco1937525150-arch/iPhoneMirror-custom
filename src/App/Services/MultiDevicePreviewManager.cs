@@ -20,6 +20,11 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _sessionRecoveries =
         new(StringComparer.OrdinalIgnoreCase);
+    // An iPhone may end its AirPlay session when locked. Keep the native
+    // window geometry and user-selected rotation until the user closes it,
+    // and reattach it if iOS advertises a new session after unlocking.
+    private readonly HashSet<string> _wirelessReconnectPending =
+        new(StringComparer.OrdinalIgnoreCase);
     private bool _disposing;
     private bool _disposed;
 
@@ -96,6 +101,13 @@ internal sealed class MultiDevicePreviewManager : IDisposable
                     ("handle", AppLog.Handle(currentHandle))));
                 return Task.FromResult((true, string.Empty));
             }
+            if (device.IsWireless && currentHandle == 0 &&
+                _wirelessReconnectPending.Contains(device.Udid))
+            {
+                existing.Activate();
+                return Task.FromResult((true, string.Empty));
+            }
+            _wirelessReconnectPending.Remove(device.Udid);
             _windows.Remove(device.Udid);
             existing.Dispose();
         }
@@ -145,15 +157,32 @@ internal sealed class MultiDevicePreviewManager : IDisposable
             }
             return (false, LocalizationService.Get("CaptureStopped"));
         }
-        var profile = DeviceCornerProfileResolver.Resolve(device.ProductType, 1206, 2622);
-        var frameProfile = DeviceFrameProfileResolver.Resolve(device.ProductType, 1206, 2622);
+        // The AirPlay video format may already be known before the user opens
+        // the detached window (notably after returning from another preview).
+        // Initializing every window as 1206x2622 creates a stale portrait
+        // viewport until a *new* size-change callback arrives.
+        var isSelected = DeviceViewModel.UdidEquals(viewModel.SelectedDevice?.Udid, device.Udid);
+        var sourceWidth = isSelected && viewModel.SourceVideoWidth > 0
+            ? viewModel.SourceVideoWidth : 1206U;
+        var sourceHeight = isSelected && viewModel.SourceVideoHeight > 0
+            ? viewModel.SourceVideoHeight : 2622U;
+        // iOS sometimes starts a detached preview while already landscape.
+        // The shell PNG is a portrait physical device and should first be
+        // constructed in its canonical portrait geometry before its automatic
+        // counterclockwise turn. Keep the ACTUAL frame dimensions separately.
+        var initialWidth = device.IsWireless
+            ? Math.Min(sourceWidth, sourceHeight) : sourceWidth;
+        var initialHeight = device.IsWireless
+            ? Math.Max(sourceWidth, sourceHeight) : sourceHeight;
+        var profile = DeviceCornerProfileResolver.Resolve(device.ProductType, initialWidth, initialHeight);
+        var frameProfile = DeviceFrameProfileResolver.Resolve(device.ProductType, initialWidth, initialHeight);
         var cornerRadius = profile.IsRounded ? profile.RadiusRatio : 0;
         // Avoid exaggerated black corner caps on detached iPhone previews.
         if (frameProfile.Id == "iphone-dynamic-island")
             cornerRadius = Math.Min(cornerRadius, 0.132);
         _ = Interop.NativeCore.SetDeviceCornerProfile(started.Handle,
             cornerRadius, profile.CurveExponent);
-        if (!NativePreviewWindow.TryCreateAndShowForSession(started.Handle, 1206, 2622,
+        if (!NativePreviewWindow.TryCreateAndShowForSession(started.Handle, initialWidth, initialHeight,
                 $"iPhoneMirror — {device.DisplayName}", cornerRadius, profile.CurveExponent,
                 frameProfile,
                 () => viewModel.IsDeviceAudioEnabled(device.Udid),
@@ -181,6 +210,12 @@ internal sealed class MultiDevicePreviewManager : IDisposable
             return (false, LocalizationService.Get("PreviewRendererAttachFailed"));
         }
         _windows[device.Udid] = window;
+        // Enable only for true wireless AirPlay mirrors. A MediaCast screen,
+        // wired QuickTime capture or user-controlled rotation stays manual.
+        window.EnableAirPlayAutomaticRotation(device.IsWireless);
+        if (device.IsWireless && (sourceWidth != initialWidth ||
+            sourceHeight != initialHeight))
+            window.SetSourceDimensions(sourceWidth, sourceHeight);
         if (_protectionStates.TryGetValue(device.Udid, out var protection))
             window.SetProtectedContent(protection.IsProtected,
                 protection.AudioDisplay);
@@ -193,6 +228,7 @@ internal sealed class MultiDevicePreviewManager : IDisposable
             if (!_windows.TryGetValue(device.Udid, out var tracked) ||
                 !ReferenceEquals(tracked, window)) return;
             _windows.Remove(device.Udid);
+            _wirelessReconnectPending.Remove(device.Udid);
             PreviewClosed?.Invoke(device.Udid);
             var closingHandle = window.SessionHandle;
             viewModel.AddDiagnosticLog(AppLog.Event("independent_preview_closed",
@@ -227,6 +263,44 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         _protectionStates.Remove(udid);
         if (!_windows.TryGetValue(udid, out var window))
             return;
+
+        if (handle == 0 && DeviceViewModel.IsWirelessUdid(udid))
+        {
+            // Locking iOS can terminate mirroring entirely. Closing this
+            // window on handle=0 loses its size, position and rotation even
+            // if a new AirPlay session appears a moment later.
+            _wirelessReconnectPending.Add(udid);
+            window.SetWaitingForWirelessReconnect(true);
+            viewModel.AddDiagnosticLog(AppLog.Event(
+                "independent_preview_wireless_reconnect_pending",
+                ("device", AppLog.Device(udid)),
+                ("old_handle", AppLog.Handle(window.SessionHandle))));
+            return;
+        }
+
+        if (handle != 0 && _wirelessReconnectPending.Contains(udid))
+        {
+            if (window.RebindSession(handle))
+            {
+                _wirelessReconnectPending.Remove(udid);
+                window.SetWaitingForWirelessReconnect(false);
+                viewModel.AddDiagnosticLog(AppLog.Event(
+                    "independent_preview_wireless_reconnected",
+                    ("device", AppLog.Device(udid)),
+                    ("handle", AppLog.Handle(handle))));
+            }
+            else
+            {
+                // A transient attach failure must not discard the preserved
+                // geometry. The next real handle update can retry, or the
+                // user can explicitly open a fresh preview as a fallback.
+                viewModel.AddDiagnosticLog(AppLog.Event(
+                    "independent_preview_wireless_rebind_deferred",
+                    ("device", AppLog.Device(udid)),
+                    ("handle", AppLog.Handle(handle))));
+            }
+            return;
+        }
 
         if (handle == 0 && _sessionRecoveries.Contains(udid))
         {
@@ -275,7 +349,8 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         }
 
         _sessionRecoveries.Remove(udid);
-        if (viewModel.GetDeviceSessionHandle(udid) != 0 ||
+        if (_wirelessReconnectPending.Contains(udid) ||
+            viewModel.GetDeviceSessionHandle(udid) != 0 ||
             !_windows.TryGetValue(udid, out var window)) return;
 
         _windows.Remove(udid);
@@ -404,6 +479,7 @@ internal sealed class MultiDevicePreviewManager : IDisposable
         }
         _windows.Clear();
         _sessionRecoveries.Clear();
+        _wirelessReconnectPending.Clear();
         _protectionStates.Clear();
     }
 }

@@ -24,9 +24,54 @@ internal static class DeviceFrameProfileResolver
     internal static readonly DeviceFrameProfile IPhoneDynamicIsland = new(
         "iphone-dynamic-island", true,
         // Thin front-frame proportions of iPhone 16 Pro Max.
-        0.027, 0.028, 0.028, 0.158,
+        0.064, 0.058, 0.058, 0.158,
         // Dynamic Island is already part of the decoded iOS picture.
         DeviceCutoutKind.None, 0, 0, 0);
+
+    // Geometry calibrated against the opaque ring / transparent screen in the
+    // immutable 994x2048 RGBA shell: center aperture approximately x=43..949,
+    // y=39..2008. Ratios use DISPLAY short-edge units (not outer width).
+    // Keep recorder, WPF layout editor and native preview on one profile.
+    // The shell can no longer be overridden by files under LocalAppData.
+    internal static readonly DeviceFrameProfile IPhoneImportedShell = new(
+        "iphone-dynamic-island-custom-shell", true,
+        0.048, 0.043, 0.043, 0.158,
+        DeviceCutoutKind.None, 0, 0, 0);
+
+    internal static DeviceFrameProfile ActiveIPhoneShell =>
+        IPhoneImportedShell;
+
+    /// <summary>
+    /// The bundled 994x2048 iPhone 16 Pro Max bezel has ONE physical aspect.
+    /// AirPlay may replace its 1320x2868 portrait display frames with 16:9,
+    /// 9:16 or 4K encoded movie frames. Those are CONTENT dimensions, not
+    /// a new phone chassis. Keep the independent HWND/body's proportions
+    /// fixed while its screen aperture letterboxes the incoming video.
+    /// </summary>
+    internal static (uint Width, uint Height) GetStableWindowOuterDimensions(
+        DeviceFrameProfile profile, uint sourceWidth, uint sourceHeight,
+        int quarterTurns)
+    {
+        if (sourceWidth == 0 || sourceHeight == 0)
+            return (sourceWidth, sourceHeight);
+
+        var shortEdge = Math.Min(sourceWidth, sourceHeight);
+        var longEdge = Math.Max(sourceWidth, sourceHeight);
+        if (profile == ActiveIPhoneShell)
+        {
+            // Reference screen geometry for the ORIGINAL embedded shell PNG:
+            // 1320x2868 inside the 994x2048 device-body artwork.
+            // Scale uniformly with the available source short edge; do NOT
+            // infer the long edge from the active AirPlay movie aspect.
+            longEdge = (uint)Math.Min(uint.MaxValue,
+                Math.Round(shortEdge * (2868.0 / 1320.0)));
+        }
+
+        var landscapeBody = (quarterTurns & 1) != 0;
+        return profile.GetOuterDimensions(
+            landscapeBody ? longEdge : shortEdge,
+            landscapeBody ? shortEdge : longEdge);
+    }
 
     internal static readonly DeviceFrameProfile IPad = new(
         "ipad", true,
@@ -56,7 +101,7 @@ internal static class DeviceFrameProfileResolver
             if (major == 10)
                 return minor is 3 or 6 ? IPhoneNotch : IPhoneHomeButton;
             if (NotchedModernIPhones.Contains((major, minor))) return IPhoneNotch;
-            return major >= 15 ? IPhoneDynamicIsland : IPhoneNotch;
+            return major >= 15 ? ActiveIPhoneShell : IPhoneNotch;
         }
 
         if (TryParseProductType(productType, "iPad", out _, out _)) return IPad;
@@ -66,7 +111,7 @@ internal static class DeviceFrameProfileResolver
         var shortEdge = Math.Min(frameWidth, frameHeight);
         var longEdge = Math.Max(frameWidth, frameHeight);
         var ratio = shortEdge / (double)longEdge;
-        if (ratio is >= 0.38 and <= 0.56) return IPhoneDynamicIsland;
+        if (ratio is >= 0.38 and <= 0.56) return ActiveIPhoneShell;
         if (ratio is >= 0.64 and <= 0.80) return IPad;
         return DeviceFrameProfile.None;
     }

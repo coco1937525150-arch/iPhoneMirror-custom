@@ -29,6 +29,7 @@ internal sealed class AspectRatioWindowController : IDisposable
     private double _aspectRatio;
     private bool _disposed;
     private bool _resizeQueued;
+    private int _resizeGeneration;
 
     internal AspectRatioWindowController(Window window, uint sourceWidth, uint sourceHeight)
     {
@@ -65,16 +66,67 @@ internal sealed class AspectRatioWindowController : IDisposable
     /// </summary>
     internal bool ApplyInitialBounds() => ResizeWindowToAspect(fitToWorkArea: true);
 
-    internal void SetSourceDimensions(uint width, uint height)
+    /// <summary>
+    /// Resizes an independent preview to a percentage of the current
+    /// monitor's work area, preserving its client-area aspect and DPI.
+    /// This does not change the resolution of the incoming video stream.
+    /// </summary>
+    internal bool ResizeToWorkAreaFraction(double fraction)
+    {
+        if (_disposed || _handle == 0 || !_canResize() ||
+            !double.IsFinite(fraction) || fraction is < 0.35 or > 0.95 ||
+            !GetWindowRect(_handle, out var current) ||
+            !TryGetWorkArea(out var work)) return false;
+
+        GetFrameSize(out var frameWidth, out var frameHeight);
+        var availableWidth = Math.Max(1, work.Right - work.Left - frameWidth);
+        var availableHeight = Math.Max(1, work.Bottom - work.Top - frameHeight);
+        var proposedWidth = Math.Min(availableWidth * fraction,
+            availableHeight * fraction * _aspectRatio);
+        var dpi = GetDpiForWindow(_handle);
+        var dpiScale = dpi == 0 ? 1.0 : dpi / 96.0;
+        var minimumWidth = Math.Max(_minWidthDips * dpiScale - frameWidth,
+            (_minHeightDips * dpiScale - frameHeight) * _aspectRatio);
+        var maximumWidth = Math.Min(availableWidth, availableHeight * _aspectRatio);
+        var clientWidth = Math.Clamp(proposedWidth,
+            Math.Min(minimumWidth, maximumWidth), maximumWidth);
+        var outerWidth = Math.Max(1, (int)Math.Round(clientWidth) + frameWidth);
+        var outerHeight = Math.Max(1, (int)Math.Round(clientWidth / _aspectRatio) + frameHeight);
+        var centerX = ((long)current.Left + current.Right) / 2;
+        var centerY = ((long)current.Top + current.Bottom) / 2;
+        var left = (int)Math.Clamp(centerX - outerWidth / 2L,
+            work.Left, Math.Max(work.Left, work.Right - outerWidth));
+        var top = (int)Math.Clamp(centerY - outerHeight / 2L,
+            work.Top, Math.Max(work.Top, work.Bottom - outerHeight));
+        return SetWindowPos(_handle, 0, left, top, outerWidth, outerHeight,
+            SwpNoActivate | SwpNoZOrder);
+    }
+
+    internal void SetSourceDimensions(uint width, uint height, bool reflow = true)
     {
         var newAspect = ValidAspect(width, height);
         if (newAspect is null || Math.Abs(newAspect.Value - _aspectRatio) < 0.00001) return;
 
         _aspectRatio = newAspect.Value;
-        QueueResize(fitToWorkArea: false);
+        // The phone-rotation compositor owns the final HWND size during its
+        // discrete orientation handoff. Do not queue a second aspect resize
+        // immediately after the already-sized rotated window is displayed.
+        if (reflow) QueueResize(fitToWorkArea: false);
     }
 
     internal void Reflow() => QueueResize(fitToWorkArea: false);
+
+    /// <summary>
+    /// Discard a previously queued Dispatcher resize when the phone's
+    /// DirectComposition rotation takes ownership of the HWND geometry.
+    /// A stale queued reflow can otherwise run just after the animation
+    /// completes and blow up the bezel beyond the fitted window bounds.
+    /// </summary>
+    internal void CancelQueuedResize()
+    {
+        ++_resizeGeneration;
+        _resizeQueued = false;
+    }
 
     private static double? ValidAspect(uint width, uint height)
     {
@@ -116,9 +168,11 @@ internal sealed class AspectRatioWindowController : IDisposable
     private void QueueResize(bool fitToWorkArea)
     {
         if (_disposed || _handle == 0 || _resizeQueued) return;
+        var generation = _resizeGeneration;
         _resizeQueued = true;
         _dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
+            if (_disposed || generation != _resizeGeneration) return;
             _resizeQueued = false;
             _ = ResizeWindowToAspect(fitToWorkArea);
         });

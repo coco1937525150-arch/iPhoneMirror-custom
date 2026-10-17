@@ -626,6 +626,62 @@ std::int32_t IM_CALL im_log_message(const wchar_t* message) {
     return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
 }
 
+std::int32_t IM_CALL im_diagnostic_start(const wchar_t* session_id,
+    const wchar_t* timeline_path) {
+    if (!session_id || !timeline_path)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Diagnostic session and output path are required");
+    const auto length = wcsnlen_s(session_id, 41);
+    if (length == 0 || length > 40)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Invalid diagnostic session ID");
+    std::string ascii_id;
+    ascii_id.reserve(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        if (session_id[i] > 0x7f)
+            return fail(iPhoneMirror::Result::InvalidArgument,
+                L"Invalid diagnostic session ID");
+        ascii_id.push_back(static_cast<char>(session_id[i]));
+    }
+    if (!iPhoneMirror::logging::start_diagnostics(ascii_id, timeline_path))
+        return fail(iPhoneMirror::Result::InternalError,
+            L"Could not open diagnostic timeline");
+    iPhoneMirror::logging::write_event(iPhoneMirror::logging::Level::Info,
+        "diagnostic", "flicker_started", "session_id=" + ascii_id);
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
+std::int32_t IM_CALL im_diagnostic_stop() {
+    if (!iPhoneMirror::logging::stop_diagnostics())
+        return fail(iPhoneMirror::Result::InternalError,
+            L"Diagnostic timeline was not active or could not be written");
+    iPhoneMirror::logging::write_event(iPhoneMirror::logging::Level::Info,
+        "diagnostic", "flicker_stopped");
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
+void IM_CALL im_diagnostic_set_context(std::uint64_t rotation_id,
+    std::uint64_t orientation_event_id) {
+    iPhoneMirror::logging::set_diagnostic_context(rotation_id,
+        orientation_event_id);
+}
+
+void IM_CALL im_diagnostic_event(std::uint32_t event_code,
+    std::uint64_t frame_id, std::uint64_t visual_generation,
+    std::int64_t value0, std::int64_t value1, std::int64_t value2,
+    std::int64_t value3, std::int32_t hresult) {
+    // The original upper bound (DiagnosticOverflow=38) silently discarded
+    // all new events: recording 39-42, visible flash mark 43, geometry 44-47
+    // and rotation trigger 48-49. 2026-10-16 diagnostics captured the C#
+    // button clicks but emitted zero native markers. Keep API validation in
+    // sync with the LAST enum entry (descriptors are also indexed by code).
+    if (event_code < 1 || event_code > static_cast<std::uint32_t>(
+            iPhoneMirror::logging::DiagnosticEvent::RotationTrigger)) return;
+    iPhoneMirror::logging::diagnostic_event(
+        static_cast<iPhoneMirror::logging::DiagnosticEvent>(event_code),
+        frame_id, visual_generation, value0, value1, value2, value3, hresult);
+}
+
 std::int32_t IM_CALL im_refresh_devices(iPhoneMirror::DeviceInfo* devices,
     std::uint32_t* count) {
     return im_refresh_devices_ex(devices, count, 0);
@@ -1987,7 +2043,7 @@ std::int32_t IM_CALL im_session_copy_latest_video_frame_nv12(
         return static_cast<std::int32_t>(iPhoneMirror::Result::BufferTooSmall);
     return iPhoneMirror::media::detail::copy_nv12_frame_letterboxed_sdr(
         *frame, std::span<std::uint8_t>(buffer, *required), output_width,
-        output_height)
+        output_height, true /* upscale source to fill encoding canvas */)
         ? static_cast<std::int32_t>(iPhoneMirror::Result::Ok)
         : fail(iPhoneMirror::Result::ProtocolError,
             L"Invalid decoded NV12/P010 frame");
@@ -2107,7 +2163,52 @@ std::int32_t IM_CALL im_session_set_window_rotation(iPhoneMirror::SessionHandle 
     // A rotation is a local preview preference. Reconfiguring the QuickTime
     // display stream here sends HPD0/HPD1 over USB and can make iOS terminate
     // an otherwise healthy mirroring session during a game orientation change.
-    found->second->set_rotation(normalized == 2 ? 2 : 0);
+    // Apply every requested quarter-turn to the preview video. The device shell
+    // and hit-test geometry are independently rotated by NativePreviewWindow.
+    // Do not request an orientation change from the iPhone over USB/AirPlay.
+    found->second->set_rotation(normalized);
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
+std::int32_t IM_CALL im_session_set_window_video_stage_rotation(
+    iPhoneMirror::SessionHandle handle, void* hwnd, std::int32_t quarter_turns) {
+    if (quarter_turns < -1 || quarter_turns > 3)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Invalid staged video rotation");
+    auto context = find_multi_session(handle);
+    if (!context) return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown session handle");
+    std::shared_lock lifecycle_lock(context->lifecycle_mutex);
+    if (!context->capture || context->stopped)
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Session is stopped");
+    std::scoped_lock renderers_lock(context->renderers_mutex);
+    const auto found = context->renderers.find(static_cast<HWND>(hwnd));
+    if (found == context->renderers.end())
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown preview window");
+    found->second->set_video_stage_rotation(quarter_turns);
+    return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
+}
+
+std::int32_t IM_CALL im_session_set_window_visual_rotation(
+    iPhoneMirror::SessionHandle handle, void* hwnd, float degrees,
+    float canvas_width, float canvas_height, float visual_scale,
+    std::int32_t active) {
+    if (hwnd == nullptr || !std::isfinite(degrees) ||
+        !std::isfinite(canvas_width) || !std::isfinite(canvas_height) ||
+        !std::isfinite(visual_scale) || canvas_width < 0.0F ||
+        canvas_height < 0.0F || visual_scale <= 0.0F || visual_scale > 1.0F)
+        return fail(iPhoneMirror::Result::InvalidArgument,
+            L"Invalid visual rotation parameters");
+    auto context = find_multi_session(handle);
+    if (!context) return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown session handle");
+    std::shared_lock lifecycle_lock(context->lifecycle_mutex);
+    if (!context->capture || context->stopped)
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Session is stopped");
+    std::scoped_lock renderers_lock(context->renderers_mutex);
+    const auto found = context->renderers.find(static_cast<HWND>(hwnd));
+    if (found == context->renderers.end())
+        return fail(iPhoneMirror::Result::InvalidArgument, L"Unknown preview window");
+    found->second->set_visual_rotation(degrees, canvas_width,
+        canvas_height, visual_scale, active != 0);
     return static_cast<std::int32_t>(iPhoneMirror::Result::Ok);
 }
 

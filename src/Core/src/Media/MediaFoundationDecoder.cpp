@@ -424,12 +424,13 @@ std::optional<std::uint32_t> checked_nv12_buffer_size(
 
 bool copy_nv12_frame_letterboxed(const DecodedFrame& frame,
     std::span<std::uint8_t> output, std::uint32_t output_width,
-    std::uint32_t output_height, bool canonicalize_sdr) noexcept {
+    std::uint32_t output_height, bool canonicalize_sdr,
+    bool allow_upscale) noexcept {
     if (frame.nv12.empty() && frame.gpu_frame) {
         auto materialized = frame;
         if (!materialize_gpu_frame(materialized)) return false;
         return copy_nv12_frame_letterboxed(materialized, output,
-            output_width, output_height, canonicalize_sdr);
+            output_width, output_height, canonicalize_sdr, allow_upscale);
     }
     if (frame.width == 0 || frame.height == 0 || output_width == 0 ||
         output_height == 0 || (output_width & 1U) != 0 ||
@@ -475,9 +476,17 @@ bool copy_nv12_frame_letterboxed(const DecodedFrame& frame,
         output.begin() + static_cast<std::ptrdiff_t>(*required),
         std::uint8_t{128});
 
-    const auto scale = std::min(1.0, std::min(
+    // The previous 1.0 cap silently disabled ALL upscaling. AirPlay may
+    // decode 498x1080 while the user selects a 1080x1920 recording; its
+    // tiny center image and large black bars were baked into the MP4 before
+    // FFmpeg was allowed to compose the phone-shell aperture. Preserve
+    // original no-upscale semantics for legacy callers, but let the
+    // recording/export entry point request full-size aspect-fit NV12.
+    const auto fitted_scale = std::min(
         static_cast<double>(output_width) / frame.width,
-        static_cast<double>(output_height) / frame.height));
+        static_cast<double>(output_height) / frame.height);
+    const auto scale = allow_upscale
+        ? fitted_scale : std::min(1.0, fitted_scale);
     const auto even_dimension = [](std::uint32_t value,
         std::uint32_t limit) noexcept {
         value = std::min(value, limit);
@@ -659,9 +668,9 @@ bool copy_nv12_frame_letterboxed(const DecodedFrame& frame,
 
 bool copy_nv12_frame_letterboxed_sdr(const DecodedFrame& frame,
     std::span<std::uint8_t> output, std::uint32_t output_width,
-    std::uint32_t output_height) noexcept {
+    std::uint32_t output_height, bool allow_upscale) noexcept {
     return copy_nv12_frame_letterboxed(frame, output, output_width,
-        output_height, true);
+        output_height, true, allow_upscale);
 }
 
 bool materialize_gpu_frame(DecodedFrame& frame) noexcept {

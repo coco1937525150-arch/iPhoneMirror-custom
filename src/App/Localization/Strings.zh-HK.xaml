@@ -72,6 +72,8 @@
     <system:String x:Key="WiredControlDisable">關閉有線控制</system:String>
     <system:String x:Key="WirelessControlEnable">啟用無線控制</system:String>
     <system:String x:Key="WirelessControlDisable">關閉無線控制</system:String>
+    <system:String x:Key="WirelessControlUnavailableHint">無線控制需要先綁定可信 Apple 裝置。AirPlay 投屏已連線並不代表控制通道已就緒。</system:String>
+    <system:String x:Key="WiredControlUnavailableHint">有線控制需要 USB 數據連線、裝置信任及 Apple 裝置身分綁定。</system:String>
     <system:String x:Key="UsbControlPrerequisite">請透過 USB 連接並在裝置上信任一部 iPhone 或 iPad 後，再啟用 USB 控制</system:String>
     <system:String x:Key="UsbControlOff">USB 控制未啟用</system:String>
     <system:String x:Key="UsbControlStarting">正在連接反向控制</system:String>
@@ -179,6 +181,7 @@
     <system:String x:Key="IndependentWindowEnterFullScreen">進入全螢幕</system:String>
     <system:String x:Key="IndependentWindowExitFullScreen">離開全螢幕</system:String>
     <system:String x:Key="IndependentWindowWindowMenu">視窗</system:String>
+    <system:String x:Key="IndependentWindowSize">螢幕大小</system:String>
     <system:String x:Key="IndependentWindowDisplayMenu">畫面</system:String>
     <system:String x:Key="IndependentWindowAudioMenu">音訊</system:String>
     <system:String x:Key="IndependentWindowFix">固定視窗</system:String>
@@ -188,6 +191,8 @@
     <system:String x:Key="IndependentWindowClose">關閉</system:String>
     <system:String x:Key="IndependentWindowRotateLeft">向左旋轉</system:String>
     <system:String x:Key="IndependentWindowRotateRight">向右旋轉</system:String>
+    <system:String x:Key="FlashDiagnosticStart">開始閃屏診斷</system:String>
+    <system:String x:Key="FlashDiagnosticStop">結束診斷並匯出 ZIP</system:String>
     <system:String x:Key="IndependentWindowMute">靜音</system:String>
     <system:String x:Key="IndependentWindowMuteThis">靜音該視窗</system:String>
     <system:String x:Key="IndependentWindowUnmuteThis">取消靜音該視窗</system:String>
@@ -627,6 +632,8 @@
     <system:String x:Key="WirelessResolutionLabel">連接解像度</system:String>
     <system:String x:Key="WirelessResolutionHelp">套用後將重新宣告 AirPlay 接收能力；弱網請選擇 720p 或 540p。</system:String>
     <system:String x:Key="WirelessProfileMaximum">原畫（最高 5120×2880 · 60 fps）</system:String>
+    <system:String x:Key="WirelessProfile3K">3K（3072×1728 · 60 fps，实验性）</system:String>
+    <system:String x:Key="WirelessProfile2K">2K / 1440p（2560×1440 · 60 fps）</system:String>
     <system:String x:Key="WirelessProfile1080p">1080p（推薦 · 60 fps）</system:String>
     <system:String x:Key="WirelessProfile720p">720p（流暢 · 30 fps）</system:String>
     <system:String x:Key="WirelessProfile540p">540p（弱網 · 30 fps）</system:String>
@@ -638,6 +645,7 @@
     <system:String x:Key="WirelessOriginalQualityWarningBody">原畫模式在部分裝置或網絡環境下可能出現畫面停幀。建議優先使用 1080p；如仍需原畫，請確保區域網絡穩定，並從 iPhone「控制中心」 → 「螢幕鏡像」連接。</system:String>
     <system:String x:Key="WirelessServiceAlwaysOn">常駐</system:String>
     <system:String x:Key="WirelessConnected">AirPlay 已連接</system:String>
+    <system:String x:Key="WirelessDisconnectedWaiting">AirPlay 已中斷 · 等待重新連線</system:String>
     <system:String x:Key="WirelessLocalNetwork">本機網絡</system:String>
     <system:String x:Key="WirelessReady">AirPlay 接收端已就緒</system:String>
     <system:String x:Key="WirelessStarting">正在啟動 AirPlay 接收端…</system:String>
@@ -725,7 +733,7 @@
     <system:String x:Key="MediaOutputUnavailableFormat">媒體輸出不可用：{0}</system:String>
     <system:String x:Key="MediaOutputInvalidProtocol">請選擇受支援的串流協議。</system:String>
     <system:String x:Key="MediaOutputNoSession">請先開始裝置螢幕鏡像，再啟動媒體輸出。</system:String>
-    <system:String x:Key="MediaOutputInvalidSettings">請輸入偶數輸出尺寸、10-60 fps 幀率以及 500-50000 kbps 位元率。</system:String>
+    <system:String x:Key="MediaOutputInvalidSettings">請輸入 160–4096 的輸出寬高（奇數自動修正）、錄製 10–120 fps／串流 10–60 fps，以及 500–150000 kbps 位元率。</system:String>
     <system:String x:Key="MediaOutputStopping">正在停止輸出並完成檔案或串流收尾...</system:String>
     <system:String x:Key="MediaOutputRecording">正在錄製</system:String>
     <system:String x:Key="MediaOutputStreaming">正在直播串流</system:String>
@@ -942,4 +950,10 @@
     <system:String x:Key="DeveloperStartupErrorBody">這是啟動錯誤視窗的本機預覽，用於檢查錯誤摘要、記錄路徑和詳細資料。</system:String>
     <system:String x:Key="DeveloperNativePreviewTitle">iPhoneMirror 獨立預覽</system:String>
     <system:String x:Key="DeveloperNativePreviewBody">原生預覽視窗</system:String>
+    <system:String x:Key="MediaOutputIncludeShell">錄製 / 串流時包含手機殼</system:String>
+    <system:String x:Key="MediaOutputShellHint">手機殼固定使用程式內置的 iPhone 16 Pro Max 圖片，無法替換；可選預設 9:16 白色背景板或自訂圖片。</system:String>
+    <system:String x:Key="MediaOutputChooseBackground">選擇背景板…</system:String>
+    <system:String x:Key="MediaOutputChooseShell">選擇手機殼…</system:String>
+    <system:String x:Key="MediaOutputBackgroundHint">背景板：預設 9:16 純白，或選擇自訂圖片。</system:String>
+    <system:String x:Key="MediaOutputShellImageHint">手機殼圖片（留空 = 內建邊框）</system:String>
 </ResourceDictionary>

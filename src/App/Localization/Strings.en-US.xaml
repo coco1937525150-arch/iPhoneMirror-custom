@@ -72,6 +72,8 @@
     <system:String x:Key="WiredControlDisable">Disable wired control</system:String>
     <system:String x:Key="WirelessControlEnable">Enable wireless control</system:String>
     <system:String x:Key="WirelessControlDisable">Disable wireless control</system:String>
+    <system:String x:Key="WirelessControlUnavailableHint">Wireless control requires a trusted Apple device binding. An AirPlay mirroring connection does not authorize remote input.</system:String>
+    <system:String x:Key="WiredControlUnavailableHint">Wired control requires a USB data connection, device trust, and an Apple device identity binding.</system:String>
     <system:String x:Key="UsbControlPrerequisite">Connect an iPhone or iPad by USB and trust this computer before enabling USB control</system:String>
     <system:String x:Key="UsbControlOff">USB control is off</system:String>
     <system:String x:Key="UsbControlStarting">Connecting reverse control</system:String>
@@ -179,6 +181,7 @@
     <system:String x:Key="IndependentWindowEnterFullScreen">Enter full screen</system:String>
     <system:String x:Key="IndependentWindowExitFullScreen">Exit full screen</system:String>
     <system:String x:Key="IndependentWindowWindowMenu">Window</system:String>
+    <system:String x:Key="IndependentWindowSize">Screen size</system:String>
     <system:String x:Key="IndependentWindowDisplayMenu">Image</system:String>
     <system:String x:Key="IndependentWindowAudioMenu">Audio</system:String>
     <system:String x:Key="IndependentWindowFix">Lock window</system:String>
@@ -188,6 +191,8 @@
     <system:String x:Key="IndependentWindowClose">Close</system:String>
     <system:String x:Key="IndependentWindowRotateLeft">Rotate left</system:String>
     <system:String x:Key="IndependentWindowRotateRight">Rotate right</system:String>
+    <system:String x:Key="FlashDiagnosticStart">Start flash diagnostics</system:String>
+    <system:String x:Key="FlashDiagnosticStop">Stop and export diagnostic ZIP</system:String>
     <system:String x:Key="IndependentWindowMute">Mute</system:String>
     <system:String x:Key="IndependentWindowMuteThis">Mute this window</system:String>
     <system:String x:Key="IndependentWindowUnmuteThis">Unmute this window</system:String>
@@ -627,6 +632,8 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="WirelessResolutionLabel">Connection resolution</system:String>
     <system:String x:Key="WirelessResolutionHelp">Applying re-advertises the AirPlay receiver capability. Use 720p or 540p on a weak network.</system:String>
     <system:String x:Key="WirelessProfileMaximum">Original quality (up to 5120×2880 · 60 fps)</system:String>
+    <system:String x:Key="WirelessProfile3K">3K (3072×1728 · 60 fps, experimental)</system:String>
+    <system:String x:Key="WirelessProfile2K">2K / 1440p (2560×1440 · 60 fps)</system:String>
     <system:String x:Key="WirelessProfile1080p">1080p (recommended · 60 fps)</system:String>
     <system:String x:Key="WirelessProfile720p">720p (smooth · 30 fps)</system:String>
     <system:String x:Key="WirelessProfile540p">540p (weak network · 30 fps)</system:String>
@@ -638,6 +645,7 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="WirelessOriginalQualityWarningBody">Original quality may freeze on some devices or network conditions. 1080p is recommended. If you still need original quality, use a stable local network and connect from iPhone Control Center → Screen Mirroring.</system:String>
     <system:String x:Key="WirelessServiceAlwaysOn">Always on</system:String>
     <system:String x:Key="WirelessConnected">AirPlay connected</system:String>
+    <system:String x:Key="WirelessDisconnectedWaiting">AirPlay disconnected · Waiting to reconnect</system:String>
     <system:String x:Key="WirelessLocalNetwork">Local network</system:String>
     <system:String x:Key="WirelessReady">AirPlay receiver ready</system:String>
     <system:String x:Key="WirelessStarting">Starting the AirPlay receiver...</system:String>
@@ -725,7 +733,7 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="MediaOutputUnavailableFormat">Media output is unavailable: {0}</system:String>
     <system:String x:Key="MediaOutputInvalidProtocol">Select a supported streaming protocol.</system:String>
     <system:String x:Key="MediaOutputNoSession">Start mirroring a device before starting media output.</system:String>
-    <system:String x:Key="MediaOutputInvalidSettings">Enter an even output size, 10-60 fps, and a bitrate from 500 to 50000 kbps.</system:String>
+    <system:String x:Key="MediaOutputInvalidSettings">Enter output dimensions from 160 to 4096 (odd values are adjusted), 10–120 fps for recording or 10–60 fps for streaming, and 500–150000 kbps.</system:String>
     <system:String x:Key="MediaOutputStopping">Stopping output and finalizing the file or stream...</system:String>
     <system:String x:Key="MediaOutputRecording">Recording</system:String>
     <system:String x:Key="MediaOutputStreaming">Live streaming</system:String>
@@ -942,4 +950,10 @@ Make sure the phone and computer are on the same local network and keep the devi
     <system:String x:Key="DeveloperStartupErrorBody">This is a local preview of the startup error window for checking the summary, log path, and details expander.</system:String>
     <system:String x:Key="DeveloperNativePreviewTitle">iPhoneMirror independent preview</system:String>
     <system:String x:Key="DeveloperNativePreviewBody">Native preview window</system:String>
+    <system:String x:Key="MediaOutputIncludeShell">Include phone shell in recording / stream</system:String>
+    <system:String x:Key="MediaOutputShellHint">The bundled iPhone 16 Pro Max shell is fixed and cannot be replaced. Choose the default 9:16 white canvas or a custom background image.</system:String>
+    <system:String x:Key="MediaOutputChooseBackground">Choose background…</system:String>
+    <system:String x:Key="MediaOutputChooseShell">Choose shell…</system:String>
+    <system:String x:Key="MediaOutputBackgroundHint">Background: default 9:16 white canvas or custom image.</system:String>
+    <system:String x:Key="MediaOutputShellImageHint">Phone shell image (blank = built-in frame)</system:String>
 </ResourceDictionary>

@@ -293,7 +293,11 @@ void WirelessClientStream::set_identity(std::wstring name, bool connected) {
                                           : L"AirPlay disconnected";
         }
     }
-    if (!connected) clear_media();
+    if (!connected) {
+        logging::diagnostic_event(logging::DiagnosticEvent::SourceInterrupted,
+            0, 0, 1);
+        clear_media();
+    }
 }
 
 void WirelessClientStream::set_metadata(
@@ -316,6 +320,21 @@ WirelessDeviceSnapshot WirelessClientStream::device() const {
 bool WirelessClientStream::connected() const {
     std::scoped_lock lock(mutex_);
     return connected_;
+}
+
+WirelessDisconnectTelemetry WirelessClientStream::disconnect_telemetry() const noexcept {
+    std::scoped_lock lock(mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_ms = last_video_at_ == std::chrono::steady_clock::time_point{}
+        ? std::int64_t{-1}
+        : std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_video_at_).count();
+    return {
+        .was_connected = connected_,
+        .video_frames_total = snapshot_.video_frames,
+        .audio_packets_total = snapshot_.audio_packets,
+        .last_video_age_ms = age_ms,
+    };
 }
 
 void WirelessClientStream::attach(CapturePreferences preferences) {
@@ -342,15 +361,19 @@ void WirelessClientStream::reset_video_for_attach() noexcept {
     // format-change path below will clear it only when geometry really changes.
     // This is deliberately different from a new device connection, where no
     // frame exists yet and the counters should start from zero.
+    const auto now = std::chrono::steady_clock::now();
     if (!latest_frame_) {
-        render_queue_.clear();
         snapshot_.width = snapshot_.height = 0;
         snapshot_.fps = snapshot_.latency_ms = 0;
         snapshot_.video_frames = snapshot_.audio_packets = 0;
         snapshot_.audio_sample_rate = snapshot_.audio_channels = 0;
+        // A brand-new stream can start its own timestamp epoch. A stream
+        // retaining its last video frame MUST keep its original epoch:
+        // switching to a new epoch makes a live reconnect regress the
+        // timestamps seen by renderers and CFR recording metrics.
+        started_at_ = now;
     }
-    started_at_ = std::chrono::steady_clock::now();
-    fps_sample_time_ = started_at_;
+    fps_sample_time_ = now;
     fps_sample_frames_ = snapshot_.video_frames;
 }
 
@@ -366,7 +389,14 @@ void WirelessClientStream::detach() noexcept {
 
 Snapshot WirelessClientStream::snapshot() const {
     std::scoped_lock lock(mutex_);
-    return snapshot_;
+    auto status = snapshot_;
+    // The average rate from the last completed sample must not remain at
+    // "60 FPS" when the iPhone has paused screen capture or locked.
+    // Keep historic frame counters intact for recovery diagnostics.
+    if (connected_ && last_video_at_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - last_video_at_ > std::chrono::seconds(2))
+        status.fps = 0;
+    return status;
 }
 
 std::int64_t WirelessClientStream::latest_frame_timestamp() const {
@@ -381,12 +411,13 @@ std::shared_ptr<const media::DecodedFrame> WirelessClientStream::latest_frame() 
 
 std::shared_ptr<const media::DecodedFrame> WirelessClientStream::next_render_frame() {
     std::scoped_lock lock(mutex_);
-    if (render_queue_.empty()) return nullptr;
-    auto frame = render_queue_.size() > 2 ? std::move(render_queue_.back())
-                                          : std::move(render_queue_.front());
-    if (render_queue_.size() > 2) render_queue_.clear();
-    else render_queue_.pop_front();
-    return frame;
+    // Multiple preview HWNDs can share the same wireless capture session.
+    // Consuming a single global queue caused one renderer to steal fresh
+    // frames from the other, potentially splitting a 60fps source across two
+    // windows. Publish the latest immutable frame non-destructively instead.
+    // Each D3D renderer deduplicates against its own last_timestamp, so this
+    // neither fabricates frames nor causes a busy redraw loop.
+    return latest_frame_;
 }
 
 std::shared_ptr<const AudioPacket> WirelessClientStream::next_audio_packet(
@@ -440,7 +471,16 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     std::span<const std::uint8_t> payload) {
     const auto received_at = std::chrono::steady_clock::now();
     auto frame = std::make_shared<media::DecodedFrame>();
+    const auto local_sequence = received_video_sequence_.fetch_add(
+        1, std::memory_order_relaxed) + 1;
+    frame->sequence_id = header.sequence != 0 ? header.sequence : local_sequence;
+    logging::diagnostic_event(logging::DiagnosticEvent::SourceFrameReceived,
+        frame->sequence_id, 0, header.width, header.height,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            received_at - started_at_).count() / 100);
     if (!detail::convert_i420_to_nv12(header, payload, frame->nv12, frame->stride)) {
+        logging::diagnostic_event(logging::DiagnosticEvent::SourceFrameDropped,
+            frame->sequence_id, 0, 1, header.width, header.height);
         if (++rejected_video_messages_ == 1)
             logging::write(std::format("wireless_video rejected device_fp={} size={}x{}",
                 anonymous_label(id_), header.width, header.height));
@@ -458,37 +498,40 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     frame->timestamp_100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         received_at - started_at_).count() / 100;
     frame->received_at = received_at;
+    logging::diagnostic_event(logging::DiagnosticEvent::SourceFrameDecoded,
+        frame->sequence_id, 0, header.width, header.height,
+        frame->timestamp_100ns, std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - received_at).count());
 
     std::scoped_lock lock(mutex_);
-    // The hub can observe a frame concurrently with a disconnect callback.
-    // Re-check the connection while holding the stream lock so a late frame
-    // cannot repopulate a device that was just cleared.
-    if (!connected_) return;
+    // A valid decoded video packet from the SAME authenticated receiver IPC
+    // is positive evidence that AirPlay media is still flowing. The vendor
+    // callback can report Disconnected while the iPhone keeps mirroring;
+    // permanently filtering Video through find_connected() made that state
+    // irreversible unless a fresh Connected callback happened to arrive.
+    // Invalid/truncated packets never recover the connection: conversion
+    // already succeeded above before acquiring this lock.
+    const bool recovered_after_disconnect = !connected_;
+    if (recovered_after_disconnect) connected_ = true;
+    if (recovered_after_disconnect)
+        logging::diagnostic_event(logging::DiagnosticEvent::SourceResumed,
+            frame->sequence_id, 0, header.width, header.height);
     const bool format_changed = snapshot_.width != 0 && snapshot_.height != 0 &&
         (snapshot_.width != header.width || snapshot_.height != header.height);
     if (format_changed) {
-        // A rotation is delivered by AirPlay as a new SPS/PPS and therefore a
-        // new frame geometry. Do not let frames from the previous orientation
-        // survive the switch: at original quality they can retain tens of MB
-        // of NV12 data and the renderer may otherwise consume a stale-sized
-        // frame after its output buffers have been resized.
-        render_queue_.clear();
-        // Do not let the renderer hold on to a frame from the previous
-        // orientation while the new decoder geometry is being uploaded. This
-        // matters most for the maximum/original profile where a rotated frame
-        // can be several megabytes and texture recreation is asynchronous.
+        // On a decoded frame-size change, release the old latest frame
+        // before publishing new geometry. Individual renderers retain their
+        // previous texture until their next orientation-aware update.
         latest_frame_.reset();
         fps_sample_frames_ = snapshot_.video_frames;
         fps_sample_time_ = received_at;
         logging::write(std::format(
-            "wireless_video format_changed device_fp={} from={}x{} to={}x{} queue_reset=true",
+            "wireless_video format_changed device_fp={} from={}x{} to={}x{} latest_reset=true",
             anonymous_label(id_), snapshot_.width, snapshot_.height,
             header.width, header.height));
     }
     latest_frame_ = frame;
-    render_queue_.push_back(frame);
-    const auto queue_limit = attachments_ == 0 ? 1U : 2U;
-    while (render_queue_.size() > queue_limit) render_queue_.pop_front();
+    last_video_at_ = received_at;
     snapshot_.state = State::Streaming;
     snapshot_.message = L"Wireless mirroring";
     snapshot_.width = header.width;
@@ -502,6 +545,11 @@ void WirelessClientStream::publish_video(const wireless::MessageHeader& header,
     }
     snapshot_.latency_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - received_at).count();
+    if (recovered_after_disconnect)
+        logging::write(std::format(
+            "wireless_hub valid_video_recovered_connection id_fp={} size={}x{} "
+            "note=sender_remained_active_after_disconnect_callback",
+            anonymous_label(id_), frame->width, frame->height));
     if (snapshot_.video_frames == 1)
         logging::write(std::format("wireless_video published device_fp={} size={}x{} stride={} bytes={}",
             anonymous_label(id_), frame->width, frame->height, frame->stride, frame->nv12.size()));
@@ -582,7 +630,6 @@ void WirelessClientStream::clear_media() noexcept {
     {
         std::scoped_lock lock(mutex_);
         latest_frame_.reset();
-        render_queue_.clear();
         snapshot_.width = snapshot_.height = 0;
         snapshot_.fps = snapshot_.latency_ms = 0;
         snapshot_.audio_sample_rate = snapshot_.audio_channels = 0;
@@ -910,16 +957,27 @@ void WirelessReceiverHub::handle_message(const wireless::MessageHeader& header,
     case wireless::MessageType::Disconnected: {
         const auto stream = get_or_create(header, false);
         if (stream) {
-            auto device = stream->device();
+            const auto device = stream->device();
+            // Capture telemetry BEFORE set_identity() clears the media frame.
+            const auto telemetry = stream->disconnect_telemetry();
             const auto name = header_text(header.device_name);
             stream->set_identity(name.empty() ? device.name : name, false);
-            logging::write(std::format("wireless_hub disconnected id_fp={}",
-                anonymous_label(device.id)));
+            logging::write(std::format(
+                "wireless_hub disconnected id_fp={} was_connected={} "
+                "video_frames_total={} audio_packets_total={} last_video_age_ms={}",
+                anonymous_label(device.id), telemetry.was_connected,
+                telemetry.video_frames_total, telemetry.audio_packets_total,
+                telemetry.last_video_age_ms));
         }
         break;
     }
     case wireless::MessageType::Video:
-        if (const auto stream = find_connected(header)) stream->publish_video(header, payload);
+        // Do not require a prior Connected callback here. publish_video()
+        // validates the I420 payload BEFORE restoring a disconnected sender,
+        // so subsequent genuine video can recover a false-disconnect without
+        // asking the iPhone user to toggle mirroring off and on.
+        if (const auto stream = get_or_create(header, false))
+            stream->publish_video(header, payload);
         break;
     case wireless::MessageType::Audio:
         // Some RAOP-only senders begin publishing PCM without invoking the

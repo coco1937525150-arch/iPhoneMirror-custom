@@ -23,6 +23,25 @@ internal sealed class ReverseControlStatusViewModel : INotifyPropertyChanged
     public string CountdownText => _snapshot?.Stage == ControlStage.Ready ? $"窗口将在 {_remaining} 秒后关闭" : string.Empty;
     public Visibility CancelVisibility => _snapshot is { CanCancel: true, IsTerminal: false } ? Visibility.Visible : Visibility.Collapsed;
     public Visibility CloseVisibility => _snapshot is { IsTerminal: true } ? Visibility.Visible : Visibility.Collapsed;
+    public string DiagnosticsText
+    {
+        get
+        {
+            var details = _service.Diagnostics.Select(entry =>
+                $"[{entry.Timestamp:HH:mm:ss.fff}] [{entry.Level}] {entry.Message}" +
+                (string.IsNullOrWhiteSpace(entry.TechnicalMessage) ||
+                 entry.TechnicalMessage == entry.Message ? string.Empty :
+                    $"\n    {entry.TechnicalMessage}")).ToList();
+            if (_snapshot?.Stage == ControlStage.Failed &&
+                !string.IsNullOrWhiteSpace(_snapshot.Error) &&
+                !details.Any(line => line.Contains(_snapshot.Error,
+                    StringComparison.Ordinal)))
+                details.Add("错误：" + _snapshot.Error);
+            if (details.Count == 0)
+                details.Add("暂无底层日志。请从应用诊断目录导出 reverse-control.log。");
+            return string.Join(Environment.NewLine, details);
+        }
+    }
     public bool IsDetailsExpanded { get => _details; set { _details = value; OnPropertyChanged(); } }
     internal Action? CancelRequested { get; set; }
     internal event Action? AutoCloseRequested;
@@ -42,6 +61,7 @@ internal sealed class ReverseControlStatusViewModel : INotifyPropertyChanged
         Diagnostics.Clear(); foreach (var item in _service.Diagnostics) Diagnostics.Add($"[{item.Timestamp:HH:mm:ss.fff}] {item.Message}");
         if (snapshot.Stage == ControlStage.Ready) { _timer.Stop(); _timer.Start(); } else _timer.Stop();
         NotifyAll();
+        OnPropertyChanged(nameof(DiagnosticsText));
     }
     private void OnTick(object? sender, EventArgs e) { if (--_remaining <= 0) { _timer.Stop(); AutoCloseRequested?.Invoke(); } OnPropertyChanged(nameof(CountdownText)); }
     internal void Dispose() { _timer.Stop(); _service.StatusChanged -= OnStatusChanged; }
@@ -79,6 +99,14 @@ public partial class ReverseControlStatusWindow : Wpf.Ui.Controls.FluentWindow
         {
             _active = null;
             window.Close();
+        }
+    }
+    private void OnCopyDiagnosticClick(object sender, RoutedEventArgs e)
+    {
+        try { Clipboard.SetText(_viewModel.DiagnosticsText); }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            // Clipboard can temporarily be owned by another process.
         }
     }
     private void OnCloseClick(object sender, RoutedEventArgs e) => Close();

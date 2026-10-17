@@ -13,10 +13,13 @@
 #include "Capture/WirelessCaptureSession.h"
 #include "Device/AppleUsbDiscovery.h"
 #include "Logging.h"
+#include "Renderer/RotationPresentGeometry.h"
+#include "Renderer/LandscapeCoverGeometry.h"
 #include "IpcProtocol.h"
 #include "iPhoneMirror/CoreApi.h"
 
 #include <Windows.h>
+#include <dxgi.h>
 
 #include <algorithm>
 #include <array>
@@ -45,10 +48,32 @@ struct WirelessReceiverHubTestAccess {
         hub.handle_message(header, {});
     }
 
+    static void handle_video(WirelessReceiverHub& hub,
+        const wireless::MessageHeader& header,
+        const std::vector<std::uint8_t>& payload) {
+        hub.handle_message(header, payload);
+    }
+
+    static iPhoneMirror::capture::Snapshot snapshot(
+        const WirelessReceiverHub& hub, std::wstring_view id) {
+        std::scoped_lock lock(hub.mutex_);
+        const auto found = hub.clients_.find(id);
+        if (found == hub.clients_.end())
+            throw std::runtime_error("missing test wireless device");
+        return found->second->snapshot();
+    }
+
     static bool connected(const WirelessReceiverHub& hub, std::wstring_view id) {
         std::scoped_lock lock(hub.mutex_);
         const auto found = hub.clients_.find(id);
         return found != hub.clients_.end() && found->second->connected();
+    }
+
+    static void simulate_video_pause(WirelessClientStream& stream) {
+        std::scoped_lock lock(stream.mutex_);
+        stream.snapshot_.fps = 60.0;
+        stream.last_video_at_ = std::chrono::steady_clock::now() -
+            std::chrono::seconds(3);
     }
 
     static float remote_volume(const WirelessReceiverHub& hub,
@@ -1244,6 +1269,32 @@ void test_capture_media_safety_helpers() {
                 return true;
             }(),
         "scaled full-range SDR NV12 export keeps gray levels and black bars");
+
+    // Real iPhone 16 Pro Max AirPlay sessions can decode a 498x1080
+    // thumbnail-sized transport frame even when the recording canvas is
+    // configured at 1080x1920. The legacy converter capped scale at 1.0,
+    // baking a 498x1080 postage stamp into a huge black recorded canvas.
+    // Export upscaling MUST fill height while preserving the aspect ratio;
+    // the downstream shell composition will crop ONLY surplus pillarboxes.
+    auto live_phone_frame = full_range_gray;
+    live_phone_frame.width = 498;
+    live_phone_frame.height = 1080;
+    live_phone_frame.stride = 498;
+    const std::size_t phone_y_bytes = 498U * 1080U;
+    live_phone_frame.nv12.assign(phone_y_bytes * 3U / 2U, 128);
+    std::fill_n(live_phone_frame.nv12.data(), phone_y_bytes,
+        std::uint8_t{200});
+    std::vector<std::uint8_t> full_hd_recording(1080U * 1920U * 3U / 2U);
+    check(iPhoneMirror::media::detail::copy_nv12_frame_letterboxed_sdr(
+            live_phone_frame, full_hd_recording, 1080, 1920,
+            true /* encoder-scale, never legacy no-upscale */) &&
+            full_hd_recording[0] == 0 &&
+            full_hd_recording[1U * 1080U + 100U] == 200 &&
+            full_hd_recording[1918U * 1080U + 980U] == 200 &&
+            full_hd_recording[1920U * 1080U + 128U] == 128 &&
+            full_hd_recording[1919U * 1080U + 540U] == 200,
+        "498x1080 AirPlay source is scaled across full-height 1080x1920 encoder input, not recorded as a tiny 498x1080 thumbnail");
+
     iPhoneMirror::media::DecodedFrame p010_reference = p010_frame;
     p010_reference.color.range = iPhoneMirror::coremedia::ColorRange::Limited;
     p010_reference.nv12.assign(48, 0);
@@ -1698,6 +1749,33 @@ void test_wireless_i420_conversion() {
                 std::lround(light_gray.blue * 255.0) == 243,
             "wireless full-range gray 243 is not expanded and clipped to white");
     }
+    // The same wireless session may feed several HWND renderers. Each
+    // consumer must see the same current immutable frame; consuming a shared
+    // queue stole frames from the second preview and reduced its effective FPS.
+    check(stream.next_render_frame() == published,
+        "wireless preview initially displays its first decoded frame");
+    check(stream.next_render_frame() == published,
+        "another preview can independently read the same decoded frame");
+    auto second_i420 = i420;
+    second_i420[0] = 12;
+    stream.publish_video(header, second_i420);
+    const auto second_frame = stream.latest_frame();
+    auto third_i420 = i420;
+    third_i420[0] = 34;
+    stream.publish_video(header, third_i420);
+    const auto third_frame = stream.latest_frame();
+    check(second_frame && third_frame && second_frame != third_frame,
+        "wireless source produces distinct live frames");
+    check(stream.next_render_frame() == third_frame,
+        "wireless preview sees the latest frame after a delayed render tick");
+    check(stream.next_render_frame() == third_frame,
+        "second preview sees the same latest frame without draining it");
+    iPhoneMirror::capture::WirelessReceiverHubTestAccess::simulate_video_pause(stream);
+    const auto paused_status = stream.snapshot();
+    check(paused_status.fps == 0 && paused_status.video_frames == 3,
+        "wireless source reports zero live FPS after a long no-frame interval "
+        "while retaining the real decoded frame count");
+
     check(!iPhoneMirror::capture::detail::convert_i420_to_nv12(
         header, std::span(i420).first(11), nv12, stride),
         "wireless conversion rejects truncated planes");
@@ -1762,6 +1840,8 @@ void test_wireless_multi_stream_isolation() {
     second_header.plane_size[1] = second_header.plane_size[2] = 1;
     const std::vector<std::uint8_t> second_i420{31, 32, 33, 34, 40, 50};
 
+    // A measurable initial epoch makes a later timestamp reset detectable.
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
     first->publish_video(first_header, first_i420);
     second->publish_video(second_header, second_i420);
     const auto first_snapshot = first->snapshot();
@@ -1787,15 +1867,24 @@ void test_wireless_multi_stream_isolation() {
     first->publish_video(first_header, replacement_i420);
     check(first->latest_frame() && first->latest_frame()->nv12.front() == 200,
         "wireless session recovery accepts a replacement frame without reconnecting");
+    check(first->latest_frame() &&
+            first->latest_frame()->timestamp_100ns >
+                frame_before_local_recovery->timestamp_100ns,
+        "wireless session reattach preserves monotonic video timestamps");
 
-    const auto video_frames_before_disconnect = first->snapshot().video_frames;
+    const auto frames_before_disconnect = first->snapshot().video_frames;
     first->set_identity(L"First iPhone", false);
     check(first->snapshot().width == 0 && second->snapshot().width == 2,
         "disconnect clears only the matching wireless client");
+    // A receiver callback may signal disconnect before the iPhone stops
+    // sending. A NEW valid frame is positive evidence that mirroring is
+    // still live: a stale no-recovery assertion would recreate P0-1.
     first->publish_video(first_header, first_i420);
-    check(first->snapshot().video_frames == video_frames_before_disconnect &&
-            first->latest_frame() == nullptr,
-        "late frames after disconnect cannot repopulate the wireless client");
+    check(first->connected() && first->latest_frame() != nullptr &&
+            first->snapshot().width == 4 &&
+            first->snapshot().video_frames == frames_before_disconnect + 1 &&
+            second->snapshot().width == 2,
+        "fresh valid video after premature disconnect restores only its client");
     first->detach();
     second->detach();
 }
@@ -1880,6 +1969,50 @@ void test_wireless_volume_before_connection() {
     check(std::abs(WirelessReceiverHubTestAccess::remote_volume(
               hub, L"00:11:22:33:44:55") - 1.0F) < 0.001F,
         "AirPlay disconnect clears the retained remote volume");
+}
+
+void test_wireless_valid_video_recovers_false_disconnect() {
+    using iPhoneMirror::capture::WirelessReceiverHubTestAccess;
+    using iPhoneMirror::wireless::MessageType;
+    iPhoneMirror::capture::WirelessReceiverHub hub;
+    constexpr char id[] = "00:11:22:33:44:55";
+    constexpr wchar_t wide_id[] = L"00:11:22:33:44:55";
+
+    iPhoneMirror::wireless::MessageHeader connected;
+    connected.type = MessageType::Connected;
+    std::copy(std::begin(id), std::end(id), connected.device_id);
+    WirelessReceiverHubTestAccess::handle(hub, connected);
+    check(WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "receiver begins connected after AirPlay callback");
+
+    auto disconnected = connected;
+    disconnected.type = MessageType::Disconnected;
+    WirelessReceiverHubTestAccess::handle(hub, disconnected);
+    check(!WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "real disconnected callback still transitions receiver out of connected");
+
+    auto video = connected;
+    video.type = MessageType::Video;
+    video.width = 2;
+    video.height = 2;
+    video.stride[0] = 2;
+    video.stride[1] = video.stride[2] = 1;
+    video.plane_size[0] = 4;
+    video.plane_size[1] = video.plane_size[2] = 1;
+    const std::vector<std::uint8_t> valid_i420{1, 2, 3, 4, 10, 20};
+    WirelessReceiverHubTestAccess::handle_video(hub, video, {1, 2, 3});
+    check(!WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "invalid/truncated I420 cannot fabricate a live connection");
+    WirelessReceiverHubTestAccess::handle_video(hub, video, valid_i420);
+    const auto recovered = WirelessReceiverHubTestAccess::snapshot(hub, wide_id);
+    check(WirelessReceiverHubTestAccess::connected(hub, wide_id) &&
+          recovered.state == iPhoneMirror::capture::State::Streaming &&
+          recovered.video_frames == 1 && recovered.width == 2 && recovered.height == 2,
+        "genuine video after premature disconnect restores receiver and screen");
+
+    WirelessReceiverHubTestAccess::handle(hub, disconnected);
+    check(!WirelessReceiverHubTestAccess::connected(hub, wide_id),
+        "subsequent true disconnect still takes effect until video resumes");
 }
 
 void test_media_command_queue() {
@@ -2056,6 +2189,141 @@ void test_logging_shutdown_boundary() {
     std::filesystem::remove_all(failed_directory, error);
 }
 
+void test_landscape_video_cover_geometry() {
+    using iPhoneMirror::renderer::landscape_cover_crop;
+    const auto wide = landscape_cover_crop(16.0F / 9.0F, 2.17F);
+    check(std::abs(wide.x - 1.0F) < 0.0001F &&
+        wide.y > 0.81F && wide.y < 0.83F,
+        "16:9 video covers the wide iPhone opening without stretching");
+    const auto panoramic = landscape_cover_crop(2.4F, 2.17F);
+    check(panoramic.x < 1.0F && panoramic.y == 1.0F,
+        "wide panorama crops X instead of stretching");
+    const auto exact = landscape_cover_crop(2.17F, 2.17F);
+    check(exact.x == 1.0F && exact.y == 1.0F,
+        "matching opening aspect preserves full source");
+}
+
+void test_phone_rotation_final_present_geometry_gate() {
+    using iPhoneMirror::renderer::should_defer_phone_present;
+    // Captured native flash: final 1132x549 HWND, OLD 549x1132
+    // BackBuffer and new landscape shader orientation on frame 1492.
+    check(should_defer_phone_present(false, 549, 1132, 1132, 549),
+        "final landscape HWND cannot present a stale portrait BackBuffer");
+    check(should_defer_phone_present(true, 549, 1132, 1132, 549),
+        "non-square final HWND is protected even before the visual reset");
+    check(should_defer_phone_present(false, 1132, 549, 549, 1132),
+        "final portrait HWND cannot present a stale landscape BackBuffer");
+    check(!should_defer_phone_present(true, 549, 1132, 1263, 1263),
+        "intentional square DComp animation preserves unresized phone texture");
+    check(!should_defer_phone_present(true, 1132, 549, 1263, 1263),
+        "square DComp stage also permits landscape phone texture");
+    check(!should_defer_phone_present(false, 1132, 549, 1132, 549),
+        "first correctly sized post-handoff frame can be presented");
+    check(should_defer_phone_present(false, 1132, 549, 0, 0),
+        "zero-sized window cannot publish a stale frame");
+}
+
+void test_flash_diagnostic_timeline() {
+    namespace logging = iPhoneMirror::logging;
+    const auto path = std::filesystem::temp_directory_path() /
+        (L"iPhoneMirror-flash-test-" + std::to_wstring(GetCurrentProcessId()) + L".jsonl");
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    check(!logging::diagnostics_active(), "high-frequency tracing defaults off");
+    check(logging::start_diagnostics("1234abcd", path),
+        "diagnostic timeline starts in a writable path");
+    check(!logging::start_diagnostics("another", path),
+        "a second start cannot replace an active diagnostic session");
+    logging::set_diagnostic_context(12, 7);
+    logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd,
+        42, 9, 123456, 300, 1920, 1080, DXGI_ERROR_WAS_STILL_DRAWING);
+    logging::diagnostic_event(logging::DiagnosticEvent::VisualCommit,
+        0, 9, 25, 50, 90000, 1000000, E_FAIL);
+    check(logging::stop_diagnostics(), "diagnostic writer flushes on stop");
+    check(!logging::diagnostics_active(), "high-frequency tracing turns off after stop");
+    const auto stopped_size = std::filesystem::file_size(path, error);
+    logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd, 99);
+    check(stopped_size == std::filesystem::file_size(path, error),
+        "events after stop never append to the timeline");
+    std::ifstream stream(path, std::ios::binary);
+    const std::string contents{
+        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    // Report each missing correlation field separately. A combined && check
+    // concealed whether the public API lost marker events or the writer
+    // emitted the wrong JSON shape, making Windows CI failures opaque.
+    check(contents.find("\"event\":\"diagnostic_start\"") != std::string::npos,
+        "timeline: diagnostic start missing");
+    check(contents.find("\"qpc_frequency\":") != std::string::npos,
+        "timeline: QPC frequency missing");
+    check(contents.find("\"orientation_event_id\":7") != std::string::npos,
+        "timeline: orientation ID missing");
+    check(contents.find("\"rotation_id\":12") != std::string::npos,
+        "timeline: rotation ID missing");
+    check(contents.find("\"visual_generation\":9") != std::string::npos,
+        "timeline: visual generation missing");
+    check(contents.find("\"frame_id\":42") != std::string::npos,
+        "timeline: frame ID missing");
+    check(contents.find("\"event\":\"unknown\"") == std::string::npos,
+        "timeline: no unknown event unexpectedly present");
+    check(contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
+        "timeline: diagnostic stop missing");
+    stream.close();
+    check(logging::start_diagnostics("1234abce", path),
+        "diagnostic timeline can be started again after export");
+    check(logging::stop_diagnostics(), "restarted timeline stops cleanly");
+    std::filesystem::remove(path, error);
+}
+
+
+void test_flash_diagnostic_public_api() {
+    // Core.Tests links its own Logging.cpp for internal logger tests, but
+    // im_diagnostic_event is implemented in iPhoneMirror.Core.dll, which has
+    // an INDEPENDENT set of tracing globals. Start, emit, and stop entirely
+    // through the public DLL API to exercise the actual C# -> native path.
+    const auto path = std::filesystem::temp_directory_path() /
+        (L"iPhoneMirror-flash-api-test-" +
+            std::to_wstring(GetCurrentProcessId()) + L".jsonl");
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    check(im_diagnostic_start(L"1234abcf", path.c_str()) ==
+        static_cast<std::int32_t>(iPhoneMirror::Result::Ok),
+        "public native diagnostic API starts a timeline");
+    im_diagnostic_set_context(12, 7);
+    im_diagnostic_event(34, 42, 9, 123456, 300, 1920, 1080, 0);
+    im_diagnostic_event(43, 0, 0, 7, 1500, 750, 0, 0);
+    im_diagnostic_event(48, 0, 0, -1, 0, 0, 0, 0);
+    im_diagnostic_event(49, 0, 0, 0, 0, 0, 0, 0);
+    // Invalid code must be silently ignored, not serialized as "unknown".
+    im_diagnostic_event(50, 0, 0, 555, 0, 0, 0, 0);
+    check(im_diagnostic_stop() ==
+        static_cast<std::int32_t>(iPhoneMirror::Result::Ok),
+        "public native diagnostic API flushes and stops its own timeline");
+    std::ifstream stream(path, std::ios::binary);
+    const std::string contents{
+        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    check(contents.find("\"event\":\"diagnostic_start\"") != std::string::npos,
+        "public API timeline includes session start");
+    check(contents.find("\"event\":\"visible_flash_marked\"") != std::string::npos,
+        "public API preserves visible flash marker event");
+    check(contents.find("\"marker_id\":7") != std::string::npos,
+        "public API preserves marker ID");
+    check(contents.find("\"event\":\"rotation_requested\"") != std::string::npos,
+        "public API preserves rotation request");
+    check(contents.find("\"event\":\"rotation_trigger\"") != std::string::npos,
+        "public API preserves rotation trigger");
+    check(contents.find("\"orientation_event_id\":7") != std::string::npos &&
+        contents.find("\"rotation_id\":12") != std::string::npos,
+        "public API preserves rotation correlation context");
+    check(contents.find("\"frame_id\":42") != std::string::npos,
+        "public API preserves frame correlation");
+    check(contents.find("\"event\":\"diagnostic_stop\"") != std::string::npos,
+        "public API timeline includes session stop");
+    check(contents.find("\"event\":\"unknown\"") == std::string::npos,
+        "public API ignores invalid event numbers");
+    stream.close();
+    std::filesystem::remove(path, error);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2105,8 +2373,13 @@ int main(int argc, char** argv) {
         test_wireless_multi_stream_isolation();
         test_wireless_audio_only_stream();
         test_wireless_volume_before_connection();
+        test_wireless_valid_video_recovers_false_disconnect();
         test_media_command_queue();
         test_logging_shutdown_boundary();
+        test_flash_diagnostic_timeline();
+        test_flash_diagnostic_public_api();
+        test_phone_rotation_final_present_geometry_gate();
+        test_landscape_video_cover_geometry();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
         return 2;

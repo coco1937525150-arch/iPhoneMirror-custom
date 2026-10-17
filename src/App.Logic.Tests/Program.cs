@@ -8,6 +8,8 @@ using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using IPhoneMirror.App.Localization;
 using IPhoneMirror.App.Interop;
 using IPhoneMirror.App.Services;
@@ -34,6 +36,13 @@ static void Equal<T>(T expected, T actual, string name)
 {
     if (!EqualityComparer<T>.Default.Equals(expected, actual))
         throw new InvalidOperationException($"{name}: expected {expected}, got {actual}");
+}
+
+if (args is ["--flash-only"])
+{
+    TestFlashZip();
+    Console.WriteLine("Flash diagnostic ZIP tests passed");
+    return;
 }
 
 static void Sequence(IEnumerable<string> expected, IEnumerable<string> actual, string name)
@@ -1646,6 +1655,11 @@ var previewRendererCode = File.ReadAllText(Path.Combine(sourceDirectory,
 var multiPreviewManagerCode = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "MultiDevicePreviewManager.cs"));
 Equal(true,
+    multiPreviewManagerCode.Contains("viewModel.SourceVideoWidth > 0", StringComparison.Ordinal) &&
+    multiPreviewManagerCode.Contains("viewModel.SourceVideoHeight > 0", StringComparison.Ordinal) &&
+    multiPreviewManagerCode.Contains("started.Handle, initialWidth, initialHeight", StringComparison.Ordinal),
+    "detached AirPlay preview starts with current decoded source dimensions rather than hard-coded portrait");
+Equal(true,
     nativePreviewWindowCode.Contains("internal void HideForShutdown()",
         StringComparison.Ordinal) &&
     nativePreviewWindowCode.Contains("ShowWindow(_handle, SwHide)",
@@ -1675,11 +1689,148 @@ Equal(true,
 Equal(true,
     nativePreviewWindowCode.Contains("private bool _isTopMost;",
         StringComparison.Ordinal) &&
-    nativePreviewWindowCode.Contains("SetWindowPos(_handle, HwndNoTopMost",
+    nativePreviewWindowCode.Contains("app.UpdateSettings.IndependentWindowAlwaysOnTop",
         StringComparison.Ordinal) &&
-    !nativePreviewWindowCode.Contains("_isTopMost = SetWindowPos(_handle, HwndTopMost",
+    nativePreviewWindowCode.Contains("var zOrder = preferredTopMost ? HwndTopMost : HwndNoTopMost;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_topMostItem.IsChecked = _isTopMost;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("if (!SetWindowPos(_handle, desiredTopMost ? HwndTopMost : HwndNoTopMost,",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_ = app.SaveUpdateSettings();",
         StringComparison.Ordinal),
-    "independent previews start non-topmost while retaining the manual pin command");
+    "independent previews expose checkable persistent native always-on-top without forcing focus");
+var corePreviewApiCode = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "CoreApi.cpp"));
+Equal(true,
+    corePreviewApiCode.Contains("found->second->set_rotation(normalized);",
+        StringComparison.Ordinal) &&
+    !corePreviewApiCode.Contains("set_rotation(normalized == 2 ? 2 : 0)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("var nextRotation = ((_rotation + turns) % 4 + 4) % 4;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("!NativeCore.SetDeviceWindowRotation(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("SetDeviceWindowVisualRotation(_sessionHandle, _handle,",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_rotationTimeline.Retarget(delta * 90.0",
+        StringComparison.Ordinal),
+    "native source commits at quarter turns AFTER whole-shell video/mask DComp animation");
+
+var rotationCompletionStart = nativePreviewWindowCode.IndexOf(
+    "private void CompleteRotationAnimation()", StringComparison.Ordinal);
+var rotationAbortStart = nativePreviewWindowCode.IndexOf(
+    "private void AbortRotationAnimation()", StringComparison.Ordinal);
+var completionSource = rotationCompletionStart >= 0 && rotationAbortStart > rotationCompletionStart
+    ? nativePreviewWindowCode[rotationCompletionStart..rotationAbortStart] : string.Empty;
+var finalWindowResize = completionSource.IndexOf("if (!SetWindowPos(_handle, 0, finalX, finalY, finalW, finalH",
+    StringComparison.Ordinal);
+var discreteRendererRotation = completionSource.IndexOf("if (!NativeCore.SetDeviceWindowRotation(",
+    StringComparison.Ordinal);
+Equal(true, completionSource.Contains("finalAngle, finalClientW, finalClientH",
+        StringComparison.Ordinal) && finalWindowResize >= 0 &&
+    discreteRendererRotation > finalWindowResize &&
+    completionSource.Contains("ApplyRotatedDimensions(reflow: false);",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("!_rotationAnimating && !_isFullScreen",
+        StringComparison.Ordinal) &&
+    aspectRatioControllerCode.Contains("if (reflow) QueueResize(fitToWorkArea: false);",
+        StringComparison.Ordinal),
+    "rotation keeps whole-phone DComp transform through HWND resize, then atomically commits native orientation without duplicate aspect reflow");
+
+Equal(true,
+    nativePreviewWindowCode.Contains(
+        "CompositionTarget.Rendering += OnRotationRendering;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "CompositionTarget.Rendering -= OnRotationRendering;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "PhoneRotationStageGeometry.CenteredBounds(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "PhoneRotationStageGeometry.ScaleAtAngle(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "_lastCompositionRotationTick != TimeSpan.Zero",
+        StringComparison.Ordinal),
+    "DComp phone-body animation shares one immutable pivot and follows WPF render ticks with safe fallback");
+var nativeRecordingApiSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "CoreApi.cpp"));
+Equal(true,
+    nativeRecordingApiSource.Contains(
+        "output_height, true /* upscale source to fill encoding canvas */)",
+        StringComparison.Ordinal),
+    "1080p recording explicitly upscales real 498x1080 AirPlay input instead of creating a permanently letterboxed source");
+
+
+Equal(true,
+    nativePreviewWindowCode.Contains("EnableAirPlayAutomaticRotation(bool enabled)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("OnAirPlayOrientationSettled(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("Interval = TimeSpan.FromMilliseconds(120)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "var pendingTurns = _rotationAnimating",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "PhoneAutoRotationPolicy.DecideDelta(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "if (delta == 0)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "if (!Rotate(delta, autoTriggered: true))",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "_autoAirPlayWasLandscape = landscape;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "DeviceFrameProfileResolver.GetStableWindowOuterDimensions(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "_deviceFrameProfile, _sourceWidth, _sourceHeight, _rotation);",
+        StringComparison.Ordinal),
+    "AirPlay auto-turn compares pending animation destination, handles user manual direction and retries rejected native turns");
+// Regression: lock/disconnect must remove the still-alive native HWND from
+// the desktop hit-test path WITHOUT discarding its reconnect geometry.
+Equal(true,
+    nativePreviewWindowCode.Contains(
+        "_ = ShowWindow(_handle, SwHide); // FIRST: leave the hit-test path",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_waitingForWirelessReconnect ? new nint(-1)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("if (!_attached) return;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("ShowWindow(_handle, SwShowNoActivate)",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "if (_disposed || _handle == 0 || _waitingForWirelessReconnect) return;",
+        StringComparison.Ordinal),
+    "wireless disconnect makes borderless native preview click-through and hidden until actual rebind");
+var wirelessIndependentManagerSource = File.ReadAllText(Path.Combine(
+    sourceDirectory, "App", "Services", "MultiDevicePreviewManager.cs"));
+Equal(true,
+    wirelessIndependentManagerSource.Contains(
+        "window.EnableAirPlayAutomaticRotation(device.IsWireless);",
+        StringComparison.Ordinal) &&
+    wirelessIndependentManagerSource.Contains(
+        "Math.Min(sourceWidth, sourceHeight) : sourceWidth;",
+        StringComparison.Ordinal),
+    "only true wireless AirPlay windows request automatic physical phone rotation");
+
+Equal(true,
+    mainViewModelSource.Contains(
+        "DiagnosticLogger.ReverseControlError(\"wireless\", \"start_failed\",",
+        StringComparison.Ordinal) &&
+    mainViewModelSource.Contains(
+        "(\"device\", AppLog.Device(device?.Udid)), (\"error\", AppLog.Error(error)),",
+        StringComparison.Ordinal),
+    "AirPlay/USB failure reporting cannot throw a second null-device exception while diagnosing disconnects");
+
+
+
 Equal(true,
     mainViewModelSource.Contains("private bool _bluetoothControlStopping;",
         StringComparison.Ordinal) &&
@@ -1784,15 +1935,27 @@ Equal(true,
     mainViewModelSource.Contains("private void NotifyCaptureSessionChanged()", StringComparison.Ordinal),
     "Bluetooth action availability refreshes for busy, media-source, and capture-session changes");
 Equal(true,
-    previewRendererCode.Contains("horizontal_gap >= 0.0F && horizontal_gap < 1.0F",
+    previewRendererCode.Contains("edge_bleed_pixels = 1.5F",
         StringComparison.Ordinal) &&
-    previewRendererCode.Contains("vertical_gap >= 0.0F && vertical_gap < 1.0F",
+    previewRendererCode.Contains("reference_aperture_view &&",
         StringComparison.Ordinal) &&
-    previewRendererCode.Contains("aspect_error <= pixel_error_limit",
+    previewRendererCode.Contains("use_reference_shell(frame_profile) && aspect_error <= 0.005F",
         StringComparison.Ordinal) &&
-    previewRendererCode.Contains("viewport.Height = static_cast<float>(target_height);",
+    previewRendererCode.Contains("screen_area.x - edge_bleed_pixels",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("screen_area.y - edge_bleed_pixels",
         StringComparison.Ordinal),
-    "native preview removes only sub-pixel aspect-rounding bars");
+    "native preview bleeds under PNG aperture only for matched source aspect");
+Equal(true,
+    previewRendererCode.Contains("return rotateUvByTurns(uv, apertureControl.y);",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("sourceUv = rotateShellUv(sourceUv);",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("referenceShell.Sample(linearSampler, rotateShellUv(uv))",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("values.color_padding[1] = static_cast<float>",
+        StringComparison.Ordinal),
+    "all quarter turns orient original PNG and aperture with the same video state");
 var themeServiceText = File.ReadAllText(Path.Combine(sourceDirectory,
     "App", "Services", "ThemeService.cs"));
 Equal(true,
@@ -2047,6 +2210,10 @@ try
     var bridgeRuntimeDependency = Path.Combine(bridgeRuntimeInternal, "dependency.bin");
     File.WriteAllText(bridgeRuntimeExecutable, "bridge");
     File.WriteAllText(bridgeRuntimeDependency, "dependency");
+    var usb0Path = Path.Combine(bridgeRuntimeInternal, "libusb0.dll");
+    var libusbPath = Path.Combine(bridgeRuntimeInternal, "libusb-1.0.dll");
+    File.WriteAllText(usb0Path, "pinned libusb0 fixture");
+    File.WriteAllText(libusbPath, "pinned libusb-1.0 fixture");
     var bridgeRuntimeFiles = new[]
     {
         new
@@ -2060,6 +2227,18 @@ try
             path = "_internal/dependency.bin",
             sha256 = Convert.ToHexString(SHA256.HashData(
                 File.ReadAllBytes(bridgeRuntimeDependency))).ToLowerInvariant(),
+        },
+        new
+        {
+            path = "_internal/libusb0.dll",
+            sha256 = Convert.ToHexString(SHA256.HashData(
+                File.ReadAllBytes(usb0Path))).ToLowerInvariant(),
+        },
+        new
+        {
+            path = "_internal/libusb-1.0.dll",
+            sha256 = Convert.ToHexString(SHA256.HashData(
+                File.ReadAllBytes(libusbPath))).ToLowerInvariant(),
         },
     };
     File.WriteAllText(Path.Combine(bridgeRuntimeTestRoot,
@@ -2098,6 +2277,27 @@ try
     Equal(false, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
             bridgeRuntimeExecutable, out bridgeRuntimeFailure),
         "USB touch bridge runtime rejects path traversal entries");
+    File.WriteAllText(Path.Combine(bridgeRuntimeTestRoot,
+        "iUsbBridge.runtime.json"), JsonSerializer.Serialize(new
+    {
+        schema = 2,
+        backend = "idevice",
+        files = new[]
+        {
+            new {
+                path = "iUsbBridge.exe",
+                sha256 = Convert.ToHexString(SHA256.HashData(
+                    File.ReadAllBytes(bridgeRuntimeExecutable))).ToLowerInvariant(),
+            },
+        },
+    }));
+    Equal(true, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
+            bridgeRuntimeExecutable, out bridgeRuntimeFailure),
+        "Rust single-file bridge schema-2 manifest validates");
+    File.AppendAllText(bridgeRuntimeExecutable, "-tampered");
+    Equal(false, RuntimeBinaryIntegrity.VerifyUsbTouchBridgeRuntime(
+            bridgeRuntimeExecutable, out bridgeRuntimeFailure),
+        "tampering Rust bridge executable fails integrity check");
 }
 finally
 {
@@ -2940,6 +3140,30 @@ var reversed = BluetoothMouseOrientationMapper.Map(3, -4, 1206, 2622, 0,
 Equal((-3d, 4d), reversed,
     "Bluetooth axis reversal applies after direction mapping");
 
+// Wi-Fi touch sends *absolute* normalized coordinates, not relative BLE
+// pointer travel. Every preview rotation must map a Windows click to the
+// corresponding iPhone touch point, independently from HID direction settings.
+foreach (var (rotation, expected) in new (int Rotation, (double X, double Y) Position)[]
+{
+    (0, (0.2, 0.4)),
+    (1, (0.6, 0.2)),
+    (2, (0.8, 0.6)),
+    (3, (0.4, 0.8)),
+})
+{
+    var actual = BluetoothMouseOrientationMapper.MapNormalized(
+        0.2, 0.4, 1206, 2622, rotation,
+        BluetoothMouseDirection.Up, BluetoothMouseDirection.Up,
+        false, false);
+    Equal(expected, actual,
+        $"Wi-Fi absolute touch coordinates obey {rotation * 90}-degree window rotation");
+}
+Equal((0.8, 0.6), BluetoothMouseOrientationMapper.MapNormalized(
+    0.2, 0.4, 1206, 2622, 0,
+    BluetoothMouseDirection.Up, BluetoothMouseDirection.Up,
+    true, true),
+    "Wi-Fi touch axes invert correctly for user-configured screen mapping");
+
 var updateNetworkRoot = Path.Combine(Path.GetTempPath(),
     $"iphone-mirror-update-network-{Guid.NewGuid():N}");
 try
@@ -3550,7 +3774,28 @@ try
                          throw new InvalidOperationException(
                              "verified helper bootstrap did not start"))
     {
-        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        // Windows-hosted CI can spend more than ten seconds starting the
+        // system PowerShell process under Defender/SDK load. The test must
+        // still execute its SHA256-verified helper and assert its exit code,
+        // rather than silently skipping the security check.
+        var bootstrapTimeout = string.Equals(
+            Environment.GetEnvironmentVariable("CI"), "true",
+            StringComparison.OrdinalIgnoreCase)
+            ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(20);
+        try
+        {
+            await process.WaitForExitAsync().WaitAsync(bootstrapTimeout);
+        }
+        catch (TimeoutException)
+        {
+            if (!process.HasExited)
+            {
+                try { process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { }
+            }
+            throw new TimeoutException(
+                $"Verified PowerShell bootstrap did not exit within {bootstrapTimeout.TotalSeconds}s.");
+        }
         Equal(0, process.ExitCode,
             "verified helper bootstrap executes the expected script");
     }
@@ -3703,7 +3948,7 @@ Equal("rectangular",
 Equal(0, DeviceCornerProfile.Rectangular.GetGdiRadius(1206),
     "rectangular fallback radius");
 
-Equal("iphone-dynamic-island",
+Equal("iphone-dynamic-island-custom-shell",
     DeviceFrameProfileResolver.Resolve("iPhone18,3", 1206, 2622).Id,
     "modern iPhone receives a hardware shell with Dynamic Island");
 Equal(DeviceCutoutKind.None,
@@ -3712,7 +3957,7 @@ Equal(DeviceCutoutKind.None,
 Equal(DeviceCutoutKind.None,
     DeviceFrameProfileResolver.Resolve("iPhone17,5", 1170, 2532).CutoutKind,
     "the original iOS notch must not be drawn twice");
-Equal("iphone-dynamic-island",
+Equal("iphone-dynamic-island-custom-shell",
     DeviceFrameProfileResolver.Resolve("iPhone17,4", 1320, 2868).Id,
     "iPhone 16 Pro Max model uses the thin front shell");
 Equal("iphone-home-button",
@@ -3760,8 +4005,14 @@ Equal(true, WirelessReceiverConfiguration.RequiresOriginalQualityWarning(
         WirelessReceiverConfiguration.DisplayProfiles[0]),
     "wireless original-quality profile requires a stability warning");
 Equal(false, WirelessReceiverConfiguration.RequiresOriginalQualityWarning(
-        WirelessReceiverConfiguration.DisplayProfiles[1]),
+        WirelessReceiverConfiguration.DefaultDisplayProfile),
     "wireless 1080p profile does not require the original-quality warning");
+Equal(true, WirelessReceiverConfiguration.IsSupportedDisplayProfile(3072, 1728, 60),
+    "3K AirPlay is advertised as a 3072x1728 60fps ceiling");
+Equal(true, WirelessReceiverConfiguration.IsSupportedDisplayProfile(2560, 1440, 60),
+    "2K AirPlay is advertised as a 2560x1440 60fps ceiling");
+Equal(false, WirelessReceiverConfiguration.IsSupportedDisplayProfile(2560, 1440, 120),
+    "2K AirPlay must not falsely advertise unverified 120fps");
 Equal(true, WirelessReceiverConfiguration.IsSupportedDisplayProfile(1280, 720, 30),
     "wireless 720p weak-network profile is supported");
 Equal(false, WirelessReceiverConfiguration.IsSupportedDisplayProfile(1280, 720, 60),
@@ -4128,6 +4379,18 @@ finally
         Directory.Delete(ffmpegLocationRoot, recursive: true);
 }
 
+// Upstream v1.8.5-pre2: Apple's trustcache bundle can use either
+// Image.trustcache or Image.dmg.trustcache. Our Python bridge supported both,
+// while the C# preflight incorrectly rejected the latter.
+var usbDdiPreflightSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Services", "DirectUsbInputBridge.cs"));
+Equal(true,
+    usbDdiPreflightSource.Contains("fileName == \"Image.trustcache\" && !File.Exists(filePath)",
+        StringComparison.Ordinal) &&
+    usbDdiPreflightSource.Contains("Path.Combine(directory, \"Image.dmg.trustcache\")",
+        StringComparison.Ordinal),
+    "upstream pre2 DDI trustcache alternate filename reaches the personalized bridge");
+
 var recordingArguments = MediaOutputService.BuildArguments(
     new MediaOutputRequest(MediaOutputKind.Recording, "capture.mp4", 1280, 720, 30, 6000),
     ffmpegCapabilities);
@@ -4146,6 +4409,794 @@ Sequence(["-hide_banner", "-loglevel", "warning", "-nostdin",
         "-y", "capture.mp4"],
     recordingArguments,
     "recording opens the audio pipe before stdin video and keeps stable mapping");
+
+var bundledShellPath = Path.Combine(sourceDirectory, "App", "Assets",
+    "iphone16_pro_max_shell.png");
+var bundledShellBytes = File.ReadAllBytes(bundledShellPath);
+Equal("0539067df832d4ec3da82baaf7e690ff51c584b7dae664e16062b236eea813b4",
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bundledShellBytes)).ToLowerInvariant(),
+    "pre6 includes the exact original iPhone 16 Pro Max reference shell, never the old 240x509 fallback");
+var originalShellAperture = DeviceFrameProfileResolver.ActiveIPhoneShell
+    .GetScreenRect(994, 2048);
+Equal(new DeviceScreenRect(44, 39, 906, 1970), originalShellAperture,
+    "shared original-shell screen viewport matches measured 994x2048 RGBA aperture");
+Equal(true, bundledShellBytes.Length > 2000 &&
+    bundledShellBytes.AsSpan(0, 8).SequenceEqual(
+        new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
+    "bundled user-reference phone shell has a valid PNG header");
+var appProjectFile = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "iPhoneMirror.App.csproj"));
+Equal(true, appProjectFile.Contains(
+        "EmbeddedResource Include=\"Assets\\iphone16_pro_max_shell.png\"", StringComparison.Ordinal) &&
+    appProjectFile.Contains(
+        "LogicalName=\"IPhoneMirror.Shell.IPhone16ProMax\"", StringComparison.Ordinal),
+    "phone shell is embedded inside the executable, not distributed as a loose image");
+Equal(true, File.Exists(PhoneShellAssetStore.ActivePath),
+    "embedded phone shell is extracted to a content-addressed runtime cache");
+var originalShellBitmap = new BitmapImage();
+originalShellBitmap.BeginInit();
+originalShellBitmap.CacheOption = BitmapCacheOption.OnLoad;
+originalShellBitmap.UriSource = new Uri(PhoneShellAssetStore.ActivePath, UriKind.Absolute);
+originalShellBitmap.EndInit();
+var alphaOpening = PhoneShellApertureMask.FromShell(originalShellBitmap);
+var alphaPixels = new byte[checked(alphaOpening.PixelWidth * alphaOpening.PixelHeight * 4)];
+alphaOpening.CopyPixels(alphaPixels, alphaOpening.PixelWidth * 4, 0);
+byte ScreenAlphaAt(int x, int y) =>
+    alphaPixels[(y * alphaOpening.PixelWidth + x) * 4];
+Equal((byte)255, ScreenAlphaAt(500, 1024),
+    "video remains visible at the true center of the reference display aperture");
+Equal((byte)0, ScreenAlphaAt(0, 1024),
+    "video is clipped outside the metal frame despite transparent PNG exterior");
+Equal((byte)0, ScreenAlphaAt(50, 50),
+    "video does not leak past the curved top-left metallic corner");
+Equal((byte)0, ScreenAlphaAt(500, 0),
+    "video does not leak through the transparent space above the phone shell");
+
+var startupSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "App.xaml.cs"));
+var nativeRendererSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "Renderer", "D3D11PreviewRenderer.cpp"));
+var wirelessHostIpcSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "WirelessHost", "WirelessHost.cpp"));
+Equal(true,
+    wirelessHostIpcSource.Contains("const auto superseded_by_rotation",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("queued.header.width != message.header.width",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("queued.header.height != message.header.height",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("replaced_video_frames_.fetch_add(1",
+        StringComparison.Ordinal) &&
+    wirelessHostIpcSource.Contains("MaxQueuedBytes", StringComparison.Ordinal) &&
+    !wirelessHostIpcSource.Contains("writing_same_geometry", StringComparison.Ordinal) &&
+    !wirelessHostIpcSource.Contains("queued_same_geometry", StringComparison.Ordinal),
+    "AirPlay IPC retains one latest pending frame and only skips obsolete orientation; equal frame sizes are not duplicates");
+Equal(true,
+    startupSource.Contains("IPHONE_MIRROR_BUNDLED_SHELL", StringComparison.Ordinal) &&
+    startupSource.IndexOf("PhoneShellAssetStore.ActivePath", StringComparison.Ordinal) <
+    startupSource.IndexOf("MainWindow = new MainWindow()", StringComparison.Ordinal),
+    "WPF passes the original verified embedded shell path before native preview startup");
+Equal(true,
+    nativeRendererSource.Contains("GetEnvironmentVariableW(", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("IPHONE_MIRROR_BUNDLED_SHELL", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("profile.side_inset - 0.048F", StringComparison.Ordinal) &&
+    !nativeRendererSource.Contains("local_app_data[", StringComparison.Ordinal),
+    "native D3D uses the bundled PNG with the calibrated profile, not the legacy user override");
+Equal(true,
+    startupSource.Contains("IPHONE_MIRROR_BUNDLED_APERTURE", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("IPHONE_MIRROR_BUNDLED_APERTURE", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("reference_aperture_loaded", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("referenceAperture.Sample(", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("allow_aperture = true", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("turns, false);", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "rounded, video_turns, true, crop.x, crop.y);",
+        StringComparison.Ordinal),
+    "D3D11 preview uses the same connected-hole matte in direct and limited render passes");
+Equal(true,
+    nativeRendererSource.Contains("if (turns == 1) return float2(uv.y, 1.0 - uv.x);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("if (turns == 3) return float2(1.0 - uv.y, uv.x);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("return rotateUvByTurns(uv, apertureControl.y);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("referenceShell.Sample(linearSampler, rotateShellUv(uv))",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains("sourceUv = rotateShellUv(sourceUv);",
+        StringComparison.Ordinal),
+    "clockwise and counterclockwise shell PNG and aperture share the quarter-turn UV transform");
+
+Equal(true,
+    previewRendererCode.Contains("const int video_turns = staging_turns >= 0",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("opening_landscape) ? 0 : turns;",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("waiting_for_rotation_resize", StringComparison.Ordinal) &&
+    previewRendererCode.Contains("draw_nv12(limited_viewport, limited_width, limited_height, false, video_turns, false);",
+        StringComparison.Ordinal),
+    "native renderer does not double-turn iPhone landscape frames or present interim portrait buffers during rotation");
+
+
+var outputSettingsXaml = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Windows", "MediaOutputSettingsWindow.xaml"));
+Equal(true, outputSettingsXaml.Contains("<ScrollViewer Grid.Row=", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("<Border Grid.Row=", StringComparison.Ordinal) &&
+    outputSettingsXaml.Split("StartRecordingButton").Length == 2 &&
+    !outputSettingsXaml.Contains("高于 60fps 的录制需检测真实源帧率", StringComparison.Ordinal),
+    "recording action stays visible in fixed footer, with obsolete explanatory text removed");
+Equal(false, outputSettingsXaml.Contains("ShellImageBox", StringComparison.Ordinal) ||
+    outputSettingsXaml.Contains("OnImportGlobalShellClick", StringComparison.Ordinal),
+    "output settings cannot replace the bundled phone shell");
+Equal(true, outputSettingsXaml.Contains("OnUseDefaultWhiteBackgroundClick", StringComparison.Ordinal),
+    "output settings expose the default file-free whiteboard");
+Equal(true, outputSettingsXaml.Contains("RecordResolutionPresetBox", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("x:Name=\"RecordFpsBox\" Height=\"36\" IsEditable=\"True\"", StringComparison.Ordinal) &&
+    outputSettingsXaml.Contains("x:Name=\"RecordBitrateBox\" Height=\"36\" IsEditable=\"True\"", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordFpsPresetBox", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordBitratePresetBox", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordFpsBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal) &&
+    !outputSettingsXaml.Contains("RecordBitrateBox\" Style=\"{StaticResource RoundedTextBox}", StringComparison.Ordinal),
+    "record FPS and bitrate use single editable preset control, no duplicate entry rows");
+
+var settingsCodeWithProvenance = File.ReadAllText(Path.Combine(
+    sourceDirectory, "App", "Windows", "MediaOutputSettingsWindow.xaml.cs"));
+Equal(true,
+    outputSettingsXaml.Contains("x:Name=\"Pre6BuildIdentityText\"",
+        StringComparison.Ordinal) &&
+    settingsCodeWithProvenance.Contains("BUILD_PROVENANCE.txt", StringComparison.Ordinal) &&
+    settingsCodeWithProvenance.Contains(
+        "Pre6BuildIdentityText.Visibility = Visibility.Visible",
+        StringComparison.Ordinal),
+    "record settings show real CI build ID and SHA so stale EXE runs are detectable");
+
+
+var mediaOutputFinalizationCode = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Services", "MediaOutputService.cs"));
+Equal(true,
+    mediaOutputFinalizationCode.Contains("var stopTimeout = activeKind == MediaOutputKind.Recording",
+        StringComparison.Ordinal) &&
+    mediaOutputFinalizationCode.IndexOf("await pumps.WaitAsync(PumpTaskShutdownTimeout)",
+        StringComparison.Ordinal) <
+    mediaOutputFinalizationCode.IndexOf("try { process.StandardInput.Close(); }",
+        StringComparison.Ordinal) &&
+    mediaOutputFinalizationCode.Contains("line.Contains(\"error\", StringComparison.OrdinalIgnoreCase)",
+        StringComparison.Ordinal),
+    "recording waits for producer shutdown before FFmpeg EOF and does not report a channel layout hint as encoder failure");
+Equal(true,
+    mediaOutputFinalizationCode.Contains(
+        "alphamerge=shortest=1:repeatlast=0[phone_video]",
+        StringComparison.Ordinal),
+    "phone alpha mask stops when finite AirPlay video ends, even without audio");
+
+
+// The editor must follow the chosen output canvas dimensions, not the
+// resolution of a tiny backdrop picture.
+foreach (var (canvasW, canvasH) in new[]
+    { (1000, 2000), (1448, 1440), (1920, 1080), (1080, 1920) })
+{
+    foreach (var (locationX, locationY, zoom) in new[]
+        { (-8.0, 7.0, 4.0), (0.5, 0.5, 1.0), (2.0, -2.0, 3.0) })
+    {
+        var fitted = PhoneShellMediaComposer.FitInsideCanvas(
+            canvasW, canvasH, .46, locationX, locationY, zoom);
+        Equal(true, fitted.Bounds.X >= 5 && fitted.Bounds.Y >= 5 &&
+            fitted.Bounds.Right <= canvasW - 5 &&
+            fitted.Bounds.Bottom <= canvasH - 5,
+            $"phone shell stays within actual {canvasW}x{canvasH} backdrop");
+        Equal(true, fitted.Bounds.Width > 0 && fitted.Bounds.Height > 0,
+            "clamped shell retains a positive size");
+    }
+}
+
+// The default recording layout should occupy almost all available vertical
+// space without stretching/cropping a complete 994x2048 shell. The 9:16
+// white canvas may still have horizontal margins: their aspect ratios differ.
+var maximizedPortraitShell = PhoneShellMediaComposer.FitInsideCanvas(
+    1080, 1920, 994.0 / 2048.0, 0.5, 0.5, 1.0).Bounds;
+Equal(true, maximizedPortraitShell.Height >= 1880 &&
+    maximizedPortraitShell.Top >= 5 &&
+    maximizedPortraitShell.Bottom <= 1915,
+    "default full-height shell minimizes avoidable white bands without clipping");
+
+// Exercise the actual production AirPlay rotation decision, rather than
+// searching only for method names. Negative/positive quarter turns must
+// respect existing manual direction and an in-progress animation target.
+foreach (var (committed, pending, landscape, expected) in new[]
+{
+    (0, 0, true, -1),    // playback: upright portrait -> left landscape
+    (3, 0, false, 1),    // playback ends: undo left turn
+    (1, 0, false, -1),   // manual right landscape -> upright portrait
+    (1, 0, true, 0),     // manual landscape already fits the AirPlay source
+    (0, -1, false, 1),   // source reverts during left-turn animation
+    (0, -1, true, 0),    // unchanged video while left-turn is underway
+    (2, 0, true, 1),    // upside-down portrait -> nearby landscape
+    (2, 0, false, 0),   // preserve a deliberate upside-down portrait state
+    (3, 0, true, 0),
+    (-1, 0, false, 1),   // wrap negative quarter-turns
+})
+{
+    Equal(expected,
+        PhoneAutoRotationPolicy.DecideDelta(committed, pending, landscape),
+        $"AirPlay auto rotation committed={committed} pending={pending} landscape={landscape}");
+}
+
+// A second landscape encoder format during the SAME in-flight -90 degree
+// animation must preserve the early sideways frame inside the portrait PNG.
+// "DecideDelta" correctly reports zero against the animation destination,
+// but zero must not disable the still-needed movie staging override.
+foreach (var (committed, pending, landscape, expectedStage) in new[]
+{
+    (0, 0, true, 1),     // 1920x1080 first arrives in portrait phone
+    (0, -1, true, 1),    // 1280x720 arrives DURING left rotation
+    (0, -1, false, -1), // source reverted to portrait, cancel staging
+    (2, 0, true, 3),    // upside-down portrait uses right turn
+    (2, 1, true, 3),    // same right rotation still in flight
+    (3, 0, true, -1),   // final landscape: shader no longer needs override
+    (1, 0, false, -1),  // return to portrait: no early movie rotation
+})
+    Equal(expectedStage,
+        PhoneAutoRotationPolicy.DecideStagedVideoTurns(
+            committed, pending, landscape),
+        $"AirPlay staged content rotation committed={committed} pending={pending} landscape={landscape}");
+
+// Regression: real-world AirPlay movie playback must NEVER stretch the
+// physical 16 Pro Max bezel when returning from zoomed landscape to portrait.
+// Video dimensions can jump 1320x2868 -> 1920x1080 -> 1080x1920 while
+// the 994x2048 PNG shell's enclosing HWND keeps one fixed aspect.
+var stableShell = DeviceFrameProfileResolver.ActiveIPhoneShell;
+var initialShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1320, 2868, 0);
+var wideVideoShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1920, 1080, 0);
+var returnedShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1080, 1920, 0);
+double initialBodyAspect = initialShell.Width / (double)initialShell.Height;
+Equal(true, Math.Abs(initialBodyAspect - 994.0 / 2048) < 0.002,
+    "bundled iPhone 16 Pro Max body matches the original PNG ratio");
+Equal(true, Math.Abs(wideVideoShell.Width / (double)wideVideoShell.Height -
+        initialBodyAspect) < 0.0005 &&
+    Math.Abs(returnedShell.Width / (double)returnedShell.Height -
+        initialBodyAspect) < 0.0005,
+    "AirPlay landscape movies, zoom and portrait return do not widen the shell");
+var landscapeShell = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    stableShell, 1920, 1080, 1);
+Equal(true, Math.Abs(landscapeShell.Height / (double)landscapeShell.Width -
+        initialBodyAspect) < 0.0005,
+    "landscape phone remains a rigid 90-degree rotation of the portrait body");
+// Other devices have no fixed 16 Pro Max shell, so keep their real source
+// geometry rather than accidentally forcing unrelated panels to this aspect.
+var unframedMovie = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+    DeviceFrameProfile.None, 1920, 1080, 0);
+Equal(true, unframedMovie.Width == 1080 && unframedMovie.Height == 1920,
+    "unframed media keeps its own content aspect rather than iPhone-shell ratio");
+
+// Low-latency AirPlay direction detection is a separate status-only poll;
+// USB inventory keeps the original two-second cadence. Resolutions that
+// change repeatedly within one orientation must not reset hysteresis.
+Equal(true,
+    mainWindowCode.Contains("_wirelessOrientationTimer = new DispatcherTimer",
+        StringComparison.Ordinal) &&
+    mainWindowCode.Contains("Interval = TimeSpan.FromMilliseconds(150)",
+        StringComparison.Ordinal) &&
+    mainWindowCode.Contains("RefreshWirelessOrientationStatusAsync()",
+        StringComparison.Ordinal) &&
+    mainWindowCode.Contains("_refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("_queuedAirPlayLandscape != landscape",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("independent_window_airplay_orientation_detected",
+        StringComparison.Ordinal),
+    "fast wireless orientation polls stay independent of device enumeration and repeated source sizes");
+
+// Regression: the 150ms orientation probe must share the native-status
+// single-flight gate with the old 2s status refresh. A late old status must
+// never override a newer AirPlay landscape frame.
+var viewModelSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "ViewModels", "MainViewModel.cs"));
+Equal(true,
+    viewModelSource.Contains(
+        "Interlocked.CompareExchange(ref _activeStatusPollInFlight, 1, 0) != 0)",
+        StringComparison.Ordinal) &&
+    !viewModelSource.Contains("_wirelessOrientationPollInFlight",
+        StringComparison.Ordinal) &&
+    viewModelSource.Contains("CurrentSessionHandle == originalSession",
+        StringComparison.Ordinal) &&
+    viewModelSource.Contains("CurrentSessionHandle != sessionAtStart",
+        StringComparison.Ordinal),
+    "fast and slow AirPlay orientation status reads share a nonoverlapping gate");
+Equal(true,
+    previewRendererCode.Contains("pending_rotation_handoff", StringComparison.Ordinal) &&
+    previewRendererCode.Contains("const bool output_mode_changed = !defer_output_switch &&",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains(
+        "applied_visual_generation = std::numeric_limits<std::uint64_t>::max();",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains(
+        "refresh_requested.store(true, std::memory_order_release);",
+        StringComparison.Ordinal),
+    "D3D retains one transform across rebuilds, defers format switches and retries pending handoff");
+
+Equal(true,
+    nativePreviewWindowCode.Contains("SetDeviceWindowVideoStageRotation(",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "PhoneAutoRotationPolicy.DecideStagedVideoTurns(",
+        StringComparison.Ordinal) &&
+    previewRendererCode.Contains("staging_video_turns.store(-1",
+        StringComparison.Ordinal),
+    "landscape source is oriented into portrait shell before whole-phone animation");
+
+// The temporary DComp square, portrait original and final landscape HWND
+// MUST share the very same desktop center. Clamping its square to work-area
+// margins used to move that center by 100-200px on right-edge monitors.
+foreach (var (originalLeft, originalTop, originalRight, originalBottom,
+    targetWidth, targetHeight) in new[]
+{
+    (1340, 120, 1580, 620, 800, 800), // right-edge portrait -> square
+    (-2000, 80, -1480, 920, 950, 550), // secondary negative-X monitor
+    (60, -250, 540, 750, 700, 700), // near top edge: stage may overhang
+})
+{
+    var (stageX, stageY) = PhoneRotationStageGeometry.CenteredBounds(
+        originalLeft, originalTop, originalRight, originalBottom,
+        targetWidth, targetHeight);
+    Equal(true,
+        Math.Abs((stageX + targetWidth / 2.0) -
+            (originalLeft + originalRight) / 2.0) <= 0.5 &&
+        Math.Abs((stageY + targetHeight / 2.0) -
+            (originalTop + originalBottom) / 2.0) <= 0.5,
+        "rotation never moves the phone pivot when temporary/final HWND bounds change");
+}
+const int rotationTestWidth = 500, rotationTestHeight = 1000;
+const float rotationTestSide = 850;
+var rotationFinalFit = (float)Math.Min(1.0,
+    (rotationTestSide - 1) /
+    (Math.Sqrt(rotationTestWidth * rotationTestWidth +
+        rotationTestHeight * rotationTestHeight) + 4));
+double previousRotationScale = 1.01;
+for (var degrees = 0; degrees <= 90; degrees += 3)
+{
+    var visualScale = PhoneRotationStageGeometry.ScaleAtAngle(
+        rotationTestWidth, rotationTestHeight, rotationTestSide,
+        rotationFinalFit, degrees);
+    var radians = degrees * Math.PI / 180;
+    var projectedWidth = Math.Abs(rotationTestWidth * Math.Cos(radians)) +
+        Math.Abs(rotationTestHeight * Math.Sin(radians));
+    var projectedHeight = Math.Abs(rotationTestWidth * Math.Sin(radians)) +
+        Math.Abs(rotationTestHeight * Math.Cos(radians));
+    Equal(true, visualScale <= previousRotationScale + 0.00001 &&
+        projectedWidth * visualScale < rotationTestSide + 0.01 &&
+        projectedHeight * visualScale < rotationTestSide + 0.01,
+        "whole-phone scale remains monotone and its rotating bezel never exceeds the fixed stage");
+    previousRotationScale = visualScale;
+}
+Equal(true, Math.Abs(previousRotationScale - rotationFinalFit) < 0.001,
+    "final center-pivot scale exactly matches the renderer's landscape handoff");
+Equal(true, Math.Abs(PhoneRotationStageGeometry.ScaleAtAngle(
+        rotationTestWidth, rotationTestHeight, rotationTestSide,
+        rotationFinalFit, 0) -
+    PhoneRotationStageGeometry.ScaleAtAngle(
+        rotationTestWidth, rotationTestHeight, rotationTestSide,
+        rotationFinalFit, 45)) < 0.00001,
+    "whole-phone rotation keeps a fixed scale throughout the 0..90 degree sweep");
+
+var layoutEditorCode = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Windows", "RecordingLayoutEditorWindow.cs"));
+Equal(true,
+    layoutEditorCode.Contains("private const double ZoomStep = 0.05;",
+        StringComparison.Ordinal) &&
+    layoutEditorCode.Contains("plus.Click += (_, _) => AdjustZoom(1);",
+        StringComparison.Ordinal) &&
+    layoutEditorCode.Contains("minus.Click += (_, _) => AdjustZoom(-1);",
+        StringComparison.Ordinal) &&
+    layoutEditorCode.Contains("AdjustZoom(notches);", StringComparison.Ordinal),
+    "recording layout editor uses symmetric additive 5 percentage-point zoom steps");
+
+// Whole-phone DirectComposition animation uses CSS cubic-bezier(.76,0,.24,1)
+// over 1000ms, and retargeting must preserve the current eased visual angle.
+var rotationMotion = new PhoneRotationTimeline();
+rotationMotion.Retarget(90, TimeSpan.Zero);
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(500)) - 45) < .05,
+    "phone shell and video rotate halfway together at cubic-bezier temporal midpoint");
+rotationMotion.Retarget(-90, TimeSpan.FromMilliseconds(500));
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(500)) - 45) < .05,
+    "reversing phone rotation keeps the exact current angle without snapping");
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(1000)) - 22.5) < .05,
+    "reverse rotation continues smoothly through its new midpoint");
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(1500))) < .001 &&
+    rotationMotion.Finished(TimeSpan.FromMilliseconds(1500)),
+    "90 degree turn reversed midway returns to portrait in one second");
+rotationMotion = new PhoneRotationTimeline();
+rotationMotion.Retarget(-90, TimeSpan.Zero);
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromMilliseconds(1000)) + 90) < .001,
+    "left rotation ends at -90 degrees without bounce or overshoot");
+
+rotationMotion = new PhoneRotationTimeline();
+for (var quarter = 0; quarter < 4; ++quarter)
+{
+    var now = TimeSpan.FromMilliseconds(quarter * 1000);
+    rotationMotion.Retarget(90, now);
+    var previous = rotationMotion.Sample(now);
+    for (var tick = 1; tick <= 20; ++tick)
+    {
+        var current = rotationMotion.Sample(now + TimeSpan.FromMilliseconds(tick * 50));
+        Equal(true, current >= previous && current <= (quarter + 1) * 90,
+            "successive 90 degree rotations never rebound or overshoot");
+        previous = current;
+    }
+}
+Equal(true, Math.Abs(rotationMotion.Sample(TimeSpan.FromSeconds(4)) - 360) < .001,
+    "four quarter turns finish at the original orientation");
+
+Equal(true, File.ReadAllText(Path.Combine(sourceDirectory,
+        "App", "Windows", "MediaOutputSettingsWindow.xaml")).Contains(
+        "TransparentShellRecordingBox", StringComparison.Ordinal) &&
+    File.ReadAllText(Path.Combine(sourceDirectory,
+        "App", "Windows", "MediaOutputSettingsWindow.xaml.cs")).Contains(
+        "transparentPhoneShell: transparent", StringComparison.Ordinal),
+    "real settings window exposes an actionable transparent shell recording option");
+TestFlashZip();
+var mediaFrameLatch = new MediaOutputService.FrameLatch();
+mediaFrameLatch.Publish(new byte[] { 4, 5, 6 }, 120);
+var sampledFrame = mediaFrameLatch.GetSnapshot();
+Equal(120L, sampledFrame.Timestamp100Ns,
+    "recording latch snapshot carries source frame timestamp");
+Equal(3, sampledFrame.Frame.Length,
+    "recording latch snapshot retains the owned frame");
+mediaFrameLatch.Publish(new byte[] { 99, 99, 99 }, 120);
+Equal((byte)4, mediaFrameLatch.GetSnapshot().Frame.Span[0],
+    "same-timestamp native readback reuses stable owned frame without reallocating");
+mediaFrameLatch.Publish(new byte[] { 7, 8, 9 }, 121);
+Equal((byte)7, mediaFrameLatch.GetSnapshot().Frame.Span[0],
+    "next distinct timestamp correctly publishes new recording pixels");
+
+void TestFlashZip()
+{
+Equal(true, FlashDiagnostics.Redact(
+    "C:\\Users\\Alice\\secret.txt 00008110-0012345678901234 person@example.com " +
+    "https://private.example/media password=secret cookie=abc") is { } redacted &&
+    !redacted.Contains("Alice", StringComparison.Ordinal) &&
+    !redacted.Contains("00008110", StringComparison.Ordinal) &&
+    !redacted.Contains("person@example.com", StringComparison.Ordinal) &&
+    !redacted.Contains("private.example", StringComparison.Ordinal) &&
+    !redacted.Contains("secret", StringComparison.Ordinal) &&
+    !redacted.Contains("cookie=abc", StringComparison.Ordinal),
+    "diagnostic log export redacts paths, device IDs, account data and media URLs");
+var flashFixtureRoot = Path.Combine(Path.GetTempPath(),
+    "iphone-mirror-flash-" + Guid.NewGuid().ToString("N"));
+var flashFixtureFolder = Path.Combine(flashFixtureRoot, "iPhoneMirror-Flash-Diagnostics");
+Directory.CreateDirectory(flashFixtureFolder);
+try
+{
+    foreach (var name in new[] { "application.log", "capture.log", "BUILD_PROVENANCE.txt",
+        "diagnostic-summary.txt" })
+        File.WriteAllText(Path.Combine(flashFixtureFolder, name), "fixture");
+    foreach (var name in new[] { "rotation-events.jsonl", "timeline.jsonl" })
+        File.WriteAllText(Path.Combine(flashFixtureFolder, name), "{\"event\":\"rotation_started\"}\n");
+    foreach (var name in new[] { "render-statistics.json", "environment.json",
+        "flash-markers.json" })
+        File.WriteAllText(Path.Combine(flashFixtureFolder, name), "{\"valid\":true}");
+    var flashZip = FlashDiagnostics.CreateValidatedZip(flashFixtureFolder,
+        flashFixtureRoot, "diagnostics.zip", "fixture");
+    using (var archive = System.IO.Compression.ZipFile.OpenRead(flashZip))
+        Equal(9, archive.Entries.Count, "flash ZIP contains all nine required files, including flash markers");
+    File.WriteAllText(Path.Combine(flashFixtureFolder, "timeline.jsonl"), "not JSON\n");
+    try
+    {
+        FlashDiagnostics.CreateValidatedZip(flashFixtureFolder, flashFixtureRoot,
+            "bad-timeline.zip", "fixture");
+        throw new Exception("invalid JSONL unexpectedly passed ZIP validation");
+    }
+    catch (JsonException) { }
+    Equal(false, File.Exists(Path.Combine(flashFixtureRoot, "bad-timeline.zip")),
+        "invalid JSONL never publishes a diagnostic ZIP");
+    File.Delete(Path.Combine(flashFixtureFolder, "capture.log"));
+    try
+    {
+        FlashDiagnostics.CreateValidatedZip(flashFixtureFolder, flashFixtureRoot,
+            "missing-log.zip", "fixture");
+        throw new Exception("missing capture log unexpectedly passed ZIP validation");
+    }
+    catch (InvalidDataException) { }
+    Equal(false, File.Exists(Path.Combine(flashFixtureRoot, "missing-log.zip")),
+        "missing required log never publishes a diagnostic ZIP");
+}
+finally { Directory.Delete(flashFixtureRoot, recursive: true); }
+}
+
+// Native high precision trace preserves the WPF/DirectComposition time
+// order. The actual visual-flash marker must be correlated with geometry
+// and manual rotation tags rather than reusing an earlier AirPlay event.
+// NV12 native conversion failures must not be reported as missing input.
+var nativeInteropText = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Interop", "NativeCore.cs"));
+Equal(true, nativeInteropText.Contains(
+    "NV12 frame acquisition failed (native result", StringComparison.Ordinal) &&
+    nativeInteropText.Contains(
+    "NativeResult.CaptureBackendUnavailable", StringComparison.Ordinal),
+    "NV12 failures distinguish startup wait from native conversion errors");
+
+var flashDiagnosticSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "App", "Services", "FlashDiagnostics.cs"));
+var flashLoggingSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "Logging.cpp"));
+var flashCoreApiSource = File.ReadAllText(Path.Combine(sourceDirectory,
+    "Core", "src", "CoreApi.cpp"));
+Equal(true,
+    nativePreviewWindowCode.Contains("FlashDiagnostics.MarkVisibleFlash()",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("autoTriggered ? _diagnosticOrientationId : 0",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains("Rotate(delta, autoTriggered: true)",
+        StringComparison.Ordinal) &&
+    flashDiagnosticSource.Contains("flash-markers.json", StringComparison.Ordinal) &&
+    flashDiagnosticSource.Contains("MarkLookbackMs = 1500", StringComparison.Ordinal) &&
+    flashLoggingSource.Contains("\"frame_geometry\"", StringComparison.Ordinal) &&
+    flashLoggingSource.Contains("\"frame_client_geometry\"", StringComparison.Ordinal) &&
+    flashCoreApiSource.Contains("DiagnosticEvent::RotationTrigger)) return;",
+        StringComparison.Ordinal),
+    "flash marking and manual/auto orientation are correlated with per-frame GPU geometry");
+Equal(true,
+    flashLoggingSource.Contains("is_critical_trace_event(record.event)",
+        StringComparison.Ordinal) &&
+    flashLoggingSource.Contains("trace_head = (trace_head + 1) % TraceCapacity;",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "independent_window_airplay_orientation_resync",
+        StringComparison.Ordinal) &&
+    nativePreviewWindowCode.Contains(
+        "!_airPlayOrientationTimer.IsEnabled",
+        StringComparison.Ordinal),
+    "trace overload preserves flash/rotation markers and AirPlay rechecks stale orientation");
+
+// Imported phone image may have a solid-black display. Verify that the
+// imported asset gains a truly transparent aperture without modifying the
+// user's active shell file under LocalAppData.
+var maskFixtureDirectory = Path.Combine(Path.GetTempPath(),
+    "iphone-mirror-mask-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(maskFixtureDirectory);
+try
+{
+    const int shellTestWidth = 640, shellTestHeight = 1360;
+    var opaqueBlack = new byte[shellTestWidth * shellTestHeight * 4];
+    for (var index = 3; index < opaqueBlack.Length; index += 4)
+        opaqueBlack[index] = 255;
+    var opaqueBitmap = BitmapSource.Create(shellTestWidth, shellTestHeight,
+        96, 96, PixelFormats.Bgra32, null, opaqueBlack, shellTestWidth * 4);
+    var sourceFile = Path.Combine(maskFixtureDirectory, "source.png");
+    var installedFile = Path.Combine(maskFixtureDirectory, "installed.png");
+    var sourcePng = new PngBitmapEncoder();
+    sourcePng.Frames.Add(BitmapFrame.Create(opaqueBitmap));
+    using (var stream = File.Create(sourceFile)) sourcePng.Save(stream);
+    PhoneShellAssetStore.Install(sourceFile, installedFile);
+    var imported = new BitmapImage();
+    imported.BeginInit();
+    imported.CacheOption = BitmapCacheOption.OnLoad;
+    imported.UriSource = new Uri(installedFile, UriKind.Absolute);
+    imported.EndInit();
+    var converted = new FormatConvertedBitmap(imported,
+        PixelFormats.Bgra32, null, 0);
+    var importedPixels = new byte[opaqueBlack.Length];
+    converted.CopyPixels(importedPixels, shellTestWidth * 4, 0);
+    Equal((byte)0, importedPixels[
+        ((shellTestHeight / 2) * shellTestWidth + shellTestWidth / 2) * 4 + 3],
+        "imported phone shell removes the opaque-black display");
+    Equal((byte)255, importedPixels[
+        ((shellTestHeight / 2) * shellTestWidth) * 4 + 3],
+        "imported phone shell preserves opaque side-frame pixels");
+    var installedAgain = Path.Combine(maskFixtureDirectory, "installed-again.png");
+    PhoneShellAssetStore.Install(installedFile, installedAgain);
+    var importedAgain = new BitmapImage();
+    importedAgain.BeginInit();
+    importedAgain.CacheOption = BitmapCacheOption.OnLoad;
+    importedAgain.UriSource = new Uri(installedAgain, UriKind.Absolute);
+    importedAgain.EndInit();
+    var convertedAgain = new FormatConvertedBitmap(importedAgain,
+        PixelFormats.Bgra32, null, 0);
+    var pixelsAgain = new byte[importedPixels.Length];
+    convertedAgain.CopyPixels(pixelsAgain, shellTestWidth * 4, 0);
+    Equal(true, importedPixels.AsSpan().SequenceEqual(pixelsAgain),
+        "re-import preserves an existing transparent phone-shell aperture");
+}
+finally
+{
+    Directory.Delete(maskFixtureDirectory, recursive: true);
+}
+
+var rotationSample = new DeviceScreenRect(10, 20, 380, 800);
+Equal(new DeviceScreenRect(80, 10, 800, 380),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 90),
+    "quarter-turn bezel maps screen position and dimensions");
+Equal(new DeviceScreenRect(20, 10, 800, 380),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 270),
+    "counter-clockwise rotation maps screen offset to the opposite edge");
+Equal(new DeviceScreenRect(10, 80, 380, 800),
+    PhoneShellMediaComposer.RotateScreenRect(rotationSample, 400, 900, 180),
+    "upside-down bezel maps screen inset correctly");
+Equal(0, PhoneShellMediaComposer.VideoRotation(90, landscapeSource: true),
+    "already-landscape source is not rotated a second time");
+Equal(90, PhoneShellMediaComposer.VideoRotation(90, landscapeSource: false),
+    "portrait input rotates with manually turned shell");
+Equal("transpose=clock,", PhoneShellMediaComposer.VideoRotationFilter(90),
+    "quarter-turn video transform is wired to FFmpeg");
+var opening = new DeviceScreenRect(18, 22, 934, 1901);
+var expanded = PhoneShellMediaComposer.ExpandVideoUnderBezel(opening);
+Equal(true, expanded.X <= opening.X - 3 &&
+    expanded.Y <= opening.Y - 3 &&
+    expanded.X + expanded.Width >= opening.X + opening.Width + 3 &&
+    expanded.Y + expanded.Height >= opening.Y + opening.Height + 3,
+    "phone video extends beneath the alpha-aliased shell edges on every side");
+Equal(true, (expanded.Width & 1) == 0 && (expanded.Height & 1) == 0,
+    "expanded phone video uses chroma-safe even intermediate dimensions");
+
+// Under an audio backlog, release PCM at wall-clock speed instead of
+// letting a burst lead the encoded video by several seconds.
+Equal(TimeSpan.Zero, MediaOutputService.CalculateAudioPacingDelay(
+    19200, 0, 192000, TimeSpan.Zero),
+    "a 100ms PCM packet needs no delay inside the 125ms lead budget");
+Equal(true, Math.Abs(MediaOutputService.CalculateAudioPacingDelay(
+    96000, 0, 192000, TimeSpan.Zero).TotalMilliseconds - 375) < 0.1,
+    "a 500ms PCM burst is paced by 375ms");
+Equal(TimeSpan.Zero, MediaOutputService.CalculateAudioPacingDelay(
+    96000, 0, 192000, TimeSpan.FromMilliseconds(400)),
+    "audio pacing catches up automatically when video wall-clock progresses");
+
+// 120fps MP4 must be based on distinct source frames, not on the
+// requested FFmpeg -framerate or on a 120Hz monitor alone.
+Equal(true, Math.Abs(MediaOutputService.CalculateVerifiedSourceFps(
+    120, TimeSpan.FromSeconds(1), 9_916_667) - 120.0) <= 0.05,
+    "120Hz source probe measures true unique 120fps timestamps");
+Equal(true, MediaOutputService.CalculateVerifiedSourceFps(
+    60, TimeSpan.FromSeconds(1), 9_833_333) < 70,
+    "a real 60fps source cannot pass 120fps capture gate");
+Equal(0.0, MediaOutputService.CalculateVerifiedSourceFps(
+    120, TimeSpan.FromSeconds(1), 0),
+    "repeated source timestamps cannot forge 120fps");
+Equal(true, MediaOutputService.CalculateVerifiedSourceFps(
+    240, TimeSpan.FromSeconds(2), 10_000_000) <= 120,
+    "measured FPS is bounded by wall clock and source timestamps");
+
+// Layout bounds are identical in the editor and the MP4 compositor, and
+// old out-of-range preferences must not be able to crop the phone shell.
+var boundedShell = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, 1.11, .49, 3.5);
+Equal(true, boundedShell.Bounds.X >= 5 &&
+    boundedShell.Bounds.Y >= 5 &&
+    boundedShell.Bounds.Right <= 1443 &&
+    boundedShell.Bounds.Bottom <= 1435,
+    "layout keeps every pixel of the shell within the 5px canvas-safe area");
+var boundedNegative = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, -9, -20, 1);
+Equal(true, boundedNegative.Bounds.X >= 5 &&
+    boundedNegative.Bounds.Y >= 5,
+    "layout clamps negative and stale center coordinates");
+var boundedNan = PhoneShellMediaComposer.FitInsideCanvas(
+    1448, 1440, .46, double.NaN, double.PositiveInfinity,
+    double.NaN);
+Equal(true, boundedNan.Bounds.X >= 5 &&
+    boundedNan.Bounds.Right <= 1443 &&
+    boundedNan.Bounds.Bottom <= 1435,
+    "layout rejects nonfinite scale and placement");
+Equal(true, boundedShell.Scale < 3.5,
+    "layout zoom is limited by the original background boundaries");
+
+var shellOutput = new MediaOutputRequest(MediaOutputKind.Recording,
+    "shell-capture.mp4", 1080, 1920, 30, 6000,
+    IncludePhoneShell: true, BackgroundImage: "custom-background.png",
+    PhoneShellImage: "iphone16promax.png");
+var shellComposition = new PhoneShellComposition(
+    "transparent-shell.png", "custom-background.png", 48, 75, 984, 1770, 1280, 1440,
+    ApertureMaskFile: "aperture-mask.png");
+var shellArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
+    composition: shellComposition);
+Equal(true, shellArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
+    shellArgs.Contains("[composited]", StringComparer.Ordinal) &&
+    shellArgs.Contains("custom-background.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("transparent-shell.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("aperture-mask.png", StringComparer.Ordinal) &&
+    shellArgs.Contains("0:a:0", StringComparer.Ordinal),
+    "recording composites custom backdrop, decoded screen, transparent phone frame and audio");
+Equal(true, shellArgs.Any(x => x.Contains(
+        "[phone_screen][3:v]overlay=0:0:shortest=1", StringComparison.Ordinal)) &&
+    shellArgs.Any(x => x.Contains("[4:v]format=gray[phone_mask]", StringComparison.Ordinal)) &&
+    shellArgs.Any(x => x.Contains("[phone_video_rgba][phone_mask]alphamerge=shortest=1:repeatlast=0[phone_video]",
+        StringComparison.Ordinal)),
+    "recording applies alpha aperture and terminates finite MP4 stream despite looping PNG matte");
+Equal(true, shellArgs.Any(arg => arg.Contains(
+        "[2:v]scale=1280:1440:force_original_aspect_ratio=increase,crop=1280:1440,setsar=1[phone_bg]", StringComparison.Ordinal)) &&
+    shellArgs.Any(arg => arg.Contains(
+        "force_original_aspect_ratio=increase,crop=984:1770",
+        StringComparison.Ordinal)) &&
+    shellArgs.All(arg => !arg.Contains("pad=984:1770",
+        StringComparison.Ordinal)),
+    "background remains uncropped while the phone video fills the complete shell opening");
+Equal(true, shellArgs.Contains("custom-background.png", StringComparer.Ordinal),
+    "recording carries the selected background as an independent FFmpeg input");
+// ProRes 4444 is an optional recording-only path: it must never silently
+// convert the transparent shell to H.264/NV12 or emit a whiteboard.
+var alphaCapabilities = MediaOutputService.CreateCapabilities("ffmpeg.exe",
+    " V..... h264_mf\n V..... prores_ks\n A..... aac ",
+    "rtmp srt", "flv mpegts mov");
+Equal(true, alphaCapabilities.HasProRes4444Encoder,
+    "FFmpeg capability probe discovers transparent ProRes 4444 encoder");
+var transparentRequest = shellOutput with
+{
+    Destination = "iPhoneMirror_alpha.mov",
+    BackgroundImage = null,
+    TransparentPhoneShellRecording = true
+};
+var transparentArgs = MediaOutputService.BuildArguments(transparentRequest,
+    alphaCapabilities, audioPipePath: null, includeAudio: false,
+    composition: shellComposition with { BackgroundFile = null });
+Equal(true, transparentArgs.Contains("prores_ks", StringComparer.Ordinal) &&
+    transparentArgs.Contains("yuva444p10le", StringComparer.Ordinal) &&
+    transparentArgs.Contains("-alpha_bits", StringComparer.Ordinal) &&
+    transparentArgs.Contains("16", StringComparer.Ordinal) &&
+    transparentArgs.Contains("-f", StringComparer.Ordinal) &&
+    transparentArgs.Contains("mov", StringComparer.Ordinal) &&
+    transparentArgs.Any(arg => arg.Contains("colorchannelmixer=aa=0",
+        StringComparison.Ordinal)) &&
+    transparentArgs.Any(arg => arg.Contains("format=yuva444p10le[composited]",
+        StringComparison.Ordinal)) &&
+    !transparentArgs.Contains("h264_mf", StringComparer.Ordinal) &&
+    !transparentArgs.Any(arg => arg.Contains("color=c=white",
+        StringComparison.Ordinal)) &&
+    transparentArgs.Last() == "iPhoneMirror_alpha.mov",
+    "alpha-shell recording produces ProRes MOV with transparent pixels, not H.264 whiteboard");
+var movQIndex = transparentArgs.ToList().IndexOf("-qscale:v");
+Equal(true, movQIndex >= 0 && movQIndex + 1 < transparentArgs.Count &&
+    transparentArgs[movQIndex + 1] == "18",
+    "balanced transparent MOV profile has a distinct ProRes quality setting");
+var compactArgs = MediaOutputService.BuildArguments(
+    transparentRequest with { TransparentMovQuality = 25 },
+    alphaCapabilities, audioPipePath: null, includeAudio: false,
+    composition: shellComposition with { BackgroundFile = null });
+Equal(true, compactArgs.Contains("25", StringComparer.Ordinal) &&
+    compactArgs.Contains("-alpha_bits", StringComparer.Ordinal),
+    "compact transparent MOV retains 16-bit alpha while raising compression");
+var originalQualityArgs = MediaOutputService.BuildArguments(
+    transparentRequest with { TransparentMovQuality = 9 },
+    alphaCapabilities, audioPipePath: null, includeAudio: false,
+    composition: shellComposition with { BackgroundFile = null });
+Equal(true, originalQualityArgs.Contains("9", StringComparer.Ordinal),
+    "high quality transparent MOV preserves the original ProRes quality");
+Equal(true, shellArgs.Contains("h264_mf", StringComparer.Ordinal) &&
+    !shellArgs.Contains("prores_ks", StringComparer.Ordinal),
+    "legacy MP4 shell output retains unchanged H.264 encoder");
+
+var rotatedShellArgs = MediaOutputService.BuildArguments(shellOutput,
+    ffmpegCapabilities, composition: shellComposition with { VideoRotationDegrees = 90 });
+Equal(true, rotatedShellArgs.Any(arg => arg.Contains(
+        "[1:v]transpose=clock,scale=984:1770", StringComparison.Ordinal)),
+    "video rotates in the same filtergraph as the phone-shell layer");
+var shellSilentArgs = MediaOutputService.BuildArguments(shellOutput, ffmpegCapabilities,
+    audioPipePath: null, includeAudio: false, composition: shellComposition);
+Equal(true, shellSilentArgs.Contains("[composited]", StringComparer.Ordinal) &&
+    shellSilentArgs.Any(x => x.Contains("[phone_screen][2:v]overlay=0:0",
+        StringComparison.Ordinal)) &&
+    shellSilentArgs.Any(x => x.Contains("[3:v]format=gray[phone_mask]",
+        StringComparison.Ordinal)) && shellSilentArgs.Contains("-an", StringComparer.Ordinal),
+    "video-only shell output maintains correct input indices without PCM audio");
+var backgroundOnlyOutput = shellOutput with
+{
+    IncludePhoneShell = false,
+    UseBackgroundCanvas = true,
+};
+var backgroundOnlyArgs = MediaOutputService.BuildArguments(backgroundOnlyOutput,
+    ffmpegCapabilities, composition: shellComposition);
+Equal(true,
+    backgroundOnlyArgs.Contains("-filter_complex", StringComparer.Ordinal) &&
+    backgroundOnlyArgs.Contains("custom-background.png", StringComparer.Ordinal) &&
+    !backgroundOnlyArgs.Contains("transparent-shell.png", StringComparer.Ordinal) &&
+    !backgroundOnlyArgs.Contains("aperture-mask.png", StringComparer.Ordinal) &&
+    backgroundOnlyArgs.Any(arg => arg.Contains(
+        "[phone_screen]format=nv12[composited]", StringComparison.Ordinal)) &&
+    backgroundOnlyArgs.All(arg => !arg.Contains(
+        "[phone_screen][3:v]overlay", StringComparison.Ordinal)),
+    "whiteboard and custom backgrounds compose without an unwanted bezel");
+
+Equal(false, recordingArguments.Contains("-filter_complex", StringComparer.Ordinal),
+    "ordinary recording keeps its original uncomposited encoder pipeline");
 
 var softwareRecordingArguments = MediaOutputService.BuildArguments(
     new MediaOutputRequest(MediaOutputKind.Recording, "software.mp4", 1280, 720,
@@ -4201,8 +5252,12 @@ var boundedVideoSchedule = MediaOutputService.CalculateVideoWritePlan(
     TimeSpan.FromSeconds(10), 30, 0);
 Equal(60L, boundedVideoSchedule.FramesToWrite,
     "video output bounds catch-up to two seconds of repeated frames");
-Equal(240L, boundedVideoSchedule.FramesWrittenBaseline,
-    "video output discards the oldest backlog before resuming current output");
+Equal(0L, boundedVideoSchedule.FramesWrittenBaseline,
+    "pre2 recording fix preserves the real number of frames written");
+Equal(240L, MediaOutputService.CalculateDueVideoFrames(
+        TimeSpan.FromSeconds(10), 30,
+        boundedVideoSchedule.FramesWrittenBaseline + boundedVideoSchedule.FramesToWrite),
+    "pre2 recording fix retains missing video duration so audio does not drift");
 Throws<ArgumentOutOfRangeException>(() =>
         MediaOutputService.CalculateDueVideoFrames(
             TimeSpan.FromSeconds(1), 0, 0),
@@ -4231,6 +5286,74 @@ Throws<InvalidDataException>(() =>
                 7, 48000, 2, 16, new byte[4]), 7),
     "non-advancing audio sequence is rejected");
 
+// Temporary cleanup is limited to the recording's own app-owned partial.
+// Successful MOV and unrelated files must always survive.
+var cleanupRoot = Path.Combine(Path.GetTempPath(),
+    $"iphone-mirror-cleanup-{Guid.NewGuid():N}");
+Directory.CreateDirectory(cleanupRoot);
+try
+{
+    var completedMov = Path.Combine(cleanupRoot, "iPhoneMirror_capture.mov");
+    var partialMov = PendingRecordingStore.CreateStagingPath(completedMov);
+    var unrelatedMov = Path.Combine(cleanupRoot, "some-other-video.mov");
+    File.WriteAllBytes(completedMov, [1, 2, 3]);
+    File.WriteAllBytes(partialMov, [4, 5]);
+    File.WriteAllBytes(unrelatedMov, [6, 7]);
+    PendingRecordingStore.CleanupOwnTemporaryArtifacts(completedMov, cleanupRoot);
+    Equal(false, File.Exists(partialMov),
+        "cleanup removes the completed recording's matching partial MOV");
+    Equal(true, File.Exists(completedMov) && File.Exists(unrelatedMov),
+        "cleanup preserves completed MOV and all unrelated user videos");
+    File.Delete(completedMov);
+    File.Delete(unrelatedMov);
+    PendingRecordingStore.CleanupOwnTemporaryArtifacts(completedMov, cleanupRoot);
+    Equal(false, Directory.Exists(cleanupRoot),
+        "empty owned pending folder is removed non-recursively");
+}
+finally
+{
+    if (Directory.Exists(cleanupRoot))
+        Directory.Delete(cleanupRoot, recursive: true);
+}
+
+// The USER-SELECTED recording directory is never deleted and never
+// swept for unrelated .mov files. A successful recording can only remove
+// same-basename partials and GUID-tagged cross-volume copy intermediates.
+var savedFolder = Path.Combine(Path.GetTempPath(),
+    $"iphone-mirror-saved-folder-{Guid.NewGuid():N}");
+Directory.CreateDirectory(savedFolder);
+try
+{
+    var finished = Path.Combine(savedFolder, "iPhoneMirror_20261016_191900.mov");
+    var sameNamePartial = Path.Combine(savedFolder,
+        "iPhoneMirror_20261016_191900.partial.mov");
+    var crossVolumeSidecar = Path.Combine(savedFolder,
+        "." + Path.GetFileName(finished) + ".partial-" + Guid.NewGuid().ToString("N"));
+    var anotherMov = Path.Combine(savedFolder, "my-valuable-video.mov");
+    var anotherAppMov = Path.Combine(savedFolder, "iPhoneMirror_old_session.mov");
+    var anotherAppPartial = Path.Combine(savedFolder,
+        "iPhoneMirror_old_session.partial.mov");
+    File.WriteAllBytes(finished, [1, 2, 3]);
+    File.WriteAllBytes(sameNamePartial, [8]);
+    File.WriteAllBytes(crossVolumeSidecar, [9]);
+    File.WriteAllBytes(anotherMov, [4, 5]);
+    File.WriteAllBytes(anotherAppMov, [6, 7]);
+    File.WriteAllBytes(anotherAppPartial, [10]);
+    Equal(2, PendingRecordingStore.CleanupSavedRecordingSidecars(finished),
+        "completed MOV removes only its two known same-session save intermediates");
+    Equal(true, File.Exists(finished) && File.Exists(anotherMov) &&
+        File.Exists(anotherAppMov) && File.Exists(anotherAppPartial) &&
+        Directory.Exists(savedFolder),
+        "completed MOV, older MOV, partials of other sessions and directory all survive");
+    Equal(0, PendingRecordingStore.CleanupSavedRecordingSidecars(finished),
+        "destination sidecar cleanup is idempotent");
+}
+finally
+{
+    if (Directory.Exists(savedFolder))
+        Directory.Delete(savedFolder, recursive: true);
+}
+
 var pendingDirectory = Path.Combine(Path.GetTempPath(),
     $"iphone-mirror-pending-test-{Guid.NewGuid():N}");
 Directory.CreateDirectory(pendingDirectory);
@@ -4251,6 +5374,22 @@ try
     File.SetLastWriteTimeUtc(partialPending, DateTime.UtcNow.AddMinutes(1));
     Equal(newerPending, PendingRecordingStore.FindLatest(pendingDirectory),
         "restart recovery ignores a newer non-empty partial recording");
+    var movPending = Path.Combine(pendingDirectory, "transparent.mov");
+    var movStaging = PendingRecordingStore.CreateStagingPath(movPending);
+    Equal(true, movStaging.EndsWith(".partial.mov", StringComparison.OrdinalIgnoreCase),
+        "transparent MOV uses its own safe staging extension");
+    File.WriteAllBytes(movPending, [9]);
+    File.WriteAllBytes(movStaging, [8]);
+    File.SetLastWriteTimeUtc(movPending, DateTime.UtcNow.AddSeconds(3));
+    File.SetLastWriteTimeUtc(movStaging, DateTime.UtcNow.AddMinutes(1));
+    Equal(movPending, PendingRecordingStore.FindLatest(pendingDirectory),
+        "restart recovery recognizes MOV and never accepts incomplete partial MOV");
+    Equal(true, PendingRecordingStore.CreatePath(true).EndsWith(".mov",
+        StringComparison.OrdinalIgnoreCase),
+        "transparent recording creates a MOV pending file");
+    Equal(true, PendingRecordingStore.CreatePath().EndsWith(".mp4",
+        StringComparison.OrdinalIgnoreCase),
+        "legacy recording still creates an MP4 pending file");
 }
 finally
 {
@@ -4319,6 +5458,12 @@ Equal(24, nv12Payload.Length,
 Equal(true, nv12Payload.Span.SequenceEqual(nv12Pixels),
     "NV12 output is forwarded without a managed color conversion or copy");
 var frameLatch = new MediaOutputService.FrameLatch();
+frameLatch.NoteFailure("native NV12 error");
+Equal("native NV12 error", frameLatch.LastFailure,
+    "frame reader keeps a reason for startup failure");
+frameLatch.Publish(nv12Payload);
+Equal(true, frameLatch.LastFailure is null,
+    "a successfully published frame clears previous read failures");
 frameLatch.Publish(nv12Payload);
 var writingFrame = frameLatch.Get();
 nv12Pixels[0] = 99;
@@ -4326,6 +5471,19 @@ Equal((byte)1, writingFrame.Span[0], "published frame owns its bytes before nati
 frameLatch.Publish(nv12Payload);
 Equal((byte)1, writingFrame.Span[0], "an in-flight pipe write retains the preceding snapshot");
 Equal((byte)99, frameLatch.Get().Span[0], "the next snapshot receives the new frame");
+var verifiedLatch = new MediaOutputService.FrameLatch();
+verifiedLatch.Publish(nv12Payload, 1_000_000);
+verifiedLatch.Publish(nv12Payload, 1_000_000);
+verifiedLatch.Publish(nv12Payload, 1_083_333);
+verifiedLatch.Publish(nv12Payload, 1_050_000);
+verifiedLatch.Publish(nv12Payload, 1_166_666);
+var verifiedMetrics = verifiedLatch.SourceMetrics;
+Equal(5L, verifiedMetrics.Reads,
+    "source diagnostics include all frame read samples");
+Equal(3L, verifiedMetrics.Distinct,
+    "source diagnostics count unique increasing timestamps, not repeated frames");
+Equal(1_166_666L, verifiedMetrics.LastTimestamp100Ns,
+    "source diagnostics retain the last increasing source timestamp");
 Throws<InvalidDataException>(() => MediaOutputService.GetNv12FramePayload(
         new IPhoneMirror.App.Interop.Nv12VideoFrame(4, 4, 8, 2, nv12Pixels),
         4, 4),
@@ -4491,6 +5649,267 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
         try { File.Delete(audioRecordingPath); } catch { }
     }
 
+    // Real FFmpeg regression: the shell/background filter must encode a
+    // complete MP4 rather than merely passing argument-string assertions.
+    var shellTestRoot = Path.Combine(Path.GetTempPath(),
+        $"iphone-shell-smoke-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(shellTestRoot);
+    var shellTestBackground = Path.Combine(shellTestRoot, "background.png");
+    var shellTestOverlay = Path.Combine(shellTestRoot, "overlay.png");
+    var shellTestMask = Path.Combine(shellTestRoot, "aperture-mask.png");
+    var shellTestOutput = Path.Combine(shellTestRoot, "capture.mp4");
+    // Distinctive colours expose errors that a black-on-black smoke test
+    // cannot: background=blue, shell rim=red, phone video=white.
+    var backgroundPixels = new byte[320 * 240 * 4];
+    var shellPixels = new byte[320 * 240 * 4];
+    for (var y = 0; y < 240; y++)
+    for (var x = 0; x < 320; x++)
+    {
+        var index = (y * 320 + x) * 4;
+        backgroundPixels[index] = 255;
+        backgroundPixels[index + 3] = 255;
+        if (x < 4 || x >= 316 || y < 4 || y >= 236)
+        {
+            shellPixels[index + 2] = 255;
+            shellPixels[index + 3] = 255;
+        }
+    }
+    static void SaveTestBitmap(string path, byte[] pixels)
+    {
+        var bitmap = BitmapSource.Create(320, 240, 96, 96,
+            PixelFormats.Bgra32, null, pixels, 320 * 4);
+        bitmap.Freeze();
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var output = File.Create(path);
+        encoder.Save(output);
+    }
+    SaveTestBitmap(shellTestBackground, backgroundPixels);
+    SaveTestBitmap(shellTestOverlay, shellPixels);
+    // This mask is in the video's local 144x208 coordinates. Rounded
+    // transparent corners must reveal the blue background, not a white
+    // rectangular video layer extending beyond the phone opening.
+    var mattePixels = new byte[144 * 208 * 4];
+    for (var y = 0; y < 208; y++)
+    for (var x = 0; x < 144; x++)
+    {
+        var ix = (y * 144 + x) * 4;
+        var cornerX = x < 28 ? 28 - x : x >= 116 ? x - 115 : 0;
+        var cornerY = y < 28 ? 28 - y : y >= 180 ? y - 179 : 0;
+        var inside = cornerX * cornerX + cornerY * cornerY <= 28 * 28;
+        var shade = inside ? (byte)255 : (byte)0;
+        mattePixels[ix] = mattePixels[ix + 1] = mattePixels[ix + 2] = shade;
+        mattePixels[ix + 3] = 255;
+    }
+    var matteBitmap = BitmapSource.Create(144, 208, 96, 96,
+        PixelFormats.Bgra32, null, mattePixels, 144 * 4);
+    var matteEncoder = new PngBitmapEncoder();
+    matteEncoder.Frames.Add(BitmapFrame.Create(matteBitmap));
+    using (var matteOutput = File.Create(shellTestMask)) matteEncoder.Save(matteOutput);
+    long shellFrameTime = 0;
+    string? shellFailure = null;
+    await using (var shellRecorder = new MediaOutputService(
+        (_, w, h) =>
+        {
+            var ySize = checked((int)(w * h));
+            var pixels = new byte[checked(ySize + ySize / 2)];
+            Array.Fill(pixels, (byte)235, 0, ySize);
+            Array.Fill(pixels, (byte)128, ySize, pixels.Length - ySize);
+            return new Nv12VideoFrame(w, h, w,
+                Interlocked.Add(ref shellFrameTime, 1_000_000), pixels);
+        },
+        (_, _) => null,
+        (_, _, bg, _) => new PhoneShellComposition(
+            shellTestOverlay, bg, 24, 16, 144, 208, 320, 240,
+            ApertureMaskFile: shellTestMask)))
+    {
+        shellRecorder.StatusChanged += (message, failed) =>
+        {
+            if (failed) shellFailure = message;
+        };
+        await shellRecorder.StartAsync(1,
+            new MediaOutputRequest(MediaOutputKind.Recording,
+                shellTestOutput, 160, 160, 10, 500,
+                IncludePhoneShell: true, BackgroundImage: shellTestBackground),
+            installedFfmpegCapabilities);
+        await Task.Delay(850);
+        await shellRecorder.StopAsync();
+        if (shellFailure is not null)
+            throw new InvalidOperationException("composited recording failed: " +
+                shellFailure);
+        Equal(true, File.Exists(shellTestOutput),
+            "FFmpeg shell/background composite completes recording");
+        var shellMp4 = File.ReadAllBytes(shellTestOutput);
+        Equal(true, shellMp4.AsSpan().IndexOf("ftyp"u8) >= 0 &&
+            shellMp4.AsSpan().IndexOf("moov"u8) >= 0,
+            "composited recording is a finalized MP4");
+        // Decode one actual MP4 frame. A transparent hole must show the
+        // phone video, while pixels outside the bezel retain the background.
+        var decodedFile = Path.Combine(shellTestRoot, "decoded.rgb");
+        var decoderStart = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = installedFfmpegCapabilities.FfmpegPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var arg in new[] {
+            "-hide_banner", "-loglevel", "error",
+            "-i", shellTestOutput, "-frames:v", "1",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-y", decodedFile })
+            decoderStart.ArgumentList.Add(arg);
+        using (var decoder = System.Diagnostics.Process.Start(decoderStart) ??
+            throw new InvalidOperationException("Unable to launch MP4 frame decoder"))
+        {
+            await decoder.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            Equal(0, decoder.ExitCode, "FFmpeg decodes the MP4 composition");
+        }
+        var decoded = File.ReadAllBytes(decodedFile);
+        Equal(320 * 240 * 3, decoded.Length,
+            "MP4 composition retains the original background dimensions");
+        static (int R, int G, int B) RgbAt(byte[] frame, int x, int y)
+        {
+            var i = (y * 320 + x) * 3;
+            return (frame[i], frame[i + 1], frame[i + 2]);
+        }
+        var screenColor = RgbAt(decoded, 96, 120);
+        var backgroundColor = RgbAt(decoded, 240, 120);
+        var frameColor = RgbAt(decoded, 2, 120);
+        var maskedCornerColor = RgbAt(decoded, 26, 18);
+        Equal(true, maskedCornerColor.B > maskedCornerColor.R + 75 &&
+            maskedCornerColor.B > maskedCornerColor.G + 75,
+            "real MP4 alpha mask exposes the background outside curved screen corners");
+        Equal(true, screenColor.R > 165 && screenColor.G > 165 &&
+            screenColor.B > 165,
+            "recorded phone screen is not obscured by the PNG bezel");
+        Equal(true, backgroundColor.B > backgroundColor.R + 75 &&
+            backgroundColor.B > backgroundColor.G + 75,
+            "full background retains its original colour outside the phone");
+        Equal(true, frameColor.R > frameColor.G + 75 &&
+            frameColor.R > frameColor.B + 75,
+            "recorded transparent phone shell retains the visible bezel");
+
+    }
+
+    // The old FFmpeg alphamerge default repeats the infinite-loop shell
+    // matte forever after video stdin EOF. A regular 0.8s AAC test can miss
+    // this. Force VIDEO-ONLY composition and require MP4 finalization without
+    // using the audio track as a hidden end-of-stream guard.
+    SaveTestBitmap(shellTestOverlay, shellPixels);
+    var videoOnlyMaskEncoder = new PngBitmapEncoder();
+    videoOnlyMaskEncoder.Frames.Add(BitmapFrame.Create(matteBitmap));
+    using (var restoredVideoOnlyMask = File.Create(shellTestMask))
+        videoOnlyMaskEncoder.Save(restoredVideoOnlyMask);
+    var videoOnlyShellRecording = Path.Combine(shellTestRoot,
+        "video-only-shell-eof.mp4");
+    string? videoOnlyShellError = null;
+    long videoOnlyShellPts = 0;
+    await using (var videoOnlyShellService = new MediaOutputService(
+        (_, w, h) =>
+        {
+            var pixels = new byte[checked((int)((ulong)w * h * 3 / 2))];
+            return new Nv12VideoFrame(w, h, w,
+                Interlocked.Add(ref videoOnlyShellPts, 1_000_000), pixels);
+        }, (_, _) => null,
+        (_, _, background, _) => new PhoneShellComposition(
+            shellTestOverlay, background, 24, 16, 144, 208, 320, 240,
+            ApertureMaskFile: shellTestMask)))
+    {
+        videoOnlyShellService.StatusChanged += (message, failed) =>
+        {
+            if (failed) videoOnlyShellError = message;
+        };
+        await videoOnlyShellService.StartAsync(1,
+            new MediaOutputRequest(MediaOutputKind.Recording,
+                videoOnlyShellRecording, 160, 160, 10, 500,
+                IncludePhoneShell: true, BackgroundImage: shellTestBackground),
+            installedFfmpegCapabilities with { HasAacEncoder = false });
+        await Task.Delay(850);
+        await videoOnlyShellService.StopAsync().WaitAsync(TimeSpan.FromSeconds(25));
+        Equal<string?>(null, videoOnlyShellError,
+            "infinite-loop aperture mask must not stall video-only MP4 finalization");
+        var videoOnlyBytes = File.ReadAllBytes(videoOnlyShellRecording);
+        Equal(true, videoOnlyBytes.AsSpan().IndexOf("ftyp"u8) >= 0 &&
+            videoOnlyBytes.AsSpan().IndexOf("moov"u8) >= 0 &&
+            videoOnlyBytes.AsSpan().IndexOf("vide"u8) >= 0,
+            "video-only phone shell finalizes a usable indexed MP4");
+    }
+
+    // Reproduce the user's real 1080x1920, 60fps, 6000kbps capture
+    // including AAC, transparent shell, aperture mask and background. A
+    // nominal-FPS/unit-test-only check cannot detect FFmpeg EOF/mux errors.
+    // The earlier shell-recorder run correctly owns and deletes its temporary
+    // shell/mask during Cleanup(). Generate fresh overlay inputs for this
+    // independent 1080p60 recording; do not rely on deleted test resources.
+    SaveTestBitmap(shellTestOverlay, shellPixels);
+    var fullHdMaskEncoder = new PngBitmapEncoder();
+    fullHdMaskEncoder.Frames.Add(BitmapFrame.Create(matteBitmap));
+    using (var restoredMask = File.Create(shellTestMask))
+        fullHdMaskEncoder.Save(restoredMask);
+    var fullHdCapture = Path.Combine(shellTestRoot, "fullhd-60fps-aac.mp4");
+    var fullHdPcm = new byte[3840];
+    var fullHdPixels = new byte[1080 * 1920 * 3 / 2];
+    Array.Fill(fullHdPixels, (byte)16, 0, 1080 * 1920);
+    Array.Fill(fullHdPixels, (byte)128, 1080 * 1920,
+        fullHdPixels.Length - 1080 * 1920);
+    long fullHdPts = 0;
+    long fullHdAudioNext = 0;
+    long fullHdAudioSequence = 0;
+    string? fullHdFailure = null;
+    await using (var fullHdRecorder = new MediaOutputService(
+        (_, w, h) => new Nv12VideoFrame(w, h, w,
+            Interlocked.Add(ref fullHdPts, 166_667), fullHdPixels),
+        (_, _) =>
+        {
+            var now = Environment.TickCount64;
+            if (now < Interlocked.Read(ref fullHdAudioNext)) return null;
+            Interlocked.Exchange(ref fullHdAudioNext, now + 20);
+            return new AudioPacket(
+                (ulong)Interlocked.Increment(ref fullHdAudioSequence),
+                48000, 2, 16, fullHdPcm);
+        },
+        (_, _, bg, _) => new PhoneShellComposition(
+            shellTestOverlay, bg, 24, 16, 144, 208, 1080, 1920,
+            ApertureMaskFile: shellTestMask)))
+    {
+        fullHdRecorder.StatusChanged += (message, failed) =>
+        {
+            if (failed) fullHdFailure = message;
+        };
+        using var startDeadline = new CancellationTokenSource(
+            TimeSpan.FromSeconds(20));
+        await fullHdRecorder.StartAsync(1,
+            new MediaOutputRequest(MediaOutputKind.Recording,
+                fullHdCapture, 1080, 1920, 60, 6000,
+                IncludePhoneShell: true, BackgroundImage: shellTestBackground),
+            installedFfmpegCapabilities, startDeadline.Token);
+        await Task.Delay(1100);
+        await fullHdRecorder.StopAsync();
+        if (fullHdFailure is not null)
+            throw new InvalidOperationException(
+                "1080p60 shell/AAC recording failed: " + fullHdFailure);
+        var finalMp4 = File.ReadAllBytes(fullHdCapture);
+        Equal(true, finalMp4.AsSpan().IndexOf("ftyp"u8) >= 0 &&
+            finalMp4.AsSpan().IndexOf("moov"u8) >= 0 &&
+            finalMp4.AsSpan().IndexOf("soun"u8) >= 0,
+            "1080x1920 60fps 6000kbps shell/background/AAC recording finalizes real MP4");
+        var decodeStart = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = installedFfmpegCapabilities.FfmpegPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var item in new[] { "-hide_banner", "-v", "error",
+            "-i", fullHdCapture, "-frames:v", "1", "-f", "null", "-" })
+            decodeStart.ArgumentList.Add(item);
+        using var decodeProcess = System.Diagnostics.Process.Start(decodeStart) ??
+            throw new InvalidOperationException(
+                "Unable to start 1080p60 MP4 decode validation");
+        await decodeProcess.WaitForExitAsync().WaitAsync(
+            TimeSpan.FromSeconds(45));
+        Equal(0, decodeProcess.ExitCode,
+            "1080p60 AAC MP4 video can actually be decoded after finalization");
+    }
+
     var interruptedAudioPath = Path.Combine(Path.GetTempPath(),
         $"iphone-mirror-interrupted-audio-{Guid.NewGuid():N}.mp4");
     await using var interruptedAudioOutput = new MediaOutputService(
@@ -4498,10 +5917,22 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
             width, height, width,
             1_000_000,
             new byte[checked((int)((ulong)width * height * 3U / 2U))]),
-        (_, afterSequence) => afterSequence == 0
-            ? new IPhoneMirror.App.Interop.AudioPacket(
-                1, 48000, 2, 16, new byte[3840])
-            : null);
+        (_, afterSequence) => afterSequence switch
+        {
+            0 => new IPhoneMirror.App.Interop.AudioPacket(
+                1, 48000, 2, 16, new byte[3840]),
+            // Out-of-spec PCM from a briefly interrupted transport should
+            // be skipped without closing an otherwise healthy recording.
+            1 => new IPhoneMirror.App.Interop.AudioPacket(
+                2, 1000, 2, 16, new byte[3840]),
+            2 => new IPhoneMirror.App.Interop.AudioPacket(
+                3, 48000, 2, 16, new byte[3840]),
+            // Stale replay is deliberately never consumed; it must not
+            // prevent the wall-clock-aligned silence compensation.
+            3 => new IPhoneMirror.App.Interop.AudioPacket(
+                3, 48000, 2, 16, new byte[3840]),
+            _ => null,
+        });
     try
     {
         using var startupTimeout =
@@ -4512,7 +5943,7 @@ if (installedFfmpegCapabilities.Supports(MediaOutputKind.Recording))
             installedFfmpegCapabilities, startupTimeout.Token);
         await Task.Delay(TimeSpan.FromSeconds(5.5));
         Equal(true, interruptedAudioOutput.IsRunning,
-            "a PCM interruption and static frame longer than five seconds do not stop video output");
+            "malformed, repeated and interrupted PCM do not stop video recording");
         await interruptedAudioOutput.StopAsync();
         var interruptedMp4 = File.ReadAllBytes(interruptedAudioPath);
         Equal(true, interruptedMp4.AsSpan().IndexOf("moov"u8) >= 0,
@@ -4854,7 +6285,17 @@ var concurrentSession = new DeviceCaptureState
     Udid = "concurrent-stop-device",
     Handle = new NativeSessionHandle(77, ownsHandle: false),
 };
+sessionManager.Set(concurrentSession);
+Equal(true, ReferenceEquals(concurrentSession.Handle,
+    sessionManager.FindLiveHandle(77)),
+    "media readers resolve a live SafeHandle under session-manager synchronization");
+Equal<NativeSessionHandle?>(null, sessionManager.FindLiveHandle(0),
+    "media readers reject an invalid raw session identity");
+Equal<NativeSessionHandle?>(null, sessionManager.FindLiveHandle(78),
+    "media readers do not accidentally bind an unrelated wireless device");
 var firstTeardown = sessionManager.StopAndDestroyAsync(concurrentSession);
+Equal<NativeSessionHandle?>(null, sessionManager.FindLiveHandle(77),
+    "media readers cannot resurrect an immediately revoked AirPlay session");
 await teardownEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 var secondTeardown = sessionManager.StopAndDestroyAsync(concurrentSession);
 Equal(true, ReferenceEquals(firstTeardown, secondTeardown),
@@ -5140,6 +6581,44 @@ Equal("UDID-A", reloadedBindings.FindById(profileA.Id)!.WiredIdentity!.Udid,
 if (Directory.Exists(deviceBindingTestRoot))
     Directory.Delete(deviceBindingTestRoot, recursive: true);
 
+// A recently disconnected iPhone remains a *non-active* AirPlay card.
+var sourceInfo = new NativeDeviceInfo
+{
+    Udid = "airplay://test-device",
+    Name = "Test iPhone",
+    ProductType = "iPhone17,2",
+    OsVersion = "27.2",
+    ConnectionType = "AirPlay",
+    Status = string.Empty,
+    State = ConnectionState.Ready,
+};
+var wirelessCard = DeviceViewModel.FromNative(sourceInfo);
+Equal(false, wirelessCard.IsWirelessOffline,
+    "discovered AirPlay devices are not offline placeholders");
+var offlineCard = wirelessCard.AsWirelessOffline();
+Equal(true, offlineCard.IsWirelessOffline,
+    "offline AirPlay placeholder is distinct from live discovery");
+Equal(false, offlineCard.Ready,
+    "offline AirPlay placeholder cannot be marked ready");
+Equal(ConnectionState.Disconnected, offlineCard.State,
+    "offline AirPlay placeholder exposes disconnected state");
+Equal(true, wirelessCard.UpdateFrom(offlineCard),
+    "offline transition propagates to the existing UI card");
+Equal(true, wirelessCard.IsWirelessOffline,
+    "existing AirPlay card transitions to offline without losing its identity");
+Equal(true, wirelessCard.UpdateFrom(DeviceViewModel.FromNative(sourceInfo)),
+    "reconnected AirPlay device returns to online state");
+Equal(false, wirelessCard.IsWirelessOffline,
+    "reconnected AirPlay card is active again");
+Equal("Test iPhone", wirelessCard.Name,
+    "offline reconnect retains the original device name");
+var wiredCard = DeviceViewModel.FromNative(new NativeDeviceInfo
+{
+    Udid = "usb-device", Name = "Wired iPhone", State = ConnectionState.Ready,
+});
+Throws<InvalidOperationException>(() => wiredCard.AsWirelessOffline(),
+    "wired phones cannot be converted to AirPlay placeholders");
+
 var stallTracker = new WirelessStallRecoveryTracker();
 var stallStart = DateTimeOffset.UtcNow;
 static NativeCaptureStatus StreamingStatus(uint width = 1920, uint height = 1080,
@@ -5163,42 +6642,89 @@ Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, telemetryOnlyChange, 1_010,
         stallStart.AddSeconds(1.5)),
     "telemetry-only changes do not mask a frozen wireless video stream");
-Equal(WirelessStallRecoveryAction.RefreshPreview,
-    stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
-        stallStart.AddMilliseconds(2900)),
-    "frozen wireless telemetry first requests a preview refresh");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
-        stallStart.AddSeconds(6)),
-    "wireless recovery cooldown prevents an immediate restart");
-Equal(WirelessStallRecoveryAction.RestartSession,
+        stallStart.AddMilliseconds(2900)),
+    "unchanged AirPlay screen does not force an early refresh");
+Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
         stallStart.AddSeconds(8)),
-    "continued freeze after cooldown requests a session restart");
+    "an idle connected screen must not restart after five seconds");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
+        stallStart.AddSeconds(14)),
+    "prolonged unchanged video permits one non-destructive redraw");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(videoFrames: 101), 1_010,
         stallStart.AddSeconds(20)),
-    "wireless recovery is capped after the restart attempt");
+    "an established AirPlay stream never restarts solely due to no new frames");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(videoFrames: 1), 2_000,
         stallStart.AddSeconds(20.5)),
     "a replacement wireless session starts a fresh recovery window");
-Equal(WirelessStallRecoveryAction.RefreshPreview,
+Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(videoFrames: 1), 2_000,
         stallStart.AddSeconds(23)),
-    "a frozen replacement session can request recovery independently");
+    "fresh sessions also tolerate still pictures");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(1080, 1920, 1),
         2_000, stallStart.AddSeconds(24)),
     "orientation size changes begin a fresh recovery window");
-Equal(WirelessStallRecoveryAction.RefreshPreview,
+Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(78, StreamingStatus(1080, 1920, 1),
         2_000, stallStart.AddSeconds(26)),
-    "a second frozen orientation can request one new refresh");
+    "orientation alone does not imply a decoder stall");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    stallTracker.Observe(78, StreamingStatus(1080, 1920, 1),
+        2_000, stallStart.AddSeconds(38)),
+    "a long still orientation triggers one cached-frame redraw");
+Equal(WirelessStallRecoveryAction.None,
+    stallTracker.Observe(78, StreamingStatus(1080, 1920, 2),
+        2_100, stallStart.AddSeconds(39)),
+    "a new frame resets the soft-refresh allowance");
 Equal(WirelessStallRecoveryAction.None,
     stallTracker.Observe(77, StreamingStatus(state: CaptureState.Idle),
-        1_010, stallStart.AddSeconds(27)),
+        1_010, stallStart.AddSeconds(40)),
     "stopped wireless sessions never trigger recovery");
+
+// Streaming with no decoded frames used to reset the watchdog indefinitely,
+// leaving a perfectly black independent window with no recovery path.
+var noFrameTracker = new WirelessStallRecoveryTracker();
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0, stallStart),
+    "receiver starts waiting for the first decoded frame");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(3)),
+    "first-frame recovery avoids premature retries");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(5)),
+    "streaming with zero frames refreshes the black preview");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddSeconds(11)),
+    "no first video frame never forces a potentially infinite restart loop");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(2)),
+    "prolonged initial black preview remains non-destructive");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(100, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(3)),
+    "replacement session begins a new first-frame wait");
+Equal(WirelessStallRecoveryAction.RefreshPreview,
+    noFrameTracker.Observe(100, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(3).AddSeconds(5)),
+    "replacement without frames also gets only a soft preview refresh");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(100, StreamingStatus(0, 0, 0), 0,
+        stallStart.AddMinutes(4)),
+    "even across new handles the watchdog cannot restart a session");
+Equal(WirelessStallRecoveryAction.None,
+    noFrameTracker.Observe(99, StreamingStatus(498, 1080, 1), 123,
+        stallStart.AddSeconds(12)),
+    "first decoded frame clears recovery attempts");
 
 Console.WriteLine("App logic tests passed.");
 if (Directory.Exists(diagnosticTestRoot))

@@ -4,7 +4,7 @@
         xmlns:animations="clr-namespace:IPhoneMirror.UI.Animations"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="{DynamicResource MediaOutputTitle}"
-        Width="560" Height="660" MinWidth="500" MinHeight="560"
+        Width="590" Height="780" MinWidth="520" MinHeight="610"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica" WindowCornerPreference="Round"
@@ -38,6 +38,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="16"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -49,6 +50,9 @@
                            Style="{StaticResource SubWindowTitle}"/>
                 <TextBlock Text="{Binding SelectedName}"
                            Style="{StaticResource SubWindowSubtitle}"/>
+                <TextBlock x:Name="Pre6BuildIdentityText"
+                           Visibility="Collapsed" FontSize="10" Margin="0,4,0,0"
+                           Foreground="{DynamicResource MutedTextBrush}"/>
                 <TextBlock Text="{Binding MediaOutputCapabilitiesText}" FontSize="10"
                            Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,5,0,0"/>
             </StackPanel>
@@ -57,13 +61,72 @@
             </Button>
         </Grid>
 
-        <TabControl Grid.Row="2" Style="{StaticResource SubWindowTabControl}">
+        <Border Grid.Row="2" Style="{StaticResource SectionCard}" Margin="0,0,0,8" Padding="12">
+            <StackPanel>
+                <CheckBox x:Name="IncludePhoneShellBox"
+                          Content="{DynamicResource MediaOutputIncludeShell}"
+                          Checked="OnShellModeChanged" Unchecked="OnShellModeChanged"/>
+                <TextBlock Text="{DynamicResource MediaOutputShellHint}" Margin="0,5,0,3"
+                           TextWrapping="Wrap" FontSize="10"
+                           Foreground="{DynamicResource MutedTextBrush}"/>
+                <Grid x:Name="ShellOptionsPanel">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="BackgroundImageBox" Grid.Row="0" Grid.Column="0"
+                             Style="{StaticResource RoundedTextBox}" Height="34" IsReadOnly="True"
+                             ToolTip="默认白板无需选择文件；选择图片后使用自定义背景板。"/>
+                    <Button x:Name="DefaultWhiteBackgroundButton" Grid.Row="0" Grid.Column="2" Style="{StaticResource ToolButton}"
+                            Content="默认白板" Margin="0,0,8,0"
+                            ToolTip="启用纯白色 9:16 画布（1080×1920），无需选择背景图片"
+                            Click="OnUseDefaultWhiteBackgroundClick"/>
+                    <Button x:Name="ChooseBackgroundButton" Grid.Row="0" Grid.Column="3" Style="{StaticResource ToolButton}"
+                            Content="{DynamicResource MediaOutputChooseBackground}"
+                            Click="OnChooseBackgroundClick"/>
+                    <CheckBox x:Name="TransparentShellRecordingBox" Grid.Row="1"
+                              Grid.Column="0" Grid.ColumnSpan="4" Margin="0,10,0,0"
+                              Content="透明带壳录制（MOV · ProRes 4444）"
+                              ToolTip="仅对本地录制生效：手机壳以外保留真正 Alpha 透明通道。推流仍使用普通背景。"
+                              Checked="OnTransparentShellChanged"
+                              Unchecked="OnTransparentShellChanged"/>
+                    <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="4"
+                                Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Text="透明 MOV 画质 / 体积" VerticalAlignment="Center"
+                                   Margin="0,0,10,0"/>
+                        <ComboBox x:Name="TransparentMovQualityBox" Width="230"
+                                  SelectedIndex="1" SelectionChanged="OnTransparentMovQualityChanged"
+                                  ToolTip="只影响透明 ProRes 4444 MOV：文件大小取决于画面复杂度，非固定码率。">
+                            <ComboBoxItem Content="高画质 · 较大文件" Tag="9"/>
+                            <ComboBoxItem Content="均衡 · 推荐" Tag="18"/>
+                            <ComboBoxItem Content="小体积 · 更高压缩" Tag="25"/>
+                        </ComboBox>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <TabControl Grid.Row="3" Style="{StaticResource SubWindowTabControl}">
             <TabItem Header="{DynamicResource RecordTab}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                     <Border Style="{StaticResource SectionCard}">
                         <StackPanel>
                             <TextBlock Text="{DynamicResource RecordDescription}" TextWrapping="Wrap"
                                        Foreground="{DynamicResource MutedTextBrush}" FontSize="12"/>
+                            <TextBlock Text="录制分辨率预设" Style="{StaticResource DetailLabel}" Margin="0,12,0,0"/>
+                            <ComboBox x:Name="RecordResolutionPresetBox" SelectedIndex="0"
+                                      SelectionChanged="OnRecordResolutionPresetChanged">
+                                <ComboBoxItem Content="自定义" Tag="custom"/>
+                                <ComboBoxItem Content="720p (9:16)" Tag="720x1280"/>
+                                <ComboBoxItem Content="1080p (9:16)" Tag="1080x1920"/>
+                                <ComboBoxItem Content="1440p (9:16)" Tag="1440x2560"/>
+                                <ComboBoxItem Content="4K (9:16)" Tag="2160x3840"/>
+                            </ComboBox>
                             <Grid Margin="0,12,0,0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -87,20 +150,63 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
                                     <TextBlock Text="{DynamicResource OutputFps}" Style="{StaticResource DetailLabel}"/>
-                                    <TextBox x:Name="RecordFpsBox" Style="{StaticResource RoundedTextBox}" Height="36"/>
+                                    <ComboBox x:Name="RecordFpsBox" Height="36" IsEditable="True"
+                                              IsTextSearchEnabled="False"
+                                              ToolTip="选择预设帧率，或直接输入 10–120 的整数"
+                                              SelectionChanged="OnRecordFpsPresetChanged">
+                                        <ComboBoxItem Content="30" Tag="30"/>
+                                        <ComboBoxItem Content="60" Tag="60"/>
+                                        <ComboBoxItem Content="75" Tag="75"/>
+                                        <ComboBoxItem Content="90" Tag="90"/>
+                                        <ComboBoxItem Content="120" Tag="120"/>
+                                    </ComboBox>
                                 </StackPanel>
                                 <StackPanel Grid.Column="2">
                                     <TextBlock Text="{DynamicResource OutputBitrate}" Style="{StaticResource DetailLabel}"/>
-                                    <TextBox x:Name="RecordBitrateBox" Style="{StaticResource RoundedTextBox}" Height="36"/>
+                                    <ComboBox x:Name="RecordBitrateBox" Height="36" IsEditable="True"
+                                              IsTextSearchEnabled="False"
+                                              ToolTip="选择推荐码率，或直接输入 500–150000 kbps"
+                                              PreviewTextInput="OnRecordBitrateEdited"
+                                              PreviewKeyDown="OnRecordBitrateKeyDown"
+                                              SelectionChanged="OnRecordBitratePresetChanged">
+                                        <ComboBoxItem Content="推荐（自动）" Tag="recommend"/>
+                                        <ComboBoxItem Content="4000" Tag="4000"/>
+                                        <ComboBoxItem Content="6000" Tag="6000"/>
+                                        <ComboBoxItem Content="12000" Tag="12000"/>
+                                        <ComboBoxItem Content="24000" Tag="24000"/>
+                                        <ComboBoxItem Content="50000" Tag="50000"/>
+                                        <ComboBoxItem Content="68000" Tag="68000"/>
+                                    </ComboBox>
                                 </StackPanel>
                             </Grid>
-                            <Button x:Name="StartRecordingButton"
-                                    Content="{DynamicResource StartRecording}" Click="OnStartRecordingClick"
-                                    IsEnabled="False"
-                                    Style="{StaticResource PrimaryButton}" Margin="0,18,0,0"/>
+                            <TextBlock Text="默认视频保存位置" Style="{StaticResource DetailLabel}" Margin="0,12,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="RecordingDirectoryBox" Grid.Column="0"
+                                         Style="{StaticResource RoundedTextBox}" Height="36"
+                                         ToolTip="完成录制后自动保存到这个文件夹"/>
+                                <Button Grid.Column="2" Content="选择目录…" Style="{StaticResource ToolButton}"
+                                        Click="OnChooseRecordingDirectoryClick"/>
+                            </Grid>
+                            <Button x:Name="EditRecordingLayoutButton" Content="编辑录制布局（拖动 / 缩放手机）"
+                                    Style="{StaticResource ToolButton}" Margin="0,10,0,0"
+                                    Click="OnEditRecordingLayoutClick"/>
                         </StackPanel>
                     </Border>
-                </ScrollViewer>
+                    </ScrollViewer>
+                    <!-- Keep the primary action visible without scrolling, including high-DPI windows. -->
+                    <Border Grid.Row="1" Background="{DynamicResource AppBackgroundBrush}"
+                            Padding="12,8,12,10">
+                        <Button x:Name="StartRecordingButton"
+                                Content="{DynamicResource StartRecording}" Click="OnStartRecordingClick"
+                                IsEnabled="False" MinHeight="40"
+                                Style="{StaticResource PrimaryButton}"/>
+                    </Border>
+                </Grid>
             </TabItem>
 
             <TabItem Header="{DynamicResource StreamTab}">
@@ -219,20 +325,26 @@
             </TabItem>
         </TabControl>
 
-        <Grid Grid.Row="3" Margin="0,14,0,0">
+        <Grid Grid.Row="4" Margin="0,14,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock x:Name="FeedbackText" Text="{Binding MediaOutputStatus}"
-                       VerticalAlignment="Center" TextWrapping="Wrap"
-                       Foreground="{DynamicResource MutedTextBrush}" FontSize="11"/>
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock x:Name="FeedbackText" Text="{Binding MediaOutputStatus}"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource MutedTextBrush}" FontSize="11"/>
+                <TextBlock Text="{Binding MediaOutputRecordingMetrics}" TextWrapping="Wrap"
+                           ToolTip="源更新率和写入帧槽率并不等于显示器的实际刷新率；重复帧不计为新源帧。"
+                           Foreground="{DynamicResource MutedTextBrush}" FontSize="10"
+                           Margin="0,4,0,0"/>
+            </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal">
                 <Button Content="{DynamicResource DiscardRecording}"
                         Click="OnDiscardClick" Style="{StaticResource ToolButton}"
                         MinWidth="110" Margin="0,0,8,0"/>
-                <Button Content="{DynamicResource StopMediaOutput}"
+                <Button x:Name="StopMediaOutputButton" Content="完成录制"
                         Click="OnStopClick" Style="{StaticResource ToolButton}"
                         IsEnabled="{Binding CanStopMediaOutput}" MinWidth="110"/>
             </StackPanel>

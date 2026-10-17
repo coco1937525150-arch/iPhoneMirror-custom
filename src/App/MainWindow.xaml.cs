@@ -42,6 +42,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private readonly MainViewModel _viewModel;
     private readonly DispatcherTimer _refreshTimer;
+    private readonly DispatcherTimer _wirelessOrientationTimer;
     private readonly DispatcherTimer _mediaCastTimer;
     private readonly DispatcherTimer _mediaPlaybackTimer;
     private readonly DispatcherTimer _mediaControlsHideTimer;
@@ -393,8 +394,22 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _viewModel.MediaCastAudioSettingsChanged += OnMediaCastAudioSettingsChanged;
         _viewModel.ProjectionSettingsRequested += OnProjectionSettingsRequested;
         _viewModel.MediaOutputSettingsRequested += OnMediaOutputSettingsRequested;
+        _viewModel.DeviceBindingRequested += OnDeviceBindingRequested;
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _refreshTimer.Tick += (_, _) => _ = _viewModel.RefreshAsync();
+        // The two-second inventory cadence must not delay AirPlay orientation.
+        // This status-only poll runs ONLY for an open, selected wireless HWND.
+        // It never enumerates USB or restarts the capture session.
+        _wirelessOrientationTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(150),
+        };
+        _wirelessOrientationTimer.Tick += (_, _) =>
+        {
+            if (_viewModel.IsWirelessSelected &&
+                _secondaryMirrors.IsOpen(_viewModel.SelectedDevice))
+                _ = _viewModel.RefreshWirelessOrientationStatusAsync();
+        };
         _mediaCastTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _mediaCastTimer.Tick += (_, _) => _viewModel.RefreshMediaCast();
         _mediaPlaybackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
@@ -1144,6 +1159,26 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // event. Restore the main preview even when reverse control was
         // disabled first and its active-route fields have already been cleared.
         QueueMainPreviewHostSync();
+        // The independent HWND and its D3D session have just been torn down.
+        // Retry the main preview handoff only after WPF has made its HwndHost
+        // visible and measured. This also repairs a failed first attach when
+        // the previous window's native swapchain releases one dispatcher turn
+        // later. Never create a new AirPlay session or disconnect the device.
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            SynchronizeMainPreviewHost();
+            if (DeviceViewModel.UdidEquals(_viewModel.SelectedDevice?.Udid, udid) &&
+                _viewModel.CurrentSessionHandle != 0 &&
+                _viewModel.IsCapturing && !_viewModel.IsVideoProtected &&
+                !_viewModel.IsAudioOnlyAirPlay)
+            {
+                var refreshed = MainPreviewHost.ForceRefresh();
+                _viewModel.AddDiagnosticLog(AppLog.Event(
+                    "independent_close_main_preview_restored",
+                    ("device", AppLog.Device(udid)), ("refresh_success", refreshed),
+                    ("handle", AppLog.Handle(_viewModel.CurrentSessionHandle))));
+            }
+        });
         Interlocked.Exchange(ref _bluetoothRouteChanging, 1);
         await _bluetoothRouteGate.WaitAsync();
         var closingActiveControlWindow = false;
@@ -1837,6 +1872,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // stalled service or USB re-enumeration must not make the GUI appear
         // frozen or prevent the user from seeing the current status.
         _refreshTimer.Start();
+        _wirelessOrientationTimer.Start();
         _mediaCastTimer.Start();
         ApplyWorkspacePanelState();
         ApplyApplicationDisplayMode();
@@ -1915,6 +1951,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (!_workspaceControlsReady || _isSynchronizingWorkspacePanelControls) return;
         SetSettingsPanelVisible(!_isSettingsPanelVisible);
     }
+
+    private void OnDeviceBindingRequested() =>
+        OnNavigateReverseControlClick(this, new RoutedEventArgs());
 
     private void OnNavigateReverseControlClick(object sender, RoutedEventArgs e)
     {
@@ -2591,7 +2630,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _viewModel.MediaCastAudioSettingsChanged -= OnMediaCastAudioSettingsChanged;
         _viewModel.ProjectionSettingsRequested -= OnProjectionSettingsRequested;
         _viewModel.MediaOutputSettingsRequested -= OnMediaOutputSettingsRequested;
+        _viewModel.DeviceBindingRequested -= OnDeviceBindingRequested;
         _refreshTimer.Stop();
+        _wirelessOrientationTimer.Stop();
         _mediaCastTimer.Stop();
         var application = Application.Current;
         application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -5075,7 +5116,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (sender is not MenuItem item ||
             ItemsControl.ItemsControlFromItemContainer(item) is not ContextMenu menu ||
             menu.PlacementTarget is not FrameworkElement { DataContext: Models.DeviceViewModel device } ||
-            device.IsMediaCast) return;
+            (device.IsMediaCast || device.IsWirelessOffline)) return;
         try
         {
             if (_viewModel.IsBluetoothControlEnabled)
@@ -5099,7 +5140,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         while (current is not null && current is not ListBoxItem)
             current = VisualTreeHelper.GetParent(current);
         if (current is not ListBoxItem item || item.ContextMenu is null) return;
-        if (item.DataContext is DeviceViewModel { IsMediaCast: true })
+        if (item.DataContext is DeviceViewModel device &&
+            (device.IsMediaCast || device.IsWirelessOffline))
         {
             e.Handled = true;
             return;
@@ -6349,9 +6391,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _viewModel.IsCapturing && !_viewModel.IsAudioOnlyAirPlay &&
             !_viewModel.IsVideoProtected &&
             _viewModel.CurrentSessionHandle != 0 && !independentOnMain;
-        MainPreviewHost.SetPresentationVisible(visible);
         if (!visible)
         {
+            MainPreviewHost.SetPresentationVisible(false);
             // HwndHost owns native airspace and cannot be covered by the WPF
             // independent-window notice. Collapsing the host removes that
             // child HWND from composition until the main preview is restored.
@@ -6360,9 +6402,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             return;
         }
 
+        // Reactivate WPF airspace BEFORE attaching the D3D11 swapchain.
+        // Attaching a renderer to the still-collapsed HWND can leave the main
+        // window black after the independent window closes.
         MainPreviewHost.ClearValue(VisibilityProperty);
-        MainPreviewHost.Activate();
         MainPreviewHost.SetPresentationVisible(true);
+        var attached = MainPreviewHost.Activate();
+        if (!attached)
+            _viewModel.AddDiagnosticLog(AppLog.Event(
+                "main_preview_reattach_failed",
+                ("handle", AppLog.Handle(_viewModel.CurrentSessionHandle))));
     }
 
     private void OnDeviceVideoSizeChanged(string udid, uint width, uint height) =>

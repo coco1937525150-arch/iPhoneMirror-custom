@@ -38,11 +38,12 @@ $Marker = 'IPHONE_MIRROR_AIRPLAY_MIRROR_RECOVERY'
 $Text = Read-Source $File
 if (-not $Text.Contains($Marker)) {
     $Text = Replace-Once $Text '#include <WinSock2.h>' (
-        '#include <WinSock2.h>' + $LineFeed + '#include <mstcpip.h>') 'mirror keepalive include'
+        '#include <WinSock2.h>' + $LineFeed + '#include <mstcpip.h>' + $LineFeed + '#include <time.h>') 'mirror keepalive include'
     $Needle = 'static int' + $LineFeed +
         'raop_rtp_parse_remote(raop_rtp_mirror_t *raop_rtp_mirror, const unsigned char *remote, int remotelen)'
     $Helper = @'
 #define MIRROR_READ_TIMEOUT_MS 3000
+#define MIRROR_PARTIAL_IDLE_LIMIT_SECONDS 60
 #define MIRROR_MAX_PAYLOAD_SIZE (64 * 1024 * 1024)
 
 /* IPHONE_MIRROR_AIRPLAY_MIRROR_RECOVERY: do not block forever on a
@@ -52,6 +53,7 @@ mirror_recv_exact(raop_rtp_mirror_t *mirror, int socket_fd,
     unsigned char *buffer, int length)
 {
     int offset = 0;
+    time_t last_progress = time(NULL);
 
     if (mirror == NULL || socket_fd == -1 || buffer == NULL || length < 0) {
         return -1;
@@ -76,9 +78,18 @@ mirror_recv_exact(raop_rtp_mirror_t *mirror, int socket_fd,
         timeout.tv_usec = (MIRROR_READ_TIMEOUT_MS % 1000) * 1000;
         ready = select(socket_fd + 1, &rfds, NULL, NULL, &timeout);
         if (ready == 0) {
-            logger_log(mirror->logger, LOGGER_WARNING,
-                "Mirror TCP read timed out after %d ms", MIRROR_READ_TIMEOUT_MS);
-            return -1;
+            /* A locked iPhone may momentarily stop transmitting without
+             * closing its AirPlay control connection. Do not tear down the
+             * mirror on the first three-second pause. Bound an unfinished
+             * frame to sixty seconds of no progress to prevent hung peers. */
+            if (difftime(time(NULL), last_progress) >=
+                MIRROR_PARTIAL_IDLE_LIMIT_SECONDS) {
+                logger_log(mirror->logger, LOGGER_WARNING,
+                    "Mirror TCP partial packet idle timeout after %d seconds",
+                    MIRROR_PARTIAL_IDLE_LIMIT_SECONDS);
+                return -1;
+            }
+            continue;
         }
         if (ready < 0) {
             logger_log(mirror->logger, LOGGER_WARNING,
@@ -93,6 +104,7 @@ mirror_recv_exact(raop_rtp_mirror_t *mirror, int socket_fd,
             return -1;
         }
         offset += received;
+        last_progress = time(NULL);
     }
     return 0;
 }
@@ -108,8 +120,11 @@ mirror_enable_keepalive(int socket_fd)
         struct tcp_keepalive settings;
         DWORD bytes_returned = 0;
         settings.onoff = 1;
-        settings.keepalivetime = 5000;
-        settings.keepaliveinterval = 1000;
+        /* The earlier 5-second first probe and 1-second retry were too
+         * aggressive for Wi-Fi power-saving during iPhone screen lock.
+         * Detect truly dead connections while allowing temporary sleep. */
+        settings.keepalivetime = 120000;
+        settings.keepaliveinterval = 30000;
         WSAIoctl((SOCKET)socket_fd, SIO_KEEPALIVE_VALS,
             &settings, sizeof(settings), NULL, 0, &bytes_returned, NULL, NULL);
     }

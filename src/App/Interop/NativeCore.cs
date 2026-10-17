@@ -303,6 +303,21 @@ internal sealed class NativeCore : IDisposable
     private static extern int im_log_message(
         [MarshalAs(UnmanagedType.LPWStr)] string message);
 
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl,
+        CharSet = CharSet.Unicode)]
+    private static extern int im_diagnostic_start(
+        [MarshalAs(UnmanagedType.LPWStr)] string sessionId,
+        [MarshalAs(UnmanagedType.LPWStr)] string timelinePath);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int im_diagnostic_stop();
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void im_diagnostic_set_context(
+        ulong rotationId, ulong orientationEventId);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void im_diagnostic_event(uint eventCode,
+        ulong frameId, ulong visualGeneration, long value0,
+        long value1, long value2, long value3, int hresult);
+
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int im_refresh_devices([Out] NativeDeviceInfo[]? devices, ref uint count);
 
@@ -454,6 +469,13 @@ internal sealed class NativeCore : IDisposable
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int im_session_set_window_rotation(ulong handle, nint hwnd,
         int quarterTurns);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int im_session_set_window_video_stage_rotation(
+        ulong handle, nint hwnd, int quarterTurns);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int im_session_set_window_visual_rotation(ulong handle,
+        nint hwnd, float degrees, float canvasWidth, float canvasHeight,
+        float visualScale, int active);
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern nint im_last_error();
@@ -564,6 +586,42 @@ internal sealed class NativeCore : IDisposable
 
     internal static bool SetDeviceWindowRotation(ulong handle, nint hwnd, int turns) =>
         handle != 0 && hwnd != 0 && im_session_set_window_rotation(handle, hwnd, turns) == 0;
+
+    internal static bool SetDeviceWindowVideoStageRotation(
+        ulong handle, nint hwnd, int quarterTurns) =>
+        handle != 0 && hwnd != 0 && quarterTurns is >= -1 and <= 3 &&
+        im_session_set_window_video_stage_rotation(handle, hwnd, quarterTurns) == 0;
+
+    internal static bool SetDeviceWindowVisualRotation(ulong handle, nint hwnd,
+        float degrees, float canvasWidth, float canvasHeight, float scale,
+        bool active) =>
+        handle != 0 && hwnd != 0 &&
+        im_session_set_window_visual_rotation(handle, hwnd,
+            degrees, canvasWidth, canvasHeight, scale, active ? 1 : 0) == 0;
+
+    internal static void StartFlickerDiagnostics(string id, string timelinePath)
+    {
+        if (im_diagnostic_start(id, timelinePath) != 0)
+            throw new InvalidOperationException(GetLastError(
+                "无法启动底层闪屏诊断时间线。"));
+    }
+
+    internal static void StopFlickerDiagnostics()
+    {
+        if (im_diagnostic_stop() != 0)
+            throw new System.IO.IOException(GetLastError("底层诊断时间线写入失败。"));
+    }
+
+    internal static void SetFlickerDiagnosticContext(ulong rotationId,
+        ulong orientationEventId) =>
+        im_diagnostic_set_context(rotationId, orientationEventId);
+
+    internal static void TraceFlickerEvent(uint eventCode,
+        ulong frameId = 0, ulong visualGeneration = 0,
+        long value0 = 0, long value1 = 0, long value2 = 0,
+        long value3 = 0, int hresult = 0) =>
+        im_diagnostic_event(eventCode, frameId, visualGeneration,
+            value0, value1, value2, value3, hresult);
 
     internal static bool ForcePreviewRefresh()
     {
@@ -1178,9 +1236,21 @@ internal sealed class NativeCore : IDisposable
             result = im_session_copy_latest_video_frame_nv12(handle.RawHandle, ref info,
                 _outputNv12FrameBuffer, ref size, width, height);
         }
-        if (result != 0 || _outputNv12FrameBuffer is null ||
-            info.PixelFormat != 2)
+        // Absence of an initial decoded frame is normal during startup.
+        // All other native failures (including GPU readback, format
+        // conversion or a stale session handle) must be visible to the
+        // recording reader instead of collapsing to the same "no NV12 data"
+        // message. im_last_error is thread-local to this native API call.
+        if (result == (int)NativeResult.CaptureBackendUnavailable)
             return null;
+        if (result != (int)NativeResult.Ok)
+            throw new InvalidOperationException(
+                $"NV12 frame acquisition failed (native result {result}): " +
+                GetLastError("Unknown native frame conversion error."));
+        if (_outputNv12FrameBuffer is null || info.PixelFormat != 2)
+            throw new InvalidOperationException(
+                $"NV12 frame acquisition returned invalid buffer/format " +
+                $"(pixel format {info.PixelFormat}, size {size}).");
         return new Nv12VideoFrame(info.Width, info.Height, info.Stride,
             info.Timestamp100Ns, _outputNv12FrameBuffer);
         }

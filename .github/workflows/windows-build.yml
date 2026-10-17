@@ -39,6 +39,11 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Set up Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
       - name: Set up MSYS2 UCRT64 for UxPlay
         uses: msys2/setup-msys2@v2
         with:
@@ -104,6 +109,16 @@ jobs:
             throw 'Could not restore libusb-1.0.dll'
           }
 
+      - name: Validate original pre6 shell resource and aperture geometry
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
+        shell: pwsh
+        run: python scripts/test_pre6_shell_asset.py
+
+      - name: Compile native D3D11 preview HLSL with Windows D3DCompiler
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014'
+        shell: pwsh
+        run: python scripts/test_pre6_preview_shaders.py
+
       - name: Verify Simplified Chinese and English resources
         shell: pwsh
         run: ./scripts/verify_localization.ps1
@@ -111,3 +126,64 @@ jobs:
       - name: Build Release, run tests, and publish Windows x64 output
         shell: pwsh
         run: ./build.ps1 -Configuration Release
+
+      # The PR build already publishes outputs/iPhoneMirror; preserve it as
+      # a directly downloadable portable package for the combined pre2 test.
+      - name: Upload Stage1 experimental portable artifact
+        if: github.event_name == 'pull_request' && (github.head_ref == 'feature/upstream-185-pre2-selective' || github.head_ref == 'feature/stage1-pre3-recording-diagnostics' || github.head_ref == 'feature/stage1-pre4-shell-usb-upstream' || github.head_ref == 'feature/stage1-pre5-media-layout-wireless' || github.head_ref == 'feature/stage1-pre6-stability-120hz')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.head_ref == 'feature/stage1-pre6-stability-120hz' && 'iPhoneMirror-pre6-120Hz-EXPERIMENTAL' || (github.head_ref == 'feature/stage1-pre5-media-layout-wireless' && 'iPhoneMirror-pre5-MediaLayout-EXPERIMENTAL' || (github.head_ref == 'feature/stage1-pre4-shell-usb-upstream' && 'iPhoneMirror-pre4-USB-ReferenceShell-EXPERIMENTAL' || (github.head_ref == 'feature/stage1-pre3-recording-diagnostics' && 'iPhoneMirror-Stage1-pre3-DIAGNOSTICS-EXPERIMENTAL' || 'iPhoneMirror-Stage1-Upstream185pre2-EXPERIMENTAL'))) }}
+          path: outputs/iPhoneMirror/
+          if-no-files-found: error
+          retention-days: 14
+
+      # Make the download ZIP name unique for EVERY attempt. Keep the EXE
+      # entry point stable so shortcuts, updates and native DLL lookup work.
+      - name: Identify pre6 CI artifact
+        id: pre6_build_identity
+        if: (github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014') || (github.event_name == 'workflow_dispatch' && github.ref_name == 'feature/pre6-integrated-20261014')
+        shell: pwsh
+        run: |
+          $sourceCommit = '${{ github.event.pull_request.head.sha || github.sha }}'
+          $shortSha = $sourceCommit.Substring(0, 8)
+          $name = "iPhoneMirror-pre6-build$env:GITHUB_RUN_ID-attempt$env:GITHUB_RUN_ATTEMPT-$shortSha-Win64-CI-UNVERIFIED"
+          "artifact_name=$name" >> $env:GITHUB_OUTPUT
+
+      # A separately named PR-only testing artifact. Passing CI is not
+      # equivalent to accepting the bundled shell asset or iPhone hardware tests.
+      - name: Write pre6 integrated build provenance
+        if: (github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014') || (github.event_name == 'workflow_dispatch' && github.ref_name == 'feature/pre6-integrated-20261014')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'outputs/iPhoneMirror'
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw 'Missing published Windows x64 output directory.'
+          }
+          @(
+            'Build: pre6 integrated CI candidate (NOT hardware validated)'
+            "Source Git commit: ${{ github.event.pull_request.head.sha || github.sha }}"
+            "Build UTC: $([DateTime]::UtcNow.ToString('o'))"
+            "Git workflow run: $env:GITHUB_RUN_ID attempt: $env:GITHUB_RUN_ATTEMPT"
+            'Build type: Windows x64 Release, CI diagnostic candidate'
+            'Source FPS validation: pending physical iPhone/Windows measurements'
+            'Bundled iPhone shell PNG verification: original SHA256 and aperture checked by pre6 CI preflight'
+          ) | Set-Content -LiteralPath (Join-Path $root 'BUILD_PROVENANCE.txt') -Encoding utf8
+          Get-ChildItem -LiteralPath $root -File -Recurse |
+            Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = [System.IO.Path]::GetRelativePath((Resolve-Path $root).Path, $_.FullName).Replace('\\', '/')
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $relative"
+            } | Set-Content -LiteralPath (Join-Path $root 'SHA256SUMS.txt') -Encoding ascii
+
+      - name: Upload pre6 integrated CI testing artifact
+        if: (github.event_name == 'pull_request' && github.head_ref == 'feature/pre6-integrated-20261014') || (github.event_name == 'workflow_dispatch' && github.ref_name == 'feature/pre6-integrated-20261014')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pre6_build_identity.outputs.artifact_name }}
+          path: outputs/iPhoneMirror/
+          if-no-files-found: error
+          retention-days: 14

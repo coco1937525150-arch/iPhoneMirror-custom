@@ -27,6 +27,39 @@ internal sealed class UpdateSettings
     public AppTheme Theme { get; set; } = AppTheme.System;
     public ApplicationDisplayMode ApplicationDisplayMode { get; set; } =
         ApplicationDisplayMode.Complete;
+    // Default for newly opened independent preview windows; each window can
+    // change its own topmost state without changing other open windows.
+    public bool IndependentWindowAlwaysOnTop { get; set; }
+    public bool MediaOutputIncludePhoneShell { get; set; } = true;
+    public bool MediaOutputTransparentShellRecording { get; set; }
+    public int MediaOutputTransparentMovQuality { get; set; } = 18;
+    public string MediaOutputBackgroundImagePath { get; set; } = string.Empty;
+    // Nullable for migrating existing background picture preferences.
+    public bool? MediaOutputUseDefaultWhiteBackground { get; set; }
+    // Persist the user's previous output selections; zero size means first use.
+    public uint MediaOutputRecordWidth { get; set; }
+    public uint MediaOutputRecordHeight { get; set; }
+    public int MediaOutputRecordFps { get; set; } = 60;
+    public int MediaOutputRecordBitrateKbps { get; set; } = 6000;
+    public bool MediaOutputRecordBitrateAutomatic { get; set; }
+    public int MediaOutputStreamProtocolIndex { get; set; }
+    public uint MediaOutputVirtualCameraWidth { get; set; }
+    public uint MediaOutputVirtualCameraHeight { get; set; }
+    public int MediaOutputVirtualCameraFps { get; set; } = 30;
+    public uint VideoRenderWidth { get; set; }
+    public uint VideoRenderHeight { get; set; }
+    public int VideoRenderFps { get; set; }
+    public uint MediaOutputStreamWidth { get; set; }
+    public uint MediaOutputStreamHeight { get; set; }
+    public int MediaOutputStreamFps { get; set; } = 60;
+    public int MediaOutputStreamBitrateKbps { get; set; } = 6000;
+    public string MediaOutputRecordingDirectory { get; set; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "iPhoneMirror");
+    public double MediaOutputShellCenterX { get; set; } = 0.5;
+    public double MediaOutputShellCenterY { get; set; } = 0.5;
+    public double MediaOutputShellScale { get; set; } = 1.0;
+    // Null preserves the old automatic portrait/landscape orientation.
+    public int? MediaOutputShellRotationDegrees { get; set; }
     public WirelessReceiverBackend WirelessReceiverBackend { get; set; } =
         WirelessReceiverBackend.Original;
     public string WirelessDisplayProfileId { get; set; } = "1080p";
@@ -105,6 +138,33 @@ internal sealed class UpdateSettings
         NotifyPrereleaseReleases = NotifyPrereleaseReleases,
         Theme = Theme,
         ApplicationDisplayMode = ApplicationDisplayMode,
+        IndependentWindowAlwaysOnTop = IndependentWindowAlwaysOnTop,
+        MediaOutputIncludePhoneShell = MediaOutputIncludePhoneShell,
+        MediaOutputTransparentShellRecording = MediaOutputTransparentShellRecording,
+        MediaOutputTransparentMovQuality = MediaOutputTransparentMovQuality,
+        MediaOutputRecordWidth = MediaOutputRecordWidth,
+        MediaOutputRecordHeight = MediaOutputRecordHeight,
+        MediaOutputRecordFps = MediaOutputRecordFps,
+        MediaOutputRecordBitrateKbps = MediaOutputRecordBitrateKbps,
+        MediaOutputRecordBitrateAutomatic = MediaOutputRecordBitrateAutomatic,
+        MediaOutputStreamProtocolIndex = MediaOutputStreamProtocolIndex,
+        MediaOutputVirtualCameraWidth = MediaOutputVirtualCameraWidth,
+        MediaOutputVirtualCameraHeight = MediaOutputVirtualCameraHeight,
+        MediaOutputVirtualCameraFps = MediaOutputVirtualCameraFps,
+        VideoRenderWidth = VideoRenderWidth,
+        VideoRenderHeight = VideoRenderHeight,
+        VideoRenderFps = VideoRenderFps,
+        MediaOutputStreamWidth = MediaOutputStreamWidth,
+        MediaOutputStreamHeight = MediaOutputStreamHeight,
+        MediaOutputStreamFps = MediaOutputStreamFps,
+        MediaOutputStreamBitrateKbps = MediaOutputStreamBitrateKbps,
+        MediaOutputBackgroundImagePath = MediaOutputBackgroundImagePath,
+        MediaOutputUseDefaultWhiteBackground = MediaOutputUseDefaultWhiteBackground,
+        MediaOutputRecordingDirectory = MediaOutputRecordingDirectory,
+        MediaOutputShellCenterX = MediaOutputShellCenterX,
+        MediaOutputShellCenterY = MediaOutputShellCenterY,
+        MediaOutputShellScale = MediaOutputShellScale,
+        MediaOutputShellRotationDegrees = MediaOutputShellRotationDegrees,
         WirelessReceiverBackend = WirelessReceiverBackend,
         WirelessDisplayProfileId = WirelessDisplayProfileId,
         WirelessReceiverName = WirelessReceiverName,

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -34,6 +35,7 @@ internal sealed class NativePreviewWindow : IDisposable
     private const int WmRightButtonUp = 0x0205;
     private const int WmLeftButtonDoubleClick = 0x0203;
     private const int WmClose = 0x0010;
+    private const int WmSize = 0x0005;
     private const int WmEraseBackground = 0x0014;
     private const int WmMouseMove = 0x0200;
     private const int WmLeftButtonDown = 0x0201;
@@ -55,6 +57,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private const int VkEscape = 0x1B;
     private const int VkReturn = 0x0D;
     private const int VkF11 = 0x7A;
+    private const int VkLeft = 0x25;
+    private const int VkRight = 0x27;
     private const int VkShift = 0x10;
     private const int VkControl = 0x11;
     private const int VkMenu = 0x12;
@@ -82,6 +86,7 @@ internal sealed class NativePreviewWindow : IDisposable
 
     private const int SwHide = 0;
     private const int SwShow = 5;
+    private const int SwShowNoActivate = 8;
     private const int SwRestore = 9;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
@@ -109,6 +114,8 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly ContextMenu _contextMenu;
     private readonly MenuItem _fullScreenItem;
     private readonly MenuItem _windowMenuItem;
+    private readonly MenuItem _windowSizeItem;
+    private readonly List<(double Fraction, MenuItem Item)> _sizePresets = [];
     private readonly MenuItem _displayMenuItem;
     private readonly MenuItem _topMostItem;
     private readonly MenuItem _fixedItem;
@@ -122,6 +129,9 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly MenuItem _muteOthersItem;
     private readonly MenuItem _rotateLeftItem;
     private readonly MenuItem _rotateRightItem;
+    private readonly MenuItem _startFlashDiagnosticItem;
+    private readonly MenuItem _stopFlashDiagnosticItem;
+    private readonly MenuItem _markFlashDiagnosticItem;
     private readonly MenuItem _closeItem;
     private readonly MenuItem? _imageSettingsItem;
     private readonly MenuItem? _projectionSettingsItem;
@@ -141,6 +151,7 @@ internal sealed class NativePreviewWindow : IDisposable
     private readonly Action<nint>? _requestWirelessControl;
     private readonly Action<string>? _logDiagnostic;
     private ulong _sessionHandle;
+    private readonly string _windowTitle;
     private readonly double _cornerRadius;
     private readonly double _cornerExponent;
     private DeviceFrameProfile _deviceFrameProfile;
@@ -153,6 +164,31 @@ internal sealed class NativePreviewWindow : IDisposable
     private nint _handle;
     private bool _attached;
     private bool _isFullScreen;
+    private double _sizeFraction = 0.82;
+    private double _wheelZoomTargetFraction = 0.82;
+    private readonly DispatcherTimer _wheelZoomTimer;
+    private readonly DispatcherTimer _rotationTimer;
+    private readonly Stopwatch _rotationClock = Stopwatch.StartNew();
+    private PhoneRotationTimeline _rotationTimeline = new();
+    private bool _rotationAnimating;
+    private bool _waitingForWirelessReconnect;
+    private bool _rotationRenderingSubscribed;
+    private TimeSpan _lastCompositionRotationTick;
+    private readonly DispatcherTimer _airPlayOrientationTimer;
+    private bool _autoRotateAirPlay;
+    private bool? _queuedAirPlayLandscape;
+    private TimeSpan _queuedAirPlayAt;
+    private bool _autoAirPlayWasLandscape;
+    private ulong _diagnosticOrientationId;
+    private ulong _diagnosticRotationId;
+    private TimeSpan _diagnosticRotationStartedAt;
+    private bool _ownsFlashDiagnostic;
+    private WindowRect _rotationOriginalBounds;
+    private int _rotationOriginalClientWidth;
+    private int _rotationOriginalClientHeight;
+    private float _rotationCanvasWidth;
+    private float _rotationCanvasHeight;
+    private float _rotationScale = 1.0f;
     private bool _disposed;
     private bool _closeQueued;
     private bool _isTopMost;
@@ -224,7 +260,21 @@ internal sealed class NativePreviewWindow : IDisposable
         _fullScreenItem = new MenuItem { Style = itemStyle };
         _fullScreenItem.Click += (_, _) => ToggleFullScreen();
         _windowMenuItem = new MenuItem { Style = submenuStyle };
-        _topMostItem = new MenuItem { Style = itemStyle };
+        _windowSizeItem = new MenuItem { Style = submenuStyle };
+        foreach (var fraction in new[] { 0.40, 0.55, 0.70, 0.85, 0.95 })
+        {
+            var preset = new MenuItem
+            {
+                Header = $"{fraction:P0}",
+                Style = itemStyle,
+                IsCheckable = true,
+            };
+            var selectedFraction = fraction;
+            preset.Click += (_, _) => SetIndependentWindowSize(selectedFraction);
+            _sizePresets.Add((fraction, preset));
+            _windowSizeItem.Items.Add(preset);
+        }
+        _topMostItem = new MenuItem { Style = itemStyle, IsCheckable = true };
         _topMostItem.Click += (_, _) => ToggleTopMost();
         _fixedItem = new MenuItem { Style = itemStyle };
         _fixedItem.Click += (_, _) => ToggleFixedWindow();
@@ -249,6 +299,7 @@ internal sealed class NativePreviewWindow : IDisposable
         }
         _windowMenuItem.Items.Add(_topMostItem);
         _windowMenuItem.Items.Add(_fixedItem);
+        _windowMenuItem.Items.Add(_windowSizeItem);
         _displayMenuItem = new MenuItem { Style = submenuStyle };
         _muteMenuItem = new MenuItem { Style = submenuStyle };
         _muteThisItem = new MenuItem { Style = itemStyle };
@@ -261,6 +312,12 @@ internal sealed class NativePreviewWindow : IDisposable
         _rotateLeftItem.Click += (_, _) => Rotate(-1);
         _rotateRightItem = new MenuItem { Style = itemStyle };
         _rotateRightItem.Click += (_, _) => Rotate(1);
+        _startFlashDiagnosticItem = new MenuItem { Style = itemStyle };
+        _startFlashDiagnosticItem.Click += (_, _) => StartFlashDiagnostic();
+        _stopFlashDiagnosticItem = new MenuItem { Style = itemStyle };
+        _stopFlashDiagnosticItem.Click += async (_, _) => await StopFlashDiagnosticAsync();
+        _markFlashDiagnosticItem = new MenuItem { Style = itemStyle };
+        _markFlashDiagnosticItem.Click += (_, _) => MarkFlashDiagnostic();
         _closeItem = new MenuItem { Style = itemStyle };
         _closeItem.Click += (_, _) => QueueClose();
         if (managedContent is null)
@@ -285,6 +342,9 @@ internal sealed class NativePreviewWindow : IDisposable
         _contextMenu.Items.Add(_fullScreenItem);
         _contextMenu.Items.Add(_windowMenuItem);
         _contextMenu.Items.Add(_displayMenuItem);
+        _contextMenu.Items.Add(_startFlashDiagnosticItem);
+        _contextMenu.Items.Add(_markFlashDiagnosticItem);
+        _contextMenu.Items.Add(_stopFlashDiagnosticItem);
         if (_reverseControlMenuItem is not null) _contextMenu.Items.Add(_reverseControlMenuItem);
         if (_setAudioEnabled is not null) _contextMenu.Items.Add(_muteMenuItem);
         if (_projectionSettingsItem is not null) _contextMenu.Items.Add(_projectionSettingsItem);
@@ -295,6 +355,7 @@ internal sealed class NativePreviewWindow : IDisposable
         _contextMenu.Items.Add(_closeItem);
         UpdateContextMenuLabels();
         var windowTitle = string.IsNullOrWhiteSpace(title) ? StableTitle : title;
+        _windowTitle = windowTitle;
         var parameters = new HwndSourceParameters(windowTitle)
         {
             Width = 720,
@@ -314,6 +375,33 @@ internal sealed class NativePreviewWindow : IDisposable
         _handle = _source.Handle;
         if (_handle == 0) throw new InvalidOperationException(
             "Could not create the native preview window.");
+        _wheelZoomTimer = new DispatcherTimer(DispatcherPriority.Render, _source.Dispatcher)
+        {
+            // Coalesce high-resolution trackpad and wheel events; keep native
+            // HWND/D3D11 resize traffic lower than the desktop refresh rate.
+            Interval = TimeSpan.FromMilliseconds(24),
+        };
+        _wheelZoomTimer.Tick += OnWheelZoomTick;
+        _rotationTimer = new DispatcherTimer(DispatcherPriority.Render, _source.Dispatcher)
+        {
+            // WPF CompositionTarget.Rendering drives the normal vblank
+            // cadence. This 16ms timer is ONLY a fallback if the main WPF
+            // view is hidden and no rendering callbacks are being issued.
+            // Running a second 8ms DComp commit loop caused irregular updates
+            // and visible jitter on 60Hz monitors.
+            Interval = TimeSpan.FromMilliseconds(16),
+        };
+        _rotationTimer.Tick += OnRotationTick;
+        _airPlayOrientationTimer = new DispatcherTimer(
+            DispatcherPriority.Background, _source.Dispatcher)
+        {
+            // AirPlay may briefly change decoded dimensions during playback
+            // negotiation; rotate only after the orientation has been stable.
+            // The status-only 150ms poll already filters frame changes;
+            // retain a short hysteresis to ignore transient encoder formats.
+            Interval = TimeSpan.FromMilliseconds(120),
+        };
+        _airPlayOrientationTimer.Tick += OnAirPlayOrientationSettled;
 
         if (managedContent is not null)
         {
@@ -350,11 +438,15 @@ internal sealed class NativePreviewWindow : IDisposable
                 ref darkTitleBar, sizeof(int));
         }
 
-        var initialWindowDimensions = _deviceFrameProfile.GetOuterDimensions(sourceWidth, sourceHeight);
+        // Movie-coded AirPlay frames must not change the physical bezel
+        // proportions on first show (including a landscape-only source).
+        var initialWindowDimensions = DeviceFrameProfileResolver
+            .GetStableWindowOuterDimensions(_deviceFrameProfile,
+                sourceWidth, sourceHeight, _rotation);
         _aspectController = new AspectRatioWindowController(_source,
             initialWindowDimensions.Width, initialWindowDimensions.Height,
-            () => !_disposed && !_isFullScreen && _handle != 0 &&
-                !IsIconic(_handle) && !IsZoomed(_handle));
+            () => !_disposed && !_rotationAnimating && !_isFullScreen &&
+                _handle != 0 && !IsIconic(_handle) && !IsZoomed(_handle));
         // Install the instance hook only after every callback dependency is
         // initialized; HwndSource construction itself dispatches messages.
         _source.AddHook(WindowProcedure);
@@ -374,15 +466,80 @@ internal sealed class NativePreviewWindow : IDisposable
 
     internal event EventHandler? Closed;
     internal ulong SessionHandle => _sessionHandle;
+    // Match the native renderer: when AirPlay already supplies landscape
+    // pixels we rotate only the physical bezel, never the input twice.
+    private int EffectiveSourceTurns => (_rotation & 1) != 0 &&
+        _sourceWidth > _sourceHeight ? 0 : _rotation;
+
     internal (uint Width, uint Height, int Rotation) ControlGeometry =>
-        (_rotation & 1) == 0
-            ? (_sourceWidth, _sourceHeight, _rotation)
-            : (_sourceHeight, _sourceWidth, _rotation);
+        (EffectiveSourceTurns & 1) == 0
+            ? (_sourceWidth, _sourceHeight, EffectiveSourceTurns)
+            : (_sourceHeight, _sourceWidth, EffectiveSourceTurns);
+
+    internal void SetWaitingForWirelessReconnect(bool waiting)
+    {
+        if (_disposed || _handle == 0 || _managedContent is not null) return;
+        if (waiting)
+        {
+            // iOS lock disconnects the native visual but does not destroy
+            // its borderless HWND. An invisible, full-screen HWND still
+            // intercepts mouse clicks and right-clicks on the user's desktop.
+            _waitingForWirelessReconnect = true;
+            _contextMenu.IsOpen = false;
+            _contextMenu.PlacementTarget = null;
+            _wheelZoomTimer.Stop();
+            _airPlayOrientationTimer.Stop();
+            _queuedAirPlayLandscape = null;
+            _ = ShowWindow(_handle, SwHide); // FIRST: leave the hit-test path
+            if (_capturedMouseButtons != 0)
+            {
+                _capturedMouseButtons = 0;
+                _ = ReleaseCapture();
+                _pointerInput?.Invoke(new PreviewPointerEventArgs(
+                    PreviewPointerKind.Reset, 0, 0, 0, 0));
+            }
+            _keyboardInput?.Invoke(new PreviewKeyboardEventArgs(
+                PreviewKeyboardKind.Reset, 0));
+            if (_rotationAnimating) AbortRotationAnimation();
+            if (_isFullScreen)
+            {
+                _isFullScreen = false;
+                _ = RemovePropW(_handle, "iPhoneMirrorFullScreen");
+                _ = SetWindowLongPtrW(_handle, GwlStyle, _restoreStyle);
+                // Do not use SWP_SHOWWINDOW or ToggleFullScreen here: those
+                // would briefly resurrect the invisible desktop-sized HWND.
+                _ = SetWindowPos(_handle, 0,
+                    _restoreRectangle.Left, _restoreRectangle.Top,
+                    Math.Max(1, _restoreRectangle.Right - _restoreRectangle.Left),
+                    Math.Max(1, _restoreRectangle.Bottom - _restoreRectangle.Top),
+                    SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
+                FullScreenChanged?.Invoke(false);
+            }
+        }
+        else
+        {
+            // MultiDevicePreviewManager calls this only AFTER a successful
+            // RebindSession. Do not show if the new renderer was not attached.
+            if (!_attached) return;
+            _waitingForWirelessReconnect = false;
+            if (Volatile.Read(ref BossKeyHidden) == 0)
+                _ = ShowWindow(_handle, SwShowNoActivate);
+        }
+        var title = waiting
+            ? _windowTitle + " · " + LocalizationService.Get("StatusWaitingDevice")
+            : _windowTitle;
+        _ = SetWindowTextW(_handle, title);
+        Log("independent_window_wireless_reconnect_wait",
+            ("waiting", waiting), ("mode", WindowMode), ("hidden", waiting));
+    }
 
     internal bool RebindSession(ulong sessionHandle)
     {
         if (_disposed || _managedContent is not null || _handle == 0 || sessionHandle == 0)
             return false;
+        // The replacement D3D11 renderer owns a different visual; do not
+        // transfer an in-flight old-session DComp animation across handles.
+        if (_rotationAnimating) AbortRotationAnimation();
 
         var previousHandle = _sessionHandle;
         if (_attached)
@@ -408,8 +565,10 @@ internal sealed class NativePreviewWindow : IDisposable
         _ = NativeCore.SetDeviceWindowCornerProfile(sessionHandle, _handle,
             _cornersEnabled ? _cornerRadius : 0, _cornerExponent);
         ApplyDeviceFrameProfile();
-        if (_rotation != 0)
-            _ = NativeCore.SetDeviceWindowRotation(sessionHandle, _handle, _rotation);
+        if (_rotation != 0 &&
+            !NativeCore.SetDeviceWindowRotation(sessionHandle, _handle, _rotation))
+            Log("independent_window_rotation_rebind_failed",
+                ("quarter_turns", _rotation));
         Log("independent_window_rebound",
             ("mode", WindowMode), ("old_handle", AppLog.Handle(previousHandle)),
             ("new_handle", AppLog.Handle(sessionHandle)));
@@ -541,17 +700,20 @@ internal sealed class NativePreviewWindow : IDisposable
     private void ShowInitially()
     {
         var boundsApplied = _aspectController.ApplyInitialBounds();
-        _isTopMost = false;
-        if (!SetWindowPos(_handle, HwndNoTopMost, 0, 0, 0, 0,
-                SwpNoSize | SwpNoMove | SwpNoActivate | SwpShowWindow))
+        var preferredTopMost = Application.Current is App app &&
+            app.UpdateSettings.IndependentWindowAlwaysOnTop;
+        var zOrder = preferredTopMost ? HwndTopMost : HwndNoTopMost;
+        var positionApplied = SetWindowPos(_handle, zOrder, 0, 0, 0, 0,
+            SwpNoSize | SwpNoMove | SwpNoActivate | SwpShowWindow);
+        if (!positionApplied)
         {
-            // Keep the window usable if the combined show/z-order operation is
-            // rejected by the shell. Its final bounds were already applied
-            // while hidden, so this fallback still cannot expose a move.
+            // Keep a usable independent window if shell positioning fails.
             _ = ShowWindow(_handle, SwShow);
-            _ = SetWindowPos(_handle, HwndNoTopMost, 0, 0, 0, 0,
+            positionApplied = SetWindowPos(_handle, zOrder, 0, 0, 0, 0,
                 SwpNoSize | SwpNoMove | SwpNoActivate);
         }
+        _isTopMost = preferredTopMost && positionApplied;
+        UpdateContextMenuLabels();
         Log("independent_window_initial_layout",
             ("mode", WindowMode), ("bounds_applied", boundsApplied),
             ("top_most", _isTopMost));
@@ -559,7 +721,7 @@ internal sealed class NativePreviewWindow : IDisposable
 
     internal void Activate()
     {
-        if (_disposed || _handle == 0) return;
+        if (_disposed || _handle == 0 || _waitingForWirelessReconnect) return;
         if (IsIconic(_handle)) _ = ShowWindow(_handle, SwRestore);
         else _ = ShowWindow(_handle, SwShow);
         if (!_attached && _attachPreview(_handle))
@@ -592,7 +754,8 @@ internal sealed class NativePreviewWindow : IDisposable
             return;
         }
 
-        _ = ShowWindow(_handle, SwShow);
+        if (!_waitingForWirelessReconnect)
+            _ = ShowWindow(_handle, SwShow);
     }
 
     internal static void SetAllBossKeyHidden(bool hidden)
@@ -631,7 +794,75 @@ internal sealed class NativePreviewWindow : IDisposable
         var changed = _sourceWidth != width || _sourceHeight != height;
         _sourceWidth = width;
         _sourceHeight = height;
-        ApplyRotatedDimensions();
+        if (changed && _autoRotateAirPlay && width != 0 && height != 0)
+        {
+            // As soon as AirPlay advertises landscape, project the movie
+            // sideways inside the UNROTATED portrait shell. Keep this exact
+            // content orientation while the 1000ms DComp transform rotates
+            // shell, aperture and movie rigidly together. At the final
+            // quarter-turn native set_rotation clears this override.
+            // A return to portrait removes an unfinished staging hint.
+            var pendingTurns = _rotationAnimating
+                ? (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0)
+                : 0;
+            // Retain staged movie UVs across repeated AirPlay resolution
+            // negotiation DURING an already scheduled phone rotation.
+            // DecideDelta compares the destination parity and returns zero
+            // once the target already fits, but the physical shell has not
+            // moved there yet. Clearing staging in that interval makes the
+            // movie jump relative to the bezel.
+            var earlyVideoTurns = PhoneAutoRotationPolicy.DecideStagedVideoTurns(
+                _rotation, pendingTurns, width > height);
+            if (_sessionHandle != 0 && _handle != 0 &&
+                !NativeCore.SetDeviceWindowVideoStageRotation(
+                    _sessionHandle, _handle, earlyVideoTurns))
+                Log("independent_window_video_stage_rotation_failed",
+                    ("quarter_turns", earlyVideoTurns));
+            else
+                Log("independent_window_video_stage_rotation",
+                    ("quarter_turns", earlyVideoTurns),
+                    ("source_width", width), ("source_height", height));
+            // Reset the 120ms confirmation ONLY if portrait/landscape
+            // polarity changes. Frequent resolution re-negotiations within
+            // the same orientation must not postpone the animation forever.
+            var landscape = width > height;
+            var committedLandscape = (_rotation & 1) != 0;
+            if (_queuedAirPlayLandscape != landscape &&
+                (landscape != committedLandscape || _rotationAnimating))
+            {
+                _diagnosticOrientationId = FlashDiagnostics.NextOrientation(
+                    width, height, landscape);
+                _queuedAirPlayLandscape = landscape;
+                _queuedAirPlayAt = _rotationClock.Elapsed;
+                _airPlayOrientationTimer.Stop();
+                _airPlayOrientationTimer.Start();
+                Log("independent_window_airplay_orientation_detected",
+                    ("landscape", landscape), ("source_width", width),
+                    ("source_height", height));
+            }
+        }
+        var pendingAutoTurn = _autoRotateAirPlay && width > 0 && height > 0 &&
+            (width > height) != ((_rotation & 1) != 0);
+        // A cancelled/stale orientation timer can leave a persistent parity
+        // mismatch even when AirPlay keeps reporting IDENTICAL dimensions.
+        // Re-arm confirmation on subsequent status updates, not only when
+        // the source dimensions change. Never disturb a running animation.
+        if (pendingAutoTurn && !_rotationAnimating &&
+            !_airPlayOrientationTimer.IsEnabled && !_isFullScreen &&
+            !IsIconic(_handle))
+        {
+            var landscape = width > height;
+            _queuedAirPlayLandscape = landscape;
+            _queuedAirPlayAt = _rotationClock.Elapsed;
+            _diagnosticOrientationId = FlashDiagnostics.NextOrientation(
+                width, height, landscape);
+            _airPlayOrientationTimer.Start();
+            Log("independent_window_airplay_orientation_resync",
+                ("landscape", landscape), ("source_width", width),
+                ("source_height", height), ("rotation", _rotation));
+        }
+        if (!_rotationAnimating && !pendingAutoTurn)
+            ApplyRotatedDimensions();
         if (changed)
             Log("independent_window_dimensions",
                 ("mode", WindowMode), ("size", $"{width}x{height}"),
@@ -642,7 +873,7 @@ internal sealed class NativePreviewWindow : IDisposable
     {
         if (_disposed || _managedContent is not null || profile == _deviceFrameProfile) return;
         _deviceFrameProfile = profile;
-        ApplyRotatedDimensions();
+        if (!_rotationAnimating) ApplyRotatedDimensions();
         ApplyDeviceFrameProfile();
         Log("independent_window_device_frame",
             ("mode", WindowMode), ("profile", profile.Id),
@@ -652,6 +883,7 @@ internal sealed class NativePreviewWindow : IDisposable
     internal void ToggleFullScreen()
     {
         if (_disposed || _handle == 0) return;
+        if (_rotationAnimating) CompleteRotationAnimation();
         if (_isFullScreen)
         {
             _isFullScreen = false;
@@ -709,6 +941,14 @@ internal sealed class NativePreviewWindow : IDisposable
             handled = true;
             Log("autoplay_cancelled", ("message", "WM_QUERYCANCELAUTOPLAY"));
             return 1;
+        }
+        if (_waitingForWirelessReconnect &&
+            (message == WmContextMenu || message == WmRightButtonUp ||
+             message == WmRightButtonDown || message == WmNcRightButtonDown ||
+             message == WmNcRightButtonUp))
+        {
+            handled = true;
+            return 0;
         }
         if (IsPointerInputEnabledForWindow &&
             (message == WmKillFocus || message == WmCancelMode ||
@@ -769,6 +1009,14 @@ internal sealed class NativePreviewWindow : IDisposable
                 if (_capturedMouseButtons == 0) _ = ReleaseCapture();
                 handled = true;
                 return 0;
+            case WmMouseWheel when !_isFullScreen && !_isFixed &&
+                ((wParam.ToInt64() & 0x0008) != 0 || GetKeyState(VkControl) < 0):
+                // CTRL+wheel is a Windows window-size gesture, not an iOS
+                // scroll event. Handle it even while USB/BLE input is enabled.
+                var ticks = unchecked((short)(wParam.ToInt64() >> 16));
+                if (ticks != 0) QueueSmoothWheelZoom(ticks);
+                handled = true;
+                return 0;
             case WmMouseWheel when IsPointerInputActive:
                 DispatchPointer(PreviewPointerKind.Wheel, ScreenPointToClientLParam(lParam), 0,
                     unchecked((short)(wParam.ToInt64() >> 16)));
@@ -790,6 +1038,21 @@ internal sealed class NativePreviewWindow : IDisposable
                 // Boss key is process-global. Keep it out of the iPhone HID
                 // stream while the main window receives WM_HOTKEY.
                 handled = true;
+                return 0;
+            case WmKeyDown when !_rotationAnimating && GetKeyState(VkControl) < 0 &&
+                wParam.ToInt32() == VkLeft:
+                handled = true;
+                Rotate(-1);
+                return 0;
+            case WmKeyDown when !_rotationAnimating && GetKeyState(VkControl) < 0 &&
+                wParam.ToInt32() == VkRight:
+                handled = true;
+                Rotate(1);
+                return 0;
+            case WmKeyDown when _rotationAnimating && GetKeyState(VkControl) < 0 &&
+                (wParam.ToInt32() == VkLeft || wParam.ToInt32() == VkRight):
+                handled = true;
+                Rotate(wParam.ToInt32() == VkRight ? 1 : -1);
                 return 0;
             case WmKeyDown when wParam.ToInt32() == VkF11:
                 handled = true;
@@ -830,7 +1093,8 @@ internal sealed class NativePreviewWindow : IDisposable
                 return 0;
             case WmNcHitTest when _managedContent is null:
                 handled = true;
-                return _isFullScreen || _isFixed ? HtClient : HitTestWindow(lParam);
+                return _waitingForWirelessReconnect ? new nint(-1) :
+                    _isFullScreen || _isFixed ? HtClient : HitTestWindow(lParam);
             case WmContextMenu:
             case WmRightButtonUp:
                 handled = true;
@@ -857,6 +1121,10 @@ internal sealed class NativePreviewWindow : IDisposable
                 // flash while its swap chain is being resized/recreated.
                 handled = true;
                 return 1;
+            case WmSize:
+                FlashDiagnostics.Trace(10, lParam.ToInt64() & 0xffff,
+                    (lParam.ToInt64() >> 16) & 0xffff);
+                break;
             case WmClose:
                 handled = true;
                 QueueClose();
@@ -919,6 +1187,60 @@ internal sealed class NativePreviewWindow : IDisposable
         }
     }
 
+    private void SetIndependentWindowSize(double fraction)
+    {
+        if (_disposed || _isFullScreen || _isFixed || _rotationAnimating ||
+            _handle == 0) return;
+        _wheelZoomTimer.Stop();
+        fraction = Math.Round(Math.Clamp(fraction, 0.35, 0.95), 2);
+        if (!_aspectController.ResizeToWorkAreaFraction(fraction)) return;
+        _sizeFraction = fraction;
+        _wheelZoomTargetFraction = fraction;
+        UpdateContextMenuLabels();
+        Log("independent_window_size_changed",
+            ("mode", WindowMode), ("fraction", fraction));
+    }
+
+    private void QueueSmoothWheelZoom(int wheelDelta)
+    {
+        if (_disposed || _isFullScreen || _isFixed || _rotationAnimating ||
+            _handle == 0) return;
+        // Preserve precision for touchpads which send sub-120 wheel deltas.
+        // Subsequent input updates one target instead of immediately running
+        // SetWindowPos once for every raw wheel event.
+        _wheelZoomTargetFraction = Math.Clamp(
+            _wheelZoomTargetFraction + wheelDelta / 120.0 * 0.05,
+            0.35, 0.95);
+        if (!_wheelZoomTimer.IsEnabled) _wheelZoomTimer.Start();
+    }
+
+    private void OnWheelZoomTick(object? sender, EventArgs e)
+    {
+        if (_disposed || _isFullScreen || _isFixed || _rotationAnimating ||
+            _handle == 0)
+        {
+            _wheelZoomTimer.Stop();
+            return;
+        }
+        var remaining = _wheelZoomTargetFraction - _sizeFraction;
+        var finished = Math.Abs(remaining) < 0.001;
+        var next = finished
+            ? _wheelZoomTargetFraction
+            : _sizeFraction + remaining * 0.38;
+        if (!_aspectController.ResizeToWorkAreaFraction(next))
+        {
+            _wheelZoomTimer.Stop();
+            _wheelZoomTargetFraction = _sizeFraction;
+            return;
+        }
+        _sizeFraction = next;
+        if (!finished) return;
+        _wheelZoomTimer.Stop();
+        UpdateContextMenuLabels();
+        Log("independent_window_size_changed",
+            ("mode", WindowMode), ("fraction", Math.Round(next, 3)));
+    }
+
     private void ShowContextMenu()
     {
         if (_disposed) return;
@@ -935,9 +1257,14 @@ internal sealed class NativePreviewWindow : IDisposable
             _isFullScreen ? "IndependentWindowExitFullScreen" :
                 "IndependentWindowEnterFullScreen");
         _windowMenuItem.Header = LocalizationService.Get("IndependentWindowWindowMenu");
+        _windowSizeItem.Header = LocalizationService.Get("IndependentWindowSize");
+        _windowSizeItem.IsEnabled = !_isFullScreen && !_isFixed;
+        foreach (var (fraction, item) in _sizePresets)
+            item.IsChecked = Math.Abs(fraction - _sizeFraction) < 0.001;
         _displayMenuItem.Header = LocalizationService.Get("IndependentWindowDisplayMenu");
         _topMostItem.Header = LocalizationService.Get(
             _isTopMost ? "IndependentWindowUnpin" : "IndependentWindowPin");
+        _topMostItem.IsChecked = _isTopMost;
         _fixedItem.Header = LocalizationService.Get(
             _isFixed ? "IndependentWindowUnfix" : "IndependentWindowFix");
         _fixedItem.IsEnabled = !_isFullScreen;
@@ -977,6 +1304,12 @@ internal sealed class NativePreviewWindow : IDisposable
                 "IndependentWindowProjectionSettings");
         _rotateLeftItem.Header = LocalizationService.Get("IndependentWindowRotateLeft");
         _rotateRightItem.Header = LocalizationService.Get("IndependentWindowRotateRight");
+        _startFlashDiagnosticItem.Header = LocalizationService.Get("FlashDiagnosticStart");
+        _startFlashDiagnosticItem.IsEnabled = !FlashDiagnostics.Active;
+        _stopFlashDiagnosticItem.Header = LocalizationService.Get("FlashDiagnosticStop");
+        _stopFlashDiagnosticItem.IsEnabled = FlashDiagnostics.Active;
+        _markFlashDiagnosticItem.Header = "标记刚才闪屏（回溯 1.5 秒）";
+        _markFlashDiagnosticItem.IsEnabled = FlashDiagnostics.Active;
         _muteMenuItem.Header = LocalizationService.Get("IndependentWindowAudioMenu");
         _muteThisItem.Header = LocalizationService.Get(
             _isAudioEnabled?.Invoke() == false
@@ -1025,9 +1358,24 @@ internal sealed class NativePreviewWindow : IDisposable
     private void ToggleTopMost()
     {
         if (_disposed || _handle == 0) return;
-        _isTopMost = !_isTopMost;
-        _ = SetWindowPos(_handle, _isTopMost ? HwndTopMost : HwndNoTopMost,
-            0, 0, 0, 0, SwpNoSize | SwpNoMove | SwpNoActivate);
+        var desiredTopMost = !_isTopMost;
+        if (!SetWindowPos(_handle, desiredTopMost ? HwndTopMost : HwndNoTopMost,
+                0, 0, 0, 0, SwpNoSize | SwpNoMove | SwpNoActivate))
+        {
+            Log("independent_window_topmost_failed",
+                ("mode", WindowMode), ("requested", desiredTopMost),
+                ("win32_error", Marshal.GetLastWin32Error()));
+            UpdateContextMenuLabels();
+            return;
+        }
+        _isTopMost = desiredTopMost;
+        if (Application.Current is App app)
+        {
+            // Each open window retains its own state; persist the selected
+            // default for the next independent window or application launch.
+            app.UpdateSettings.IndependentWindowAlwaysOnTop = _isTopMost;
+            _ = app.SaveUpdateSettings();
+        }
         UpdateContextMenuLabels();
         Log("independent_window_topmost",
             ("mode", WindowMode), ("enabled", _isTopMost));
@@ -1056,10 +1404,11 @@ internal sealed class NativePreviewWindow : IDisposable
     private bool IsUsbControlEnabledForWindow => _pointerInput is not null &&
         (_isUsbControlEnabled?.Invoke() ?? false);
     private bool IsPointerInputEnabledForWindow =>
-        IsReverseControlEnabledForWindow || IsUsbControlEnabledForWindow;
+        !_waitingForWirelessReconnect &&
+        (IsReverseControlEnabledForWindow || IsUsbControlEnabledForWindow);
     private bool IsPointerInputActive =>
-        IsReverseControlActive || (IsUsbControlEnabledForWindow &&
-            GetForegroundWindow() == _handle);
+        !_rotationAnimating && (IsReverseControlActive ||
+        (IsUsbControlEnabledForWindow && GetForegroundWindow() == _handle));
 
     private void EnableReverseControl()
     {
@@ -1177,10 +1526,11 @@ internal sealed class NativePreviewWindow : IDisposable
         x = Math.Clamp(x, 0, Math.Max(0, screen.Width - 1));
         y = Math.Clamp(y, 0, Math.Max(0, screen.Height - 1));
 
-        var sourceWidth = (_rotation & 1) == 0 ? _sourceWidth : _sourceHeight;
-        var sourceHeight = (_rotation & 1) == 0 ? _sourceHeight : _sourceWidth;
+        var sourceTurns = EffectiveSourceTurns;
+        var sourceWidth = (sourceTurns & 1) == 0 ? _sourceWidth : _sourceHeight;
+        var sourceHeight = (sourceTurns & 1) == 0 ? _sourceHeight : _sourceWidth;
         _pointerInput(new PreviewPointerEventArgs(kind, (short)x, (short)y, button, wheel,
-            screen.Width, screen.Height, sourceWidth, sourceHeight, _rotation));
+            screen.Width, screen.Height, sourceWidth, sourceHeight, sourceTurns));
     }
 
     private void ToggleCorners()
@@ -1194,26 +1544,446 @@ internal sealed class NativePreviewWindow : IDisposable
             ("mode", WindowMode), ("enabled", _cornersEnabled));
     }
 
-    private void Rotate(int delta)
+    private bool Rotate(int delta, bool autoTriggered = false)
     {
-        if (_handle == 0) return;
-        _rotation = ((_rotation + delta) % 4 + 4) % 4;
-        if (_managedContent is not null)
+        if (_disposed || _handle == 0) return false;
+        if (_managedContent is not null || _sessionHandle == 0 ||
+            _isFullScreen || IsIconic(_handle))
+        {
+            // Media-cast windows have a separate managed visual and retain
+            // the previous non-phone quarter-turn behavior.
+            if (_managedContent is null) return false;
+            _rotation = ((_rotation + delta) % 4 + 4) % 4;
             _managedContent.LayoutTransform = new RotateTransform(_rotation * 90);
-        else if (_sessionHandle != 0)
-            _ = NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, _rotation);
-        ApplyRotatedDimensions();
-        Log("independent_window_rotation",
-            ("mode", WindowMode), ("quarter_turns", _rotation));
+            ApplyRotatedDimensions();
+            return true;
+        }
+
+        // Windows reduced-motion setting skips interpolation but still keeps
+        // the final shell and video under the same discrete native transform.
+        if (!SystemParameters.MenuAnimation)
+        {
+            var next = ((_rotation + delta) % 4 + 4) % 4;
+            if (!NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, next))
+                return false;
+            _rotation = next;
+            ApplyRotatedDimensions();
+            return true;
+        }
+
+        var retargeting = _rotationAnimating;
+        // Record the request BEFORE the square HWND stage is constructed.
+        FlashDiagnostics.Trace(48, delta, autoTriggered ? 1 : 0,
+            _rotation, retargeting ? 1 : 0);
+        if (!_rotationAnimating && !BeginRotationAnimation()) return false;
+        var fromAngle = _rotationTimeline.Sample(_rotationClock.Elapsed);
+        _diagnosticRotationId = FlashDiagnostics.NextRotation(fromAngle,
+            _rotationTimeline.TargetDegrees + delta * 90.0,
+            _rotationOriginalClientWidth, _rotationOriginalClientHeight,
+            autoTriggered ? _diagnosticOrientationId : 0);
+        FlashDiagnostics.Trace(49, autoTriggered ? 1 : 0,
+            autoTriggered ? (long)_diagnosticOrientationId : 0);
+        _diagnosticRotationStartedAt = _rotationClock.Elapsed;
+        if (retargeting)
+            FlashDiagnostics.Trace(7, FlashDiagnostics.MilliDegrees(fromAngle),
+                FlashDiagnostics.MilliDegrees(_rotationTimeline.TargetDegrees + delta * 90.0));
+        // Retarget from the CURRENT eased angle. A reverse click during the
+        // animation does not snap back to zero or restart its phone texture.
+        _rotationTimeline.Retarget(delta * 90.0, _rotationClock.Elapsed);
+        UpdateRotationVisual();
+        if (!_rotationAnimating) return false;
+        SubscribeRotationRendering();
+        _rotationTimer.Start();
+        return true;
     }
 
-    private void ApplyRotatedDimensions()
+    private void MarkFlashDiagnostic()
+    {
+        try
+        {
+            var id = FlashDiagnostics.MarkVisibleFlash();
+            Log("independent_window_flash_marked", ("marker_id", id));
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"无法标记闪屏：{ex.Message}", "iPhoneMirror",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void StartFlashDiagnostic()
+    {
+        try
+        {
+            FlashDiagnostics.Start();
+            _ownsFlashDiagnostic = true;
+            UpdateContextMenuLabels();
+            MessageBox.Show("闪屏诊断已开始。请复现问题，然后选择“结束诊断并导出 ZIP”。",
+                "iPhoneMirror", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"无法开始闪屏诊断：{error.Message}", "iPhoneMirror",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async Task StopFlashDiagnosticAsync()
+    {
+        try
+        {
+            _stopFlashDiagnosticItem.IsEnabled = false;
+            var path = await FlashDiagnostics.StopAndExportAsync();
+            _ownsFlashDiagnostic = false;
+            if (MessageBox.Show($"诊断 ZIP 已保存：\n{path}\n\n打开所在文件夹？",
+                    "iPhoneMirror", MessageBoxButton.YesNo,
+                    MessageBoxImage.Information) == MessageBoxResult.Yes)
+                Process.Start(new ProcessStartInfo("explorer.exe",
+                    $"/select,\"{path}\"") { UseShellExecute = true });
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"诊断导出失败：{error.Message}", "iPhoneMirror",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { UpdateContextMenuLabels(); }
+    }
+
+    private bool BeginRotationAnimation()
+    {
+        if (!GetWindowRect(_handle, out var outer) ||
+            !GetClientRect(_handle, out var client))
+            return false;
+        var clientW = client.Right - client.Left;
+        var clientH = client.Bottom - client.Top;
+        if (clientW <= 0 || clientH <= 0) return false;
+        var monitor = MonitorFromWindow(_handle, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = (uint)Marshal.SizeOf<MonitorInfo>() };
+        if (monitor == 0 || !GetMonitorInfoW(monitor, ref info)) return false;
+        var borderW = outer.Right - outer.Left - clientW;
+        var borderH = outer.Bottom - outer.Top - clientH;
+        var available = Math.Min(info.WorkArea.Right - info.WorkArea.Left - borderW,
+            info.WorkArea.Bottom - info.WorkArea.Top - borderH);
+        if (available <= 0) return false;
+        // The diagonal bounds EVERY angle (not merely portrait/landscape).
+        var diagonal = Math.Sqrt((double)clientW * clientW +
+            (double)clientH * clientH) + 4;
+        var side = Math.Max(1, Math.Min((int)Math.Ceiling(diagonal), available));
+        var scale = (float)Math.Min(1.0, (side - 1.0) / diagonal);
+        if (scale <= 0.0f) return false;
+        var initialScale = PhoneRotationStageGeometry.ScaleAtAngle(
+            clientW, clientH, side, scale, 0);
+        if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, side, side, initialScale, true))
+        {
+            Log("independent_window_rotation_visual_unavailable");
+            return false;
+        }
+
+        var outerSideW = side + borderW;
+        var outerSideH = side + borderH;
+        // Keep the same physical center through portrait, rotation stage
+        // and landscape. Work-area clamping EACH stage independently moved
+        // the pivot by hundreds of pixels on monitors' right/bottom edges.
+        // Preserve pivot even when the window's transparent square stage
+        // extends partly outside the monitor. Never stretch the phone shell.
+        var (stageX, stageY) = PhoneRotationStageGeometry.CenteredBounds(
+            outer.Left, outer.Top, outer.Right, outer.Bottom,
+            outerSideW, outerSideH);
+        // Wheel zoom and aspect reflow must not race the two deliberate
+        // HWND resizes used by this animation (stage entry and final exit).
+        _wheelZoomTimer.Stop();
+        _wheelZoomTargetFraction = _sizeFraction;
+        _aspectController.CancelQueuedResize();
+        // Set the animation guard BEFORE SetWindowPos dispatches synchronous
+        // WM_SIZE/WM_WINDOWPOSCHANGED. A queued aspect-controller reflow used
+        // to resize the temporary square while the device was mid-turn.
+        _rotationOriginalBounds = outer;
+        _rotationOriginalClientWidth = clientW;
+        _rotationOriginalClientHeight = clientH;
+        _rotationScale = scale;
+        _rotationCanvasWidth = side;
+        _rotationCanvasHeight = side;
+        _rotationTimeline = new PhoneRotationTimeline();
+        _rotationAnimating = true;
+        if (!SetWindowPos(_handle, 0, stageX, stageY, outerSideW, outerSideH,
+                SwpNoActivate | SwpNoZOrder))
+        {
+            _rotationAnimating = false;
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
+            return false;
+        }
+        Log("independent_window_rotation_animation_started",
+            ("duration_ms", 1000), ("canvas", side), ("scale", scale));
+        return true;
+    }
+
+    private void SubscribeRotationRendering()
+    {
+        if (_rotationRenderingSubscribed) return;
+        CompositionTarget.Rendering += OnRotationRendering;
+        _rotationRenderingSubscribed = true;
+        _lastCompositionRotationTick = TimeSpan.Zero;
+    }
+
+    private void UnsubscribeRotationRendering()
+    {
+        if (!_rotationRenderingSubscribed) return;
+        CompositionTarget.Rendering -= OnRotationRendering;
+        _rotationRenderingSubscribed = false;
+    }
+
+    private void OnRotationRendering(object? sender, EventArgs e)
+    {
+        _lastCompositionRotationTick = _rotationClock.Elapsed;
+        AdvanceRotationVisual();
+    }
+
+    private void OnRotationTick(object? sender, EventArgs e)
+    {
+        // On an active WPF composition clock, do not also commit a second
+        // inconsistent 16ms DispatcherTimer transform between display
+        // presents. Use this only if no WPF render tick arrived recently.
+        if (_rotationRenderingSubscribed &&
+            _lastCompositionRotationTick != TimeSpan.Zero &&
+            _rotationClock.Elapsed - _lastCompositionRotationTick <
+                TimeSpan.FromMilliseconds(40))
+            return;
+        AdvanceRotationVisual();
+    }
+
+    private void AdvanceRotationVisual()
+    {
+        if (!_rotationAnimating || _disposed || _sessionHandle == 0)
+        {
+            _rotationTimer.Stop();
+            UnsubscribeRotationRendering();
+            return;
+        }
+        UpdateRotationVisual();
+        if (_rotationTimeline.Finished(_rotationClock.Elapsed))
+            CompleteRotationAnimation();
+    }
+
+    private void UpdateRotationVisual()
+    {
+        if (!_rotationAnimating) return;
+        var angle = (float)_rotationTimeline.Sample(_rotationClock.Elapsed);
+        var frameScale = PhoneRotationStageGeometry.ScaleAtAngle(
+            _rotationOriginalClientWidth, _rotationOriginalClientHeight,
+            _rotationCanvasWidth, _rotationScale, angle);
+        FlashDiagnostics.Trace(6, FlashDiagnostics.MilliDegrees(angle),
+            FlashDiagnostics.MilliDegrees(_rotationTimeline.TargetDegrees),
+            (long)Math.Round(frameScale * 1000000),
+            (long)_rotationClock.Elapsed.TotalMilliseconds);
+        if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                angle, _rotationCanvasWidth, _rotationCanvasHeight,
+                frameScale, true))
+        {
+            Log("independent_window_rotation_animation_failed");
+            AbortRotationAnimation();
+        }
+    }
+
+    private void CompleteRotationAnimation()
+    {
+        if (!_rotationAnimating) return;
+        _rotationTimer.Stop();
+        UnsubscribeRotationRendering();
+        var turns = (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0);
+        if (turns == 0)
+        {
+            // A left/right reversal during the 1000ms animation returns to
+            // the SAME exact user-sized window. The old completion applied
+            // _rotationScale even to a net-zero turn, shrinking the bezel
+            // suddenly at the last frame (visible flicker and size jump).
+            var old = _rotationOriginalBounds;
+            var oldW = Math.Max(1, old.Right - old.Left);
+            var oldH = Math.Max(1, old.Bottom - old.Top);
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, _rotationOriginalClientWidth,
+                _rotationOriginalClientHeight, 1.0f, true);
+            _ = SetWindowPos(_handle, 0, old.Left, old.Top, oldW, oldH,
+                SwpNoActivate | SwpNoZOrder);
+            _rotationAnimating = false;
+            _aspectController.CancelQueuedResize();
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
+            ApplyRotatedDimensions(reflow: false);
+            Log("independent_window_rotation_reversed_to_original_size",
+                ("width", oldW), ("height", oldH));
+            FlashDiagnostics.Trace(8, _rotation, _rotationOriginalClientWidth,
+                _rotationOriginalClientHeight,
+                (long)(_rotationClock.Elapsed - _diagnosticRotationStartedAt).TotalMilliseconds);
+            return;
+        }
+        var nextRotation = ((_rotation + turns) % 4 + 4) % 4;
+        var swapped = (turns & 1) != 0;
+        var width = swapped ? _rotationOriginalClientHeight : _rotationOriginalClientWidth;
+        var height = swapped ? _rotationOriginalClientWidth : _rotationOriginalClientHeight;
+        var outerW = _rotationOriginalBounds.Right - _rotationOriginalBounds.Left -
+            _rotationOriginalClientWidth;
+        var outerH = _rotationOriginalBounds.Bottom - _rotationOriginalBounds.Top -
+            _rotationOriginalClientHeight;
+        var finalClientW = Math.Max(1, (int)Math.Round(width * _rotationScale));
+        var finalClientH = Math.Max(1, (int)Math.Round(height * _rotationScale));
+        var finalW = finalClientW + outerW;
+        var finalH = finalClientH + outerH;
+        var (finalX, finalY) = PhoneRotationStageGeometry.CenteredBounds(
+            _rotationOriginalBounds.Left, _rotationOriginalBounds.Top,
+            _rotationOriginalBounds.Right, _rotationOriginalBounds.Bottom,
+            finalW, finalH);
+
+        // The reference animation rotates the WHOLE device inside a fixed
+        // fitted stage. Keep the ORIGINAL portrait backbuffer untouched
+        // until the last animation frame is visible. Only then resize HWND,
+        // while DComp still presents the complete phone at the final angle.
+        // The former order rotated the PNG shader inside a portrait swapchain
+        // before the HWND was resized: landscape bezel + vertical screen.
+        var finalAngle = (float)_rotationTimeline.TargetDegrees;
+        if (!NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                finalAngle, finalClientW, finalClientH, _rotationScale, true))
+        {
+            Log("independent_window_rotation_handoff_failed");
+            AbortRotationAnimation();
+            return;
+        }
+        if (!SetWindowPos(_handle, 0, finalX, finalY, finalW, finalH,
+                SwpNoActivate | SwpNoZOrder))
+        {
+            AbortRotationAnimation();
+            return;
+        }
+        // Commit the shader quarter-turn only AFTER the HWND has its final
+        // geometry. Native D3D11 blocks intermediate presents until the new
+        // swapchain size is ready, then clears DComp on the SAME present.
+        if (!NativeCore.SetDeviceWindowRotation(_sessionHandle, _handle, nextRotation))
+        {
+            Log("independent_window_rotation_commit_failed");
+            AbortRotationAnimation();
+            return;
+        }
+        _rotation = nextRotation;
+        _rotationAnimating = false;
+        _aspectController.CancelQueuedResize();
+        _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+            0, 0, 0, 1, false);
+        ApplyRotatedDimensions(reflow: false);
+        Log("independent_window_rotation_animation_completed",
+            ("mode", WindowMode), ("quarter_turns", nextRotation),
+            ("duration_ms", 1000), ("client_size", $"{finalClientW}x{finalClientH}"));
+        FlashDiagnostics.Trace(8, nextRotation, finalClientW, finalClientH,
+            (long)(_rotationClock.Elapsed - _diagnosticRotationStartedAt).TotalMilliseconds);
+    }
+
+    private void AbortRotationAnimation()
+    {
+        if (!_rotationAnimating) return;
+        _rotationTimer.Stop();
+        UnsubscribeRotationRendering();
+        _rotationAnimating = false;
+        FlashDiagnostics.Trace(9, _rotationOriginalClientWidth,
+            _rotationOriginalClientHeight);
+        _aspectController.CancelQueuedResize();
+        // Restore the unrotated HWND first; only then release DComp resize
+        // protection. An early transform reset while still in the square
+        // stage is visibly off-center and can briefly expose a giant bezel.
+        var bounds = _rotationOriginalBounds;
+        if (_handle != 0)
+            _ = SetWindowPos(_handle, 0, bounds.Left, bounds.Top,
+                Math.Max(1, bounds.Right - bounds.Left),
+                Math.Max(1, bounds.Bottom - bounds.Top),
+                SwpNoActivate | SwpNoZOrder);
+        if (_sessionHandle != 0 && _handle != 0)
+            _ = NativeCore.SetDeviceWindowVisualRotation(_sessionHandle, _handle,
+                0, 0, 0, 1, false);
+    }
+
+    private void ApplyRotatedDimensions(bool reflow = true)
     {
         if (_sourceWidth == 0 || _sourceHeight == 0) return;
-        var width = (_rotation & 1) != 0 ? _sourceHeight : _sourceWidth;
-        var height = (_rotation & 1) != 0 ? _sourceWidth : _sourceHeight;
-        var outer = _deviceFrameProfile.GetOuterDimensions(width, height);
-        _aspectController.SetSourceDimensions(outer.Width, outer.Height);
+        // The SDK can ALREADY deliver landscape video after iOS rotates.
+        // Normalise to a portrait physical phone first, then apply exactly
+        // one shell rotation. Blindly swapping the new landscape source a
+        // second time caused portrait-aspect HWND reflows / giant bezels.
+        // Keep the physical 16 Pro Max shell at its fixed native aspect
+        // despite transient 16:9/9:16/4K AirPlay content dimensions. The
+        // D3D11 renderer fits movie pixels within this unchanged aperture.
+        var outer = DeviceFrameProfileResolver.GetStableWindowOuterDimensions(
+            _deviceFrameProfile, _sourceWidth, _sourceHeight, _rotation);
+        _aspectController.SetSourceDimensions(outer.Width, outer.Height, reflow);
+    }
+
+    /// <summary>Automatically turn the entire physical AirPlay phone left
+    /// when the decoded source switches to landscape; turn right on return
+    /// to portrait. Does NOT attempt to infer playback from static pixels.</summary>
+    internal void EnableAirPlayAutomaticRotation(bool enabled)
+    {
+        if (_managedContent is not null || _disposed) return;
+        _autoRotateAirPlay = enabled;
+        if (!enabled && _sessionHandle != 0 && _handle != 0)
+            _ = NativeCore.SetDeviceWindowVideoStageRotation(
+                _sessionHandle, _handle, -1);
+        _queuedAirPlayLandscape = null;
+        _airPlayOrientationTimer.Stop();
+        if (enabled && _sourceWidth != 0 && _sourceHeight != 0)
+        {
+            _queuedAirPlayLandscape = _sourceWidth > _sourceHeight;
+            _queuedAirPlayAt = _rotationClock.Elapsed;
+            _airPlayOrientationTimer.Start();
+        }
+    }
+
+    private void OnAirPlayOrientationSettled(object? sender, EventArgs e)
+    {
+        _airPlayOrientationTimer.Stop();
+        var queuedAgeMs = (_rotationClock.Elapsed - _queuedAirPlayAt).TotalMilliseconds;
+        _queuedAirPlayLandscape = null;
+        if (!_autoRotateAirPlay || _disposed || _handle == 0 ||
+            _sessionHandle == 0 || _isFullScreen ||
+            _sourceWidth == 0 || _sourceHeight == 0) return;
+
+        // Ignore ambiguous nearly-square frames while the encoder negotiates.
+        var largest = Math.Max(_sourceWidth, _sourceHeight);
+        var smallest = Math.Min(_sourceWidth, _sourceHeight);
+        if (smallest == 0 || largest < smallest * 1.12) return;
+        var landscape = _sourceWidth > _sourceHeight;
+        FlashDiagnostics.Trace(4, _sourceWidth, _sourceHeight,
+            landscape ? 1 : 0, (long)Math.Round(queuedAgeMs));
+        // The visual may already be turning when the iPhone reverses video
+        // orientation. Compare against the DESTINATION quarter-turn rather
+        // than the still-uncommitted base quarter-turn. A manual right-turn
+        // also counts as an already-horizontal shell; do not force a second
+        // left turn that would make the device portrait again.
+        var pendingTurns = _rotationAnimating
+            ? (int)Math.Round(_rotationTimeline.TargetDegrees / 90.0)
+            : 0;
+        var delta = PhoneAutoRotationPolicy.DecideDelta(
+            _rotation, pendingTurns, landscape);
+        if (delta == 0)
+        {
+            _autoAirPlayWasLandscape = landscape;
+            return;
+        }
+        if (!Rotate(delta, autoTriggered: true))
+        {
+            // A failed or temporarily unavailable DComp transition must not
+            // consume the orientation event. Retry it while this window lives.
+            Log("independent_window_airplay_orientation_retry",
+                ("landscape", landscape), ("source_width", _sourceWidth),
+                ("source_height", _sourceHeight));
+            if (!_disposed && _autoRotateAirPlay && _handle != 0 &&
+                _sessionHandle != 0)
+                _airPlayOrientationTimer.Start();
+            return;
+        }
+        _autoAirPlayWasLandscape = landscape;
+        Log("independent_window_airplay_orientation_auto",
+            ("landscape", landscape), ("delta", delta),
+            ("source_width", _sourceWidth),
+            ("source_height", _sourceHeight),
+            ("confirmation_ms", Math.Round(queuedAgeMs)));
     }
 
     private void ApplyDeviceFrameProfile()
@@ -1228,7 +1998,17 @@ internal sealed class NativePreviewWindow : IDisposable
         Log("independent_window_dispose_begin",
             ("mode", WindowMode), ("attached", _attached),
             ("full_screen", _isFullScreen));
+        if (_rotationAnimating) AbortRotationAnimation();
+        if (_ownsFlashDiagnostic && FlashDiagnostics.Active)
+            _ = FlashDiagnostics.StopAndExportAsync();
         _disposed = true;
+        _rotationTimer.Stop();
+        UnsubscribeRotationRendering();
+        _rotationTimer.Tick -= OnRotationTick;
+        _airPlayOrientationTimer.Stop();
+        _airPlayOrientationTimer.Tick -= OnAirPlayOrientationSettled;
+        _wheelZoomTimer.Stop();
+        _wheelZoomTimer.Tick -= OnWheelZoomTick;
         OpenWindows.Remove(this);
         _protectedOverlay?.Close();
         _protectedOverlay = null;

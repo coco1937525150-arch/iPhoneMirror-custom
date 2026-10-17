@@ -107,11 +107,14 @@ internal static class WirelessReceiverConfiguration
     internal static IReadOnlyList<WirelessDisplayProfile> DisplayProfiles { get; } =
     [
         new("maximum", "WirelessProfileMaximum", 5120, 2880, 60),
+        new("3k", "WirelessProfile3K", 3072, 1728, 60),
+        new("2k", "WirelessProfile2K", 2560, 1440, 60),
         new("1080p", "WirelessProfile1080p", 1920, 1080, 60),
         new("720p", "WirelessProfile720p", 1280, 720, 30),
         new("540p", "WirelessProfile540p", 960, 540, 30),
     ];
-    internal static WirelessDisplayProfile DefaultDisplayProfile => DisplayProfiles[1];
+    internal static WirelessDisplayProfile DefaultDisplayProfile =>
+        DisplayProfiles.First(profile => profile.Id == "1080p");
 
     internal static WirelessReceiverBackend NormalizeBackend(
         WirelessReceiverBackend backend) => Enum.IsDefined(backend)

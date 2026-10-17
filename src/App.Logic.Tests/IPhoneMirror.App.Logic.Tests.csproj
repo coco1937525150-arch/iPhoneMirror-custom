@@ -22,6 +22,7 @@
     <Compile Include="..\App\Services\CaptureShutdownCoordinator.cs" Link="CaptureShutdownCoordinator.cs" />
     <Compile Include="..\App\Services\DeviceSessionManager.cs" Link="DeviceSessionManager.cs" />
     <Compile Include="..\App\Services\SingleInstanceCoordinator.cs" Link="SingleInstanceCoordinator.cs" />
+    <Compile Include="..\App\Models\DeviceViewModel.cs" Link="DeviceViewModel.cs" />
     <Compile Include="..\App\Models\DeviceCornerProfile.cs" Link="DeviceCornerProfile.cs" />
     <Compile Include="..\App\Models\DeviceFrameProfile.cs" Link="DeviceFrameProfile.cs" />
     <Compile Include="..\App\Models\DeviceCaptureState.cs" Link="DeviceCaptureState.cs" />
@@ -39,6 +40,7 @@
     <Compile Include="..\App\Services\NativeLogTailReader.cs" Link="NativeLogTailReader.cs" />
     <Compile Include="..\App\Services\AppLog.cs" Link="AppLog.cs" />
     <Compile Include="..\App\Services\DiagnosticLogger.cs" Link="DiagnosticLogger.cs" />
+    <Compile Include="..\App\Services\FlashDiagnostics.cs" Link="FlashDiagnostics.cs" />
     <Compile Include="..\App\Services\StartupDiagnostics.cs" Link="StartupDiagnostics.cs" />
     <Compile Include="..\App\Services\CaptureErrorGuidance.cs" Link="CaptureErrorGuidance.cs" />
     <Compile Include="..\App\Services\IPhoneFilterDriverService.cs" Link="IPhoneFilterDriverService.cs" />
@@ -57,6 +59,12 @@
     <Compile Include="..\App\Services\BluetoothMouseReportCoalescer.cs" Link="BluetoothMouseReportCoalescer.cs" />
     <Compile Include="..\App\Services\AppleProductNames.cs" Link="AppleProductNames.cs" />
     <Compile Include="..\App\Services\MediaOutputService.cs" Link="MediaOutputService.cs" />
+    <Compile Include="..\App\Services\PhoneShellMediaComposer.cs" Link="PhoneShellMediaComposer.cs" />
+    <Compile Include="..\App\Services\PhoneRotationTimeline.cs" Link="PhoneRotationTimeline.cs" />
+    <Compile Include="..\App\Services\PhoneAutoRotationPolicy.cs" Link="PhoneAutoRotationPolicy.cs" />
+    <Compile Include="..\App\Services\PhoneRotationStageGeometry.cs" Link="PhoneRotationStageGeometry.cs" />
+    <Compile Include="..\App\Services\PhoneShellApertureMask.cs" Link="PhoneShellApertureMask.cs" />
+    <Compile Include="..\App\Services\PhoneShellAssetStore.cs" Link="PhoneShellAssetStore.cs" />
     <Compile Include="..\App\Services\RuntimeBinaryIntegrity.cs" Link="RuntimeBinaryIntegrity.cs" />
     <Compile Include="..\App\Services\PendingRecordingStore.cs" Link="PendingRecordingStore.cs" />
     <Compile Include="..\App\Updater\SemanticVersion.cs" Link="Updater\SemanticVersion.cs" />
@@ -67,6 +75,10 @@
     <Compile Include="..\App\Updater\UpdateInstallerLauncher.cs" Link="Updater\UpdateInstallerLauncher.cs" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Logic tests link the same shell asset store source; make the embedded
+         shell available in the test assembly under the production name. -->
+    <EmbeddedResource Include="..\App\Assets\iphone16_pro_max_shell.png"
+                      LogicalName="IPhoneMirror.Shell.IPhone16ProMax" />
     <EmbeddedResource Include="..\App\tools\updater\Apply-ZipUpdate.ps1"
                       LogicalName="IPhoneMirror.App.Updater.Apply-ZipUpdate.ps1" />
   </ItemGroup>

@@ -201,14 +201,17 @@ try {
     }
     Assert-UsbTouchBridgeRuntime (Join-Path $InstallDirectory 'tools') `
         'Installed USB touch bridge runtime'
-    $installedBridgeLibUsb0 = Join-Path $InstallDirectory `
-        'tools\_internal\libusb0.dll'
-    if (-not (Test-Path -LiteralPath $installedBridgeLibUsb0 -PathType Leaf) -or
-        (Get-FileHash -LiteralPath $installedBridgeLibUsb0 -Algorithm SHA256).Hash -ne
-        (Get-FileHash -LiteralPath (Join-Path $InstallDirectory 'libusb0.dll') `
-            -Algorithm SHA256).Hash) {
-        throw 'Upgrade did not install the bridge-local libusb0 runtime.'
+    # Rust schema-2 bridge does not use PyInstaller's local _internal directory.
+    $installedBridgeSchema = [int]((Get-Content -LiteralPath (Join-Path $InstallDirectory 'tools\iUsbBridge.runtime.json') -Raw | ConvertFrom-Json).schema)
+    if ($installedBridgeSchema -eq 1) {
+        $installedBridgeLibUsb0 = Join-Path $InstallDirectory 'tools\_internal\libusb0.dll'
+        if (-not (Test-Path -LiteralPath $installedBridgeLibUsb0 -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $installedBridgeLibUsb0 -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath (Join-Path $InstallDirectory 'libusb0.dll') -Algorithm SHA256).Hash) {
+            throw 'Upgrade did not install the bridge-local libusb0 runtime.'
+        }
     }
+
     $installedVersionedDac = @(Get-ChildItem -LiteralPath $InstallDirectory `
         -Filter 'mscordaccore_amd64_amd64_*.dll' -File)
     if ($installedVersionedDac.Count -ne 1) {

@@ -173,7 +173,14 @@ public sealed class DirectUsbInputBridge : IAsyncDisposable
         {
             try
             {
-                if (new FileInfo(Path.Combine(directory, fileName)).Length <= 0)
+                var filePath = Path.Combine(directory, fileName);
+                // Apple sometimes distributes the personalized trust cache as
+                // Image.dmg.trustcache. The bundled bridge already accepts it,
+                // but the C# preflight previously rejected an otherwise valid
+                // DDI and incorrectly fell back to an incompatible cache.
+                if (fileName == "Image.trustcache" && !File.Exists(filePath))
+                    filePath = Path.Combine(directory, "Image.dmg.trustcache");
+                if (new FileInfo(filePath).Length <= 0)
                     return false;
             }
             catch (IOException) { return false; }

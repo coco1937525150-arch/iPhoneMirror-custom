@@ -48,6 +48,13 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
+    <Content Include="..\..\dist\iUsbBridge-LICENSE.txt">
+      <Link>tools\iUsbBridge-LICENSE.txt</Link>
+      <TargetPath>tools\iUsbBridge-LICENSE.txt</TargetPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
     <Content Include="..\..\dist\iUsbBridge.runtime.json">
       <Link>tools\iUsbBridge.runtime.json</Link>
       <TargetPath>tools\iUsbBridge.runtime.json</TargetPath>
@@ -69,8 +76,6 @@
   <Target Name="ValidateUsbTouchBridgePayload" BeforeTargets="PrepareForBuild">
     <Error Condition="!Exists('..\..\dist\iUsbBridge.exe')"
            Text="iUsbBridge.exe is missing. Run build.ps1 so the self-developed USB bridge is built first." />
-    <Error Condition="!Exists('..\..\dist\_internal')"
-           Text="UsbTouchBridge runtime directory is missing. Run build.ps1 so the self-developed USB bridge is built first." />
     <Error Condition="!Exists('..\..\dist\iUsbBridge.runtime.json')"
            Text="iUsbBridge runtime manifest is missing. Run build.ps1 so the self-developed USB bridge is built first." />
   </Target>
@@ -122,6 +127,10 @@
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
     <Resource Include="Assets\iPhoneMirror.png" />
+    <!-- Bundle the one permitted phone shell *inside* iPhoneMirror.exe.
+         No loose, user-replaceable shell file is distributed. -->
+    <EmbeddedResource Include="Assets\iphone16_pro_max_shell.png"
+                      LogicalName="IPhoneMirror.Shell.IPhone16ProMax" />
     <Content Include="native\iPhoneMirror.Core.dll" Condition="Exists('native\iPhoneMirror.Core.dll')">
       <Link>iPhoneMirror.Core.dll</Link>
       <TargetPath>iPhoneMirror.Core.dll</TargetPath>

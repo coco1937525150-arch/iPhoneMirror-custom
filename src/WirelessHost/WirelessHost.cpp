@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -203,33 +204,14 @@ public:
             }
 
             if (header.type == iPhoneMirror::wireless::MessageType::Video) {
-                // Original-quality AirPlay frames are commonly 5-8 MB.  If
-                // the pipe writer is still busy with the previous frame, do
-                // not copy another identical frame into the queue: that copy
-                // happens on AirPlay's decoder callback thread and can stall
-                // the sender long enough to look like an orientation freeze.
-                // A geometry change is always retained so a rotation can
-                // replace the old frame as soon as it arrives.
-                const auto same_device = [&header](const QueuedMessage& queued) {
-                    return queued.header.type ==
-                            iPhoneMirror::wireless::MessageType::Video &&
-                        std::strncmp(queued.header.device_id, header.device_id,
-                            iPhoneMirror::wireless::DeviceIdBytes) == 0;
-                };
-                const auto queued_video = std::ranges::find_if(queue_, same_device);
-                const auto writing_same_device =
-                    writing_video_device_ == std::string_view(header.device_id);
-                const auto writing_same_geometry = writing_same_device &&
-                    writing_video_width_ == header.width &&
-                    writing_video_height_ == header.height;
-                const auto queued_same_geometry = queued_video != queue_.end() &&
-                    queued_video->header.width == header.width &&
-                    queued_video->header.height == header.height;
-                if ((queued_same_geometry || writing_same_geometry) &&
-                    (queued_video != queue_.end() || writing_same_device)) {
-                    dropped_video_.fetch_add(1, std::memory_order_relaxed);
-                    return true;
-                }
+                // Width/height equality does NOT imply equal video pixels.
+                // Previously every same-resolution frame arriving while an
+                // earlier 5-8 MB IPC WriteFile was active was discarded. The
+                // UI could show 60 presented slots but receive far fewer
+                // distinct AirPlay images. Keep exactly ONE newest pending
+                // frame per device, replacing the older queued video below.
+                // This is bounded by MaxQueuedBytes, never an unbounded FIFO.
+                // Geometry changes follow the same latest-frame policy.
                 for (auto position = queue_.begin(); position != queue_.end();) {
                     if (position->header.type == iPhoneMirror::wireless::MessageType::Video &&
                         std::strncmp(position->header.device_id, header.device_id,
@@ -417,26 +399,30 @@ private:
                 }
             }
 
-            // A large original-quality frame may still be in the writer's
-            // local buffer when iOS rotates. If a newer frame for the same
-            // device is already queued, discard this stale frame before
-            // entering WriteFile so rotation is not hidden behind an old
-            // multi-megabyte payload.
+            // Skip obsolete frames when the NEXT queued frame has different
+            // orientation/geometry. Never skip solely because a newer frame
+            // has the SAME size: under constant 60fps input that can starve
+            // the pipe writer indefinitely, appearing as a frozen AirPlay
+            // picture even though iOS remains connected.
             if (message.header.type == iPhoneMirror::wireless::MessageType::Video) {
                 std::scoped_lock lock(mutex_);
-                const auto newer = std::ranges::any_of(queue_,
+                const auto superseded_by_rotation = std::ranges::any_of(queue_,
                     [&message](const QueuedMessage& queued) {
                         return queued.header.type ==
                                 iPhoneMirror::wireless::MessageType::Video &&
                             std::strncmp(queued.header.device_id,
                                 message.header.device_id,
                                 iPhoneMirror::wireless::DeviceIdBytes) == 0 &&
-                            queued.header.sequence > message.header.sequence;
+                            queued.header.sequence > message.header.sequence &&
+                            (queued.header.width != message.header.width ||
+                             queued.header.height != message.header.height);
                     });
-                if (newer) {
+                if (superseded_by_rotation) {
                     buffered_bytes_ -= message.size();
                     --buffered_messages_;
                     dropped_video_.fetch_add(1, std::memory_order_relaxed);
+                    writing_video_device_.clear();
+                    writing_video_width_ = writing_video_height_ = 0;
                     continue;
                 }
             }
@@ -506,6 +492,36 @@ class AirPlayCallback final : public IAirServerCallback {
 public:
     explicit AirPlayCallback(IpcWriter& writer) : writer_(writer) {}
 
+    // Incoming callback rate is measured before the IPC writer and before the
+    // renderer. This separates sender/decoder stalls from UI Present stalls.
+    void sampleVideoPipeline(std::uint64_t callback_index) {
+        const auto now_ms = GetTickCount64();
+        auto previous_ms = video_report_tick_ms_.load(std::memory_order_relaxed);
+        if (previous_ms == 0) {
+            if (video_report_tick_ms_.compare_exchange_strong(previous_ms,
+                    now_ms, std::memory_order_relaxed))
+                video_report_last_index_.store(callback_index, std::memory_order_relaxed);
+            return;
+        }
+        if (now_ms < previous_ms || now_ms - previous_ms < 1000) return;
+        if (!video_report_tick_ms_.compare_exchange_strong(previous_ms,
+                now_ms, std::memory_order_relaxed)) return;
+        const auto previous_index = video_report_last_index_.exchange(callback_index,
+            std::memory_order_relaxed);
+        const auto elapsed_ms = now_ms - previous_ms;
+        const double callback_fps = elapsed_ms > 0
+            ? static_cast<double>(callback_index - previous_index) * 1000.0 /
+                static_cast<double>(elapsed_ms)
+            : 0.0;
+        diagnostic(std::format(
+            "airplay_pipeline callback_fps={:.2f} callback_total={} "
+            "rejected={} send_failures={} {}",
+            callback_fps, callback_index,
+            rejected_video_.load(std::memory_order_relaxed),
+            send_failures_.load(std::memory_order_relaxed),
+            writer_.summary()));
+    }
+
     void connected(const char* remote_name, const char* remote_device_id) override {
         iPhoneMirror::wireless::MessageHeader header;
         header.type = iPhoneMirror::wireless::MessageType::Connected;
@@ -564,6 +580,7 @@ public:
         const char* remote_device_id) override {
         const auto callback_index = video_callbacks_.fetch_add(1,
             std::memory_order_relaxed) + 1;
+        sampleVideoPipeline(callback_index);
         if (!data) {
             rejected_video_.fetch_add(1, std::memory_order_relaxed);
             diagnostic("video callback rejected: null frame");
@@ -810,6 +827,60 @@ public:
             muted.value_or(false), sent);
     }
 
+    // Emit a small, allowlisted transport reason without leaking the raw
+    // upstream log. AirPlayServer messages may contain local IPs and socket
+    // identifiers, so never forward the original string to app diagnostics.
+    static std::string_view transport_reason(std::string_view text) noexcept {
+        // Allowlisted transport trace: never forward raw upstream log fields,
+        // which may include IP addresses, device IDs or socket descriptors.
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=peer_eof_observed") != text.npos)
+            return "mirror_header_peer_eof_observed";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=eof_during_local_stop") != text.npos)
+            return "mirror_header_eof_during_local_stop";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=recv_error") != text.npos)
+            return "mirror_header_recv_error";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=worker_exception_stop") != text.npos)
+            return "mirror_worker_exception_stop";
+        if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=stop_requested") != text.npos)
+            return "mirror_stop_requested";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=rtsp_teardown_received") != text.npos)
+            return "control_rtsp_teardown_received";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=peer_eof_observed") != text.npos)
+            return "control_peer_eof_observed";
+        if (text.find("IPHONE_MIRROR_CONTROL_TRACE cause=recv_error") != text.npos)
+            return "control_recv_error";
+        if (text.find("Mirror TCP partial packet idle timeout") != text.npos)
+            return "mirror_partial_packet_timeout";
+        if (text.find("Mirror TCP read timed out") != text.npos)
+            return "mirror_partial_packet_timeout";
+        if (text.find("Mirror TCP socket closed") != text.npos)
+            return "mirror_socket_closed";
+        if (text.find("Mirror TCP receive failed") != text.npos)
+            return "mirror_receive_failed";
+        if (text.find("Mirror TCP select failed") != text.npos)
+            return "mirror_select_failed";
+        if (text.find("Connection closed for socket") != text.npos)
+            return "control_socket_closed";
+        if (text.find("Error receiving data on socket") != text.npos)
+            return "control_socket_receive_failed";
+        if (text.find("TCP socket closed") != text.npos)
+            return "mirror_socket_closed_legacy";
+        if (text.find("Error in recv") != text.npos)
+            return "mirror_receive_failed_legacy";
+        return {};
+    }
+
+    // Parse numeric trace fields only after the event reason was allowlisted.
+    // Never propagate device names, raw addresses or socket identifiers.
+    static int trace_integer(std::string_view text, std::string_view field) noexcept {
+        const auto at = text.find(field);
+        if (at == text.npos) return -1;
+        const auto begin = text.data() + at + field.size();
+        int value = -1;
+        const auto [end, ec] = std::from_chars(begin, text.data() + text.size(), value);
+        return ec == std::errc{} && end != begin ? value : -1;
+    }
+
     void log(int level, const char* message) override {
         const auto text = safe_text(message);
         if (const auto metadata = parse_device_metadata(text)) {
@@ -822,6 +893,16 @@ public:
             return;
         }
         const auto log_index = log_callbacks_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (const auto reason = transport_reason(text); !reason.empty()) {
+            if (text.find("IPHONE_MIRROR_MIRROR_TRACE cause=") != text.npos ||
+                text.find("IPHONE_MIRROR_CONTROL_TRACE cause=") != text.npos) {
+                diagnosticf("airplay_transport_event reason={} level={} idle_seconds={} error_code={}",
+                    reason, level, trace_integer(text, "idle_seconds="),
+                    trace_integer(text, "error="));
+            } else {
+                diagnosticf("airplay_transport_event reason={} level={}", reason, level);
+            }
+        }
         // AirPlayServer uses syslog levels (INFO=6, DEBUG=7). Keep the opening
         // handshake in full, then retain errors only so a long stream cannot
         // flood the media pipe or the application log.
@@ -980,6 +1061,8 @@ private:
     PlaybackState playback_;
     std::atomic_uint64_t audio_callbacks_{};
     std::atomic_uint64_t video_callbacks_{};
+    std::atomic_uint64_t video_report_tick_ms_{};
+    std::atomic_uint64_t video_report_last_index_{};
     std::atomic_uint64_t log_callbacks_{};
     std::atomic_uint64_t connected_callbacks_{};
     std::atomic_uint64_t disconnected_callbacks_{};

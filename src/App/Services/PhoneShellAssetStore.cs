@@ -1,0 +1,138 @@
+using System.IO;
+using System.Security.Cryptography;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+
+namespace IPhoneMirror.App.Services;
+
+/// <summary>
+/// The immutable bundled phone shell shared by the editor and recording.
+/// Previous user overrides in LocalAppData are intentionally ignored.
+/// </summary>
+internal static class PhoneShellAssetStore
+{
+    internal const string AssetName = "iphone16_pro_max_shell.png";
+    // Exact original asset; reject stale low-resolution placeholders at runtime.
+    internal const string OriginalAssetSha256 =
+        "0539067df832d4ec3da82baaf7e690ff51c584b7dae664e16062b236eea813b4";
+
+    private const string ResourceName = "IPhoneMirror.Shell.IPhone16ProMax";
+    private static readonly Lazy<string> BundledAsset = new(ExtractBundledAsset);
+
+    // FFmpeg and the independent compositor require a file path. The source
+    // bytes are embedded in the executable and extracted by content hash;
+    // neither app settings nor a neighboring Assets folder can override them.
+    internal static string ActivePath => BundledAsset.Value;
+
+    private static string ExtractBundledAsset()
+    {
+        using var resource = typeof(PhoneShellAssetStore).Assembly
+            .GetManifestResourceStream(ResourceName) ??
+            throw new FileNotFoundException(
+                "内置 iPhone 16 Pro Max 手机壳资源缺失，请重新安装完整版本。", ResourceName);
+        using var data = new MemoryStream();
+        resource.CopyTo(data);
+        var bytes = data.ToArray();
+        if (bytes.Length < 2000 ||
+            !bytes.AsSpan(0, 8).SequenceEqual(
+                new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+            throw new InvalidDataException("内置手机壳 PNG 数据无效。");
+
+        var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (bytes.Length != 317240 || !string.Equals(digest, OriginalAssetSha256,
+                StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "安装包中的手机壳不是指定的 994×2048 原始 PNG，请安装正确的 pre6 构建。");
+        var destination = Path.Combine(Path.GetTempPath(), "iPhoneMirror",
+            "bundled-phone-shell", digest, AssetName);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        if (File.Exists(destination) &&
+            File.ReadAllBytes(destination).AsSpan().SequenceEqual(bytes))
+            return destination;
+
+        var staged = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllBytes(staged, bytes);
+            File.Move(staged, destination, overwrite: true);
+        }
+        finally { if (File.Exists(staged)) File.Delete(staged); }
+        return destination;
+    }
+
+    // Build/test normalization helper; no user override is installed.
+    internal static void Install(string file, string destinationPath)
+    {
+        if (!File.Exists(file)) throw new FileNotFoundException(
+            "手机壳 PNG 文件不存在。", file);
+        var input = new BitmapImage();
+        input.BeginInit();
+        input.CacheOption = BitmapCacheOption.OnLoad;
+        input.UriSource = new Uri(Path.GetFullPath(file));
+        input.EndInit();
+        if (input.PixelWidth is < 300 or > 2048 ||
+            input.PixelHeight is < 600 or > 4096 ||
+            input.PixelHeight <= input.PixelWidth ||
+            input.PixelWidth / (double)input.PixelHeight is < .35 or > .65)
+            throw new InvalidDataException(
+                "请选择竖屏 iPhone 手机壳 PNG（宽 300–2048、高 600–4096 像素）。");
+
+        // The supplied reference can have a solid black display area rather
+        // than an alpha hole. Convert that display to transparency while
+        // preserving the metal rails and the existing PNG exterior alpha.
+        var converted = new FormatConvertedBitmap(input,
+            PixelFormats.Bgra32, null, 0);
+        var width = converted.PixelWidth;
+        var height = converted.PixelHeight;
+        var pitch = checked(width * 4);
+        var pixels = new byte[checked(pitch * height)];
+        converted.CopyPixels(pixels, pitch, 0);
+
+        var refProfile = DeviceFrameProfileResolver.IPhoneImportedShell;
+        var hole = refProfile.GetScreenRect(width, height);
+        var radius = Math.Min(hole.Width, hole.Height) * .075;
+        var x0 = hole.X;
+        var y0 = hole.Y;
+        var x1 = hole.X + hole.Width;
+        var y1 = hole.Y + hole.Height;
+        // If the supplied PNG already has a real alpha aperture, preserve
+        // its hand-authored anti-aliasing instead of punching another rounded
+        // rectangle through the physical bezel on subsequent imports.
+        var centerX = Math.Clamp((x0 + x1) / 2, 0, width - 1);
+        var centerY = Math.Clamp((y0 + y1) / 2, 0, height - 1);
+        var alreadyTransparent = pixels[centerY * pitch + centerX * 4 + 3] <= 16;
+        if (!alreadyTransparent)
+        for (var y = Math.Max(0, y0); y < Math.Min(height, y1); y++)
+        {
+            for (var x = Math.Max(0, x0); x < Math.Min(width, x1); x++)
+            {
+                // Signed distance to the rounded inner rectangle. Make
+                // antialiasing subpixel-smooth instead of punching a sharp
+                // square into the bezel.
+                var dx = Math.Max(Math.Max(x0 + radius - x, 0),
+                    x - (x1 - radius));
+                var dy = Math.Max(Math.Max(y0 + radius - y, 0),
+                    y - (y1 - radius));
+                var distance = Math.Sqrt(dx * dx + dy * dy) - radius;
+                var opacity = Math.Clamp(distance + .5, 0, 1);
+                var offset = y * pitch + x * 4 + 3;
+                pixels[offset] = (byte)Math.Round(pixels[offset] * opacity);
+            }
+        }
+
+        var corrected = BitmapSource.Create(width, height, 96, 96,
+            PixelFormats.Bgra32, null, pixels, pitch);
+        var png = new PngBitmapEncoder();
+        png.Frames.Add(BitmapFrame.Create(corrected));
+        var destination = destinationPath;
+        var folder = Path.GetDirectoryName(destination)!;
+        Directory.CreateDirectory(folder);
+        var staging = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var output = File.Create(staging)) png.Save(output);
+            File.Move(staging, destination, overwrite: true);
+        }
+        finally { if (File.Exists(staging)) File.Delete(staging); }
+    }
+}

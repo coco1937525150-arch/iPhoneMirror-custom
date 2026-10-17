@@ -93,6 +93,16 @@ public partial class App : Application
             _singleInstanceCoordinator.StartShutdownListener(OnRemoteShutdownRequested);
             ShutdownMode = ShutdownMode.OnLastWindowClose;
             StartupDiagnostics.ValidateRequiredRuntime();
+            // D3D11 runs in the native core and cannot read a .NET single-file
+            // assembly manifest resource. Extract the *verified* embedded PNG
+            // once, then pass its immutable content-addressed path to native.
+            // Do this before MainWindow constructs/attaches preview renderers.
+            var bundledPhoneShell = PhoneShellAssetStore.ActivePath;
+            var bundledAperture = PhoneShellApertureMask.ExportVerifiedAperture(bundledPhoneShell);
+            Environment.SetEnvironmentVariable("IPHONE_MIRROR_BUNDLED_SHELL",
+                bundledPhoneShell, EnvironmentVariableTarget.Process);
+            Environment.SetEnvironmentVariable("IPHONE_MIRROR_BUNDLED_APERTURE",
+                bundledAperture, EnvironmentVariableTarget.Process);
             GitHubReleaseClient.CleanupInterruptedDownloads();
             MainWindow = new MainWindow();
             AppIdentity.Attach(MainWindow);
@@ -253,6 +263,7 @@ public partial class App : Application
         }
         _singleInstanceCoordinator?.Dispose();
         _singleInstanceCoordinator = null;
+        FlashDiagnostics.WaitForPendingExport();
         DiagnosticLogger.Shutdown(e.ApplicationExitCode);
         base.OnExit(e);
     }

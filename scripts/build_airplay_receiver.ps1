@@ -66,6 +66,8 @@ $SourceRoot = (Resolve-Path -LiteralPath $BuildSourceRoot).Path
     -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AirPlayMirrorRecoveryPatch.ps1') `
     -SourceRoot $SourceRoot
+& (Join-Path $ReceiverRoot 'patches\Apply-AirPlayDisconnectTracePatch.ps1') `
+    -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AirPlayOrientationAccessUnitPatch.ps1') `
     -SourceRoot $SourceRoot
 & (Join-Path $ReceiverRoot 'patches\Apply-AudioCodecPatch.ps1') `
@@ -82,6 +84,12 @@ $CompatibilityMarkers = @(
        Marker = 'IPHONE_MIRROR_AIRPLAY_PAIR_VERIFY_TWO_STAGE' },
     @{ Path = 'AirPlayServerLib\lib\raop_rtp_mirror.c';
        Marker = 'IPHONE_MIRROR_AIRPLAY_MIRROR_RECOVERY' },
+    @{ Path = 'AirPlayServerLib\lib\raop_rtp_mirror.c';
+       Marker = 'IPHONE_MIRROR_MIRROR_DISCONNECT_TRACE' },
+    @{ Path = 'AirPlayServerLib\lib\httpd.c';
+       Marker = 'IPHONE_MIRROR_CONTROL_DISCONNECT_TRACE' },
+    @{ Path = 'AirPlayServerLib\lib\raop.c';
+       Marker = 'IPHONE_MIRROR_RAOP_TEARDOWN_TRACE' },
     @{ Path = 'AirPlayServerLib\lib\raop_rtp.c';
        Marker = 'IPHONE_MIRROR_AUDIO_CODEC_NEGOTIATION' },
     @{ Path = 'AirPlayServerLib\lib\raop_rtp_mirror.c';
@@ -186,7 +194,9 @@ foreach ($Marker in @('IPHONE_MIRROR_AIRPLAY_WIDTH', 'IPHONE_MIRROR_AIRPLAY_HEIG
         'IPHONE_MIRROR_RUNTIME_DEVICE_ID',
         'IPHONE_MIRROR_BOUND_MEDIA_SOCKETS',
         'IPHONE_MIRROR_PRESERVE_IPV6_MEDIA',
-        'Mirror TCP read timed out after %d ms',
+        'Mirror TCP partial packet idle timeout after %d seconds',
+        'IPHONE_MIRROR_MIRROR_TRACE cause=',
+        'IPHONE_MIRROR_CONTROL_TRACE cause=',
         'iphonemirror://pause',
         'iphonemirror://resume',
         'iphonemirror://seek',

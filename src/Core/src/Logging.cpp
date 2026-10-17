@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <chrono>
 #include <filesystem>
@@ -42,6 +44,189 @@ std::chrono::steady_clock::time_point session_started{};
 std::once_flag fingerprint_salt_once;
 std::array<unsigned char, 32> fingerprint_salt{};
 bool fingerprint_salt_ready{};
+
+struct TraceRecord {
+    DiagnosticEvent event{};
+    std::uint64_t frame_id{};
+    std::uint64_t visual_generation{};
+    std::uint64_t rotation_id{};
+    std::uint64_t orientation_event_id{};
+    std::int64_t values[4]{};
+    std::int64_t qpc_ticks{};
+    std::uint32_t thread_id{};
+    std::int32_t hresult{};
+};
+
+struct TraceDescriptor {
+    const char* name;
+    std::array<const char*, 4> keys;
+};
+
+constexpr std::array<TraceDescriptor, 50> TraceEvents{{
+    {"unknown", {"value0", "value1", "value2", "value3"}},
+    {"diagnostic_start", {"qpc_frequency", "utc_filetime_100ns", "", ""}},
+    {"diagnostic_stop", {"ring_events_lost", "", "", ""}},
+    {"orientation_detected", {"width", "height", "landscape", ""}},
+    {"orientation_confirmed", {"width", "height", "landscape", "confirmation_ms"}},
+    {"rotation_started", {"from_angle_mdeg", "target_angle_mdeg", "client_width", "client_height"}},
+    {"rotation_progress", {"angle_mdeg", "target_angle_mdeg", "scale_ppm", "elapsed_ms"}},
+    {"rotation_retargeted", {"from_angle_mdeg", "target_angle_mdeg", "", ""}},
+    {"rotation_completed", {"quarter_turns", "client_width", "client_height", "elapsed_ms"}},
+    {"rotation_aborted", {"client_width", "client_height", "", ""}},
+    {"hwnd_resize", {"client_width", "client_height", "outer_width", "outer_height"}},
+    {"source_frame_received", {"source_width", "source_height", "source_timestamp_100ns", ""}},
+    {"source_frame_decoded", {"source_width", "source_height", "source_timestamp_100ns", "decode_us"}},
+    {"source_interrupted", {"reason", "", "", ""}},
+    {"source_resumed", {"width", "height", "", ""}},
+    {"source_frame_dropped", {"reason", "width", "height", ""}},
+    {"frame_submitted", {"source_timestamp_100ns", "logical_quarter_turns", "reused_old_frame", ""}},
+    {"frame_presented", {"source_timestamp_100ns", "backbuffer_width", "backbuffer_height", ""}},
+    {"frame_dropped", {"reason", "source_timestamp_100ns", "", ""}},
+    {"visual_created", {"client_width", "client_height", "", ""}},
+    {"visual_destroyed", {"", "", "", ""}},
+    {"visual_requested", {"angle_mdeg", "scale_ppm", "canvas_width", "canvas_height"}},
+    {"visual_set_transform", {"m11_ppm", "m12_ppm", "m21_ppm", "m22_ppm"}},
+    {"visual_commit", {"translate_x_milli", "translate_y_milli", "angle_mdeg", "scale_ppm"}},
+    {"swapchain_created", {"width", "height", "dxgi_format", ""}},
+    {"swapchain_destroyed", {"", "", "", ""}},
+    {"target_created", {"width", "height", "dxgi_format", ""}},
+    {"target_released", {"width", "height", "", ""}},
+    {"resize_begin", {"width", "height", "old_width", "old_height"}},
+    {"resize_end", {"width", "height", "dxgi_format", "duration_us"}},
+    {"device_rebuild_begin", {"reason", "", "", ""}},
+    {"device_rebuild_end", {"duration_us", "", "", ""}},
+    {"device_lost", {"reason", "", "", ""}},
+    {"present_begin", {"source_timestamp_100ns", "backbuffer_width", "backbuffer_height", "handoff"}},
+    {"present_end", {"source_timestamp_100ns", "duration_us", "backbuffer_width", "backbuffer_height"}},
+    {"output_mode_changed", {"hdr", "dxgi_format", "color_space", ""}},
+    {"gpu_texture_rebuilt", {"width", "height", "dxgi_format", "duration_us"}},
+    {"frame_gap", {"interval_us", "source_timestamp_100ns", "", ""}},
+    {"diagnostic_overflow", {"events_lost", "", "", ""}},
+    {"recording_source_stall", {"source_age_ms", "requested_fps", "source_frame_timestamp_100ns", ""}},
+    {"recording_frame_repeat", {"repeated_slots", "total_slots", "source_frame_timestamp_100ns", ""}},
+    {"recording_encoder_stall", {"write_duration_ms", "requested_fps", "slots", ""}},
+    {"recording_unstable_window", {"unique_fps_milli", "requested_fps", "repeated_slots", "max_write_ms"}},
+    {"visible_flash_marked", {"marker_id", "lookback_ms", "lookahead_ms", ""}},
+    {"frame_geometry", {"video_turns", "crop_x_ppm", "crop_y_ppm", "staging_turns"}},
+    {"frame_aperture", {"opening_x", "opening_y", "opening_width", "opening_height"}},
+    {"frame_viewport", {"viewport_x", "viewport_y", "viewport_width", "viewport_height"}},
+    {"frame_client_geometry", {"client_width", "client_height", "backbuffer_width", "backbuffer_height"}},
+    {"rotation_requested", {"delta", "trigger_auto", "committed_turns", "animating"}},
+    {"rotation_trigger", {"trigger_auto", "orientation_event_id", "", ""}},
+}};
+
+constexpr std::size_t TraceCapacity = 8192;
+constexpr std::streamoff TraceMaximumFileBytes = 128LL * 1024LL * 1024LL;
+std::array<TraceRecord, TraceCapacity> trace_ring{};
+std::mutex trace_mutex;
+std::condition_variable trace_ready;
+std::ofstream trace_file;
+std::jthread trace_worker;
+std::string trace_session_id;
+std::size_t trace_head{};
+std::size_t trace_count{};
+std::uint64_t trace_lost{};
+std::atomic_uint64_t trace_file_lost{};
+std::atomic_bool trace_active{};
+std::atomic_bool trace_writer_failed{};
+std::atomic_uint64_t trace_rotation_id{};
+std::atomic_uint64_t trace_orientation_id{};
+
+TraceRecord make_trace_record(DiagnosticEvent event, std::uint64_t frame_id,
+    std::uint64_t visual_generation, std::int64_t value0, std::int64_t value1,
+    std::int64_t value2, std::int64_t value3, std::int32_t hresult) noexcept {
+    TraceRecord record{};
+    record.event = event;
+    record.frame_id = frame_id;
+    record.visual_generation = visual_generation;
+    record.rotation_id = trace_rotation_id.load(std::memory_order_relaxed);
+    record.orientation_event_id = trace_orientation_id.load(std::memory_order_relaxed);
+    record.values[0] = value0;
+    record.values[1] = value1;
+    record.values[2] = value2;
+    record.values[3] = value3;
+    record.thread_id = GetCurrentThreadId();
+    record.hresult = hresult;
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    record.qpc_ticks = counter.QuadPart;
+    return record;
+}
+
+constexpr bool is_critical_trace_event(DiagnosticEvent event) noexcept {
+    return event == DiagnosticEvent::VisualFlashMarked ||
+        event == DiagnosticEvent::RotationRequested ||
+        event == DiagnosticEvent::RotationTrigger ||
+        event == DiagnosticEvent::OrientationDetected ||
+        event == DiagnosticEvent::OrientationConfirmed;
+}
+
+void enqueue_trace_locked(const TraceRecord& record) noexcept {
+    if (trace_count == TraceCapacity) {
+        ++trace_lost;
+        if (!is_critical_trace_event(record.event)) return;
+        // Prefer the user marker over an old high-frequency render sample
+        // when the consumer falls behind. Preserve the bounded ring size.
+        trace_head = (trace_head + 1) % TraceCapacity;
+        --trace_count;
+    }
+    trace_ring[(trace_head + trace_count) % TraceCapacity] = record;
+    ++trace_count;
+    trace_ready.notify_one();
+}
+
+void write_trace_record(const TraceRecord& record) {
+    if (record.event != DiagnosticEvent::SessionStop &&
+        record.event != DiagnosticEvent::DiagnosticOverflow &&
+        !is_critical_trace_event(record.event) &&
+        static_cast<std::streamoff>(trace_file.tellp()) >= TraceMaximumFileBytes) {
+        trace_file_lost.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const auto index = static_cast<std::size_t>(record.event);
+    const auto& descriptor = TraceEvents[index < TraceEvents.size() ? index : 0];
+    trace_file << "{\"session_id\":\"" << trace_session_id
+        << "\",\"event\":\"" << descriptor.name
+        << "\",\"qpc_ticks\":" << record.qpc_ticks
+        << ",\"thread_id\":" << record.thread_id
+        << ",\"orientation_event_id\":" << record.orientation_event_id
+        << ",\"rotation_id\":" << record.rotation_id
+        << ",\"visual_generation\":" << record.visual_generation
+        << ",\"frame_id\":" << record.frame_id
+        << ",\"hresult\":" << record.hresult;
+    for (std::size_t i = 0; i < descriptor.keys.size(); ++i) {
+        if (descriptor.keys[i][0] != '\0')
+            trace_file << ",\"" << descriptor.keys[i] << "\":" << record.values[i];
+    }
+    trace_file << "}\n";
+    if (!trace_file.good()) trace_writer_failed.store(true, std::memory_order_release);
+}
+
+void run_trace_writer(std::stop_token token) noexcept {
+    std::array<TraceRecord, 256> batch{};
+    for (;;) {
+        std::size_t count{};
+        {
+            std::unique_lock lock(trace_mutex);
+            trace_ready.wait_for(lock, std::chrono::milliseconds(100), [&] {
+                return trace_count != 0 || token.stop_requested();
+            });
+            while (count < batch.size() && trace_count != 0) {
+                batch[count++] = trace_ring[trace_head];
+                trace_head = (trace_head + 1) % TraceCapacity;
+                --trace_count;
+            }
+            if (count == 0 && token.stop_requested()) break;
+        }
+        try {
+            for (std::size_t i = 0; i < count; ++i) write_trace_record(batch[i]);
+            if (count != 0) trace_file.flush();
+            if (!trace_file.good()) trace_writer_failed.store(true, std::memory_order_release);
+        } catch (...) {
+            trace_writer_failed.store(true, std::memory_order_release);
+        }
+    }
+}
 
 void initialize_fingerprint_salt() noexcept {
     fingerprint_salt_ready = BCryptGenRandom(nullptr, fingerprint_salt.data(),
@@ -416,7 +601,108 @@ void write_event(Level level, std::string_view category, std::string_view event,
     }
 }
 
+bool start_diagnostics(std::string_view id,
+    const std::filesystem::path& timeline_path) noexcept {
+    try {
+        if (id.empty() || id.size() > 40 || !timeline_path.is_absolute() ||
+            !std::all_of(id.begin(), id.end(), [](unsigned char character) {
+                return (character >= '0' && character <= '9') ||
+                    (character >= 'a' && character <= 'f') || character == '-';
+            })) return false;
+        std::scoped_lock lock(trace_mutex);
+        if (trace_active.load(std::memory_order_acquire) || trace_worker.joinable())
+            return false;
+        trace_file.open(timeline_path, std::ios::binary | std::ios::trunc);
+        if (!trace_file.is_open()) return false;
+        trace_session_id.assign(id);
+        trace_head = trace_count = 0;
+        trace_lost = 0;
+        trace_file_lost.store(0, std::memory_order_relaxed);
+        trace_writer_failed.store(false, std::memory_order_release);
+        trace_rotation_id.store(0, std::memory_order_relaxed);
+        trace_orientation_id.store(0, std::memory_order_relaxed);
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        FILETIME now{};
+        GetSystemTimePreciseAsFileTime(&now);
+        ULARGE_INTEGER utc{};
+        utc.LowPart = now.dwLowDateTime;
+        utc.HighPart = now.dwHighDateTime;
+        enqueue_trace_locked(make_trace_record(DiagnosticEvent::SessionStart,
+            0, 0, frequency.QuadPart, static_cast<std::int64_t>(utc.QuadPart),
+            0, 0, 0));
+        trace_active.store(true, std::memory_order_release);
+        trace_worker = std::jthread(run_trace_writer);
+        return true;
+    } catch (...) {
+        trace_active.store(false, std::memory_order_release);
+        trace_count = 0;
+        trace_file.close();
+        return false;
+    }
+}
+
+bool stop_diagnostics() noexcept {
+    try {
+        std::jthread worker;
+        {
+            std::scoped_lock lock(trace_mutex);
+            if (!trace_active.exchange(false, std::memory_order_acq_rel)) return false;
+            if (trace_count == TraceCapacity) {
+                trace_head = (trace_head + 1) % TraceCapacity;
+                --trace_count;
+                ++trace_lost;
+            }
+            enqueue_trace_locked(make_trace_record(DiagnosticEvent::SessionStop,
+                0, 0, static_cast<std::int64_t>(trace_lost), 0, 0, 0, 0));
+            worker = std::move(trace_worker);
+        }
+        if (worker.joinable()) {
+            worker.request_stop();
+            trace_ready.notify_one();
+            worker.join();
+        }
+        const auto file_lost = trace_file_lost.load(std::memory_order_acquire);
+        if (file_lost != 0)
+            write_trace_record(make_trace_record(DiagnosticEvent::DiagnosticOverflow,
+                0, 0, static_cast<std::int64_t>(file_lost), 0, 0, 0, 0));
+        trace_file.flush();
+        const bool success = trace_file.good() &&
+            !trace_writer_failed.load(std::memory_order_acquire);
+        trace_file.close();
+        return success;
+    } catch (...) {
+        trace_active.store(false, std::memory_order_release);
+        return false;
+    }
+}
+
+bool diagnostics_active() noexcept {
+    return trace_active.load(std::memory_order_acquire);
+}
+
+void set_diagnostic_context(std::uint64_t rotation_id,
+    std::uint64_t orientation_event_id) noexcept {
+    trace_rotation_id.store(rotation_id, std::memory_order_relaxed);
+    trace_orientation_id.store(orientation_event_id, std::memory_order_relaxed);
+}
+
+void diagnostic_event(DiagnosticEvent event, std::uint64_t frame_id,
+    std::uint64_t visual_generation, std::int64_t value0, std::int64_t value1,
+    std::int64_t value2, std::int64_t value3, std::int32_t hresult) noexcept {
+    if (!diagnostics_active()) return;
+    try {
+        const auto record = make_trace_record(event, frame_id, visual_generation,
+            value0, value1, value2, value3, hresult);
+        std::scoped_lock lock(trace_mutex);
+        if (trace_active.load(std::memory_order_relaxed)) enqueue_trace_locked(record);
+    } catch (...) {
+        // The ordinary capture and renderer paths must never depend on a trace.
+    }
+}
+
 void shutdown() {
+    if (diagnostics_active()) (void)stop_diagnostics();
     std::scoped_lock lifecycle_lock(lifecycle_mutex);
     std::jthread worker;
     {

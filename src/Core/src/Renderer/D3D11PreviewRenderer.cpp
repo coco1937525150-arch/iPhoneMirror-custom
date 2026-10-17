@@ -1,5 +1,7 @@
 #include "Renderer/D3D11PreviewRenderer.h"
 #include "Renderer/OutputModeState.h"
+#include "Renderer/RotationPresentGeometry.h"
+#include "Renderer/LandscapeCoverGeometry.h"
 
 #include "Logging.h"
 
@@ -9,6 +11,7 @@
 #include <dcomp.h>
 #include <dxgi1_3.h>
 #include <dxgi1_6.h>
+#include <wincodec.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -17,6 +20,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <vector>
 #include <format>
 #include <mutex>
 #include <stdexcept>
@@ -209,6 +214,8 @@ constexpr const char* PreviewPixelShaders = R"(
 Texture2D<float> yPlane : register(t0);
 Texture2D<float2> uvPlane : register(t1);
 Texture2D<float4> image : register(t2);
+Texture2D<float4> referenceShell : register(t3);
+Texture2D<float4> referenceAperture : register(t4);
 SamplerState linearSampler : register(s0);
 
 cbuffer ShapeConstants : register(b0) {
@@ -217,7 +224,7 @@ cbuffer ShapeConstants : register(b0) {
     float cornerExponent;
     float cornerEnabled;
     float rotationQuarterTurns;
-    float2 shapePadding;
+    float2 apertureCanvasSize;
     float yOffset;
     float yScale;
     float chromaOffset;
@@ -231,7 +238,7 @@ cbuffer ShapeConstants : register(b0) {
     float hdrSurface;
     float preserveHdr;
     float sourcePeakNits;
-    float3 colorPadding;
+    float3 apertureControl;
     float brightness;
     float contrast;
     float saturation;
@@ -241,14 +248,27 @@ cbuffer ShapeConstants : register(b0) {
     float frameOuterRadius;
     float4 screenRect;
     float4 cutoutParams;
+    float2 videoCropScale;
+    float2 videoCropPadding;
 };
 
-float2 rotateUv(float2 uv) {
-    int turns = ((int)round(rotationQuarterTurns) % 4 + 4) % 4;
+float2 rotateUvByTurns(float2 uv, float quarterTurns) {
+    int turns = ((int)round(quarterTurns) % 4 + 4) % 4;
     if (turns == 1) return float2(uv.y, 1.0 - uv.x);
     if (turns == 2) return float2(1.0 - uv.x, 1.0 - uv.y);
     if (turns == 3) return float2(1.0 - uv.y, uv.x);
     return uv;
+}
+
+float2 rotateUv(float2 uv) {
+    return rotateUvByTurns(uv, rotationQuarterTurns);
+}
+
+float2 rotateShellUv(float2 uv) {
+    // The video is already oriented in a limited intermediate copy pass,
+    // but the original PNG and aperture still need the FINAL device angle.
+    // apertureControl.y is independent of the video's per-pass rotation.
+    return rotateUvByTurns(uv, apertureControl.y);
 }
 
 float cornerCoverage(float2 pixel) {
@@ -270,6 +290,14 @@ float cornerCoverage(float2 pixel) {
 
 float4 premultiplyForCorner(float3 rgb, float2 pixel) {
     float alpha = cornerCoverage(pixel);
+    if (frameEnabled > 0.5 && apertureControl.x > 0.5) {
+        // The same central-connected-hole mask is used by FFmpeg recording.
+        // Only the interior transparency is video: the outside corners of
+        // the silver reference shell are ALSO transparent and must stay clear.
+        float2 sourceUv = pixel / max(apertureCanvasSize, float2(1.0, 1.0));
+        sourceUv = rotateShellUv(sourceUv);
+        alpha = saturate(referenceAperture.Sample(linearSampler, sourceUv).r);
+    }
     return float4(rgb * alpha, alpha);
 }
 
@@ -369,14 +397,56 @@ float4 frameMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARG
     if (frameEnabled < 0.5) return float4(0.0, 0.0, 0.0, 0.0);
     float alpha = roundedRectCoverage(position.xy,
         float4(0.0, 0.0, outputSize.x, outputSize.y), frameOuterRadius);
-    // Use a transparent-front-frame look: thin graphite bezel and no camera
-    // artwork or duplicated Dynamic Island. Video is drawn in the inner rect.
+    // iPhone 16 Pro Max-inspired glossy black hardware with slim metallic
+    // rails and clearly visible physical side buttons. Keep all drawing
+    // within the established window/screen rectangle: the precisely fitted
+    // source viewport and remote touch coordinates must not change.
+    // No synthetic Dynamic Island (it is already inside the source video).
     float screenCoverage = roundedRectCoverage(position.xy, screenRect,
         max(cornerRadius, min(screenRect.z, screenRect.w) * 0.035));
-    float2 normalized = saturate(position.xy / max(outputSize, float2(1.0, 1.0)));
-    float edgeLight = 0.007 * (1.0 - abs(normalized.x * 2.0 - 1.0));
-    float3 graphite = float3(0.016 + edgeLight, 0.017 + edgeLight, 0.019 + edgeLight);
-    float3 body = graphite * (1.0 - screenCoverage);
+    float2 portraitPixel = position.xy;
+    float2 portraitSize = outputSize;
+    if (outputSize.x > outputSize.y) {
+        // Rotate the button layout together with the complete phone body,
+        // instead of leaving portrait buttons on the landscape shell.
+        // In landscape, the reference phone body turns LEFT (counter-clockwise).
+        // Keep the top of the portrait phone on the landscape left edge.
+        portraitPixel = float2(outputSize.y - position.y, position.x);
+        portraitSize = float2(outputSize.y, outputSize.x);
+    }
+    float2 uvBody = saturate(portraitPixel / max(portraitSize, float2(1.0, 1.0)));
+    float edgeDistance = min(uvBody.x, 1.0 - uvBody.x);
+    float rim = 1.0 - smoothstep(0.001, 0.017, edgeDistance);
+    float rimLight = (1.0 - smoothstep(0.003, 0.025, edgeDistance)) *
+        (0.10 + 0.06 * (1.0 - abs(uvBody.y * 2.0 - 1.0)));
+    float glossyStripe = 0.024 * (1.0 - abs(uvBody.x * 2.0 - 1.0));
+    float3 graphite = float3(0.014, 0.018, 0.021) +
+        glossyStripe + float3(rimLight, rimLight * 1.02, rimLight * 1.06);
+    graphite = lerp(graphite, float3(0.035, 0.044, 0.049), rim * 0.32);
+    const float buttonWidth = 0.014;
+    float edgePad = portraitSize.x * 0.001;
+    float buttonRadius = max(portraitSize.x * 0.005, 1.0);
+    float leftTop = roundedRectCoverage(portraitPixel,
+        float4(edgePad, portraitSize.y * 0.19,
+            portraitSize.x * buttonWidth, portraitSize.y * 0.043), buttonRadius);
+    float leftMiddle = roundedRectCoverage(portraitPixel,
+        float4(edgePad, portraitSize.y * 0.29,
+            portraitSize.x * buttonWidth, portraitSize.y * 0.065), buttonRadius);
+    float leftBottom = roundedRectCoverage(portraitPixel,
+        float4(edgePad, portraitSize.y * 0.38,
+            portraitSize.x * buttonWidth, portraitSize.y * 0.065), buttonRadius);
+    float rightSide = roundedRectCoverage(portraitPixel,
+        float4(portraitSize.x * (1.0 - buttonWidth) - edgePad,
+            portraitSize.y * 0.29, portraitSize.x * buttonWidth,
+            portraitSize.y * 0.115), buttonRadius);
+    float buttons = max(max(leftTop, leftMiddle), max(leftBottom, rightSide));
+    // The button's center is dark chrome; two narrow highlights make its
+    // silhouette visible even on a black theme and at reduced window sizes.
+    float buttonHighlight = 0.07 + 0.12 * rim;
+    float3 buttonMetal = float3(buttonHighlight,
+        buttonHighlight * 1.03, buttonHighlight * 1.05);
+    float3 body = lerp(graphite, buttonMetal, buttons) *
+        (1.0 - screenCoverage);
     return float4(body * alpha, alpha);
 }
 
@@ -407,6 +477,7 @@ float4 cutoutMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TAR
 
 float4 nv12Main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     uv = rotateUv(uv);
+    uv = (uv - 0.5) * videoCropScale + 0.5;
     float y = max(0.0, yPlane.Sample(linearSampler, uv) - yOffset) * yScale;
     float2 chroma = (uvPlane.Sample(linearSampler, uv) -
         float2(chromaOffset, chromaOffset)) * chromaScale;
@@ -419,7 +490,14 @@ float4 nv12Main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGE
 }
 
 float4 copyMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
-    return premultiplyForCorner(image.Sample(linearSampler, rotateUv(uv)).rgb, position.xy);
+    uv = rotateUv(uv);
+    uv = (uv - 0.5) * videoCropScale + 0.5;
+    return premultiplyForCorner(image.Sample(linearSampler, uv).rgb, position.xy);
+}
+
+float4 referenceShellMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
+    if (frameEnabled < 0.5) return float4(0, 0, 0, 0);
+    return referenceShell.Sample(linearSampler, rotateShellUv(uv));
 }
 
 float4 maskMain(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
@@ -468,6 +546,9 @@ struct D3D11PreviewRenderer::Impl {
         float cutout_width{};
         float cutout_height{};
         float cutout_top{};
+        float video_crop_x{1.0F};
+        float video_crop_y{1.0F};
+        float video_crop_pad[2]{};
     };
 
     struct ImageAdjustments {
@@ -514,6 +595,11 @@ struct D3D11PreviewRenderer::Impl {
     ComPtr<ID3D11PixelShader> copy_pixel_shader;
     ComPtr<ID3D11PixelShader> mask_pixel_shader;
     ComPtr<ID3D11PixelShader> frame_pixel_shader;
+    ComPtr<ID3D11PixelShader> reference_shell_shader;
+    ComPtr<ID3D11Texture2D> reference_shell_texture;
+    ComPtr<ID3D11ShaderResourceView> reference_shell_view;
+    ComPtr<ID3D11Texture2D> reference_aperture_texture;
+    ComPtr<ID3D11ShaderResourceView> reference_aperture_view;
     ComPtr<ID3D11PixelShader> cutout_pixel_shader;
     ComPtr<ID3D11BlendState> premultiplied_blend_state;
     ComPtr<ID3D11Buffer> shape_constants;
@@ -546,6 +632,8 @@ struct D3D11PreviewRenderer::Impl {
     std::shared_ptr<const media::DecodedFrame> last_frame;
     std::uint64_t rendered_frames{};
     std::chrono::steady_clock::time_point first_presented_at{};
+    std::chrono::steady_clock::time_point last_accepted_present_at{};
+    double latest_present_interval_ms{};
     std::uint32_t last_sync_refresh_count{};
     std::chrono::steady_clock::time_point last_sync_sample_at{};
     double display_fps{};
@@ -564,6 +652,22 @@ struct D3D11PreviewRenderer::Impl {
     std::mutex image_adjustments_mutex;
     ImageAdjustments image_adjustments;
     std::atomic_int rotation_quarter_turns{};
+    // -1 = automatic. While the shell is still portrait and the AirPlay
+    // source has already become landscape, project its pixels sideways into
+    // the existing aperture BEFORE moving the whole DComp phone visual.
+    std::atomic_int staging_video_turns{-1};
+    struct VisualRotationRequest {
+        float degrees{};
+        float canvas_width{};
+        float canvas_height{};
+        float scale{1.0F};
+        bool active{};
+        std::uint64_t generation{1};
+    };
+    std::mutex visual_rotation_mutex;
+    VisualRotationRequest visual_rotation_request{};
+    std::uint64_t applied_visual_generation{};
+    std::atomic_bool hold_swap_chain_resize{};
     std::atomic_uint64_t color_output_policy_generation{};
     // A single packed load prevents torn diagnostics. Renderer-owned fields
     // still advance as their underlying facts change, so a newly detected SDR
@@ -581,6 +685,19 @@ struct D3D11PreviewRenderer::Impl {
     std::chrono::steady_clock::time_point next_resize_allowed{};
     std::uint32_t scheduled_fps{};
     std::chrono::steady_clock::time_point next_present_due{};
+    std::uint32_t monitor_refresh_hz{120};
+    std::chrono::steady_clock::time_point next_refresh_probe{};
+    std::uint64_t skipped_present_frames{};
+    // Per-render-window pipeline telemetry. Count distinct decoded frames seen
+    // by this renderer, not AirPlay packets (which belong to WirelessHost).
+    std::uint64_t pipeline_observed_frames{};
+    std::uint64_t pipeline_last_sequence{};
+    std::uint64_t pipeline_last_reported_input{};
+    std::uint64_t pipeline_last_reported_present{};
+    std::uint64_t pipeline_last_reported_skipped{};
+    std::uint64_t pipeline_geometry_deferrals{};
+    std::chrono::steady_clock::time_point pipeline_last_report{};
+    std::chrono::steady_clock::time_point pipeline_last_input_at{};
 
     Impl(HWND value, FrameProvider frame_provider)
         : window(value), provider(std::move(frame_provider)) {
@@ -686,6 +803,8 @@ struct D3D11PreviewRenderer::Impl {
         const auto swap_result = create_swap_chain(swap_description.Format);
         check(swap_result, composition_mode
             ? "CreateSwapChainForComposition" : "CreateSwapChainForHwnd");
+        logging::diagnostic_event(logging::DiagnosticEvent::SwapChainCreated,
+            0, 0, target_width, target_height, swap_description.Format, 0, swap_result);
 
         if (composition_mode) {
             check(DCompositionCreateDevice(dxgi_device.Get(), IID_PPV_ARGS(&composition_device)),
@@ -694,11 +813,17 @@ struct D3D11PreviewRenderer::Impl {
                 "IDCompositionDevice CreateTargetForHwnd");
             check(composition_device->CreateVisual(&composition_visual),
                 "IDCompositionDevice CreateVisual");
+            logging::diagnostic_event(logging::DiagnosticEvent::VisualCreated,
+                0, visual_rotation_request.generation, target_width, target_height);
             check(composition_visual->SetContent(swap_chain.Get()),
                 "IDCompositionVisual SetContent");
             check(composition_target->SetRoot(composition_visual.Get()),
                 "IDCompositionTarget SetRoot");
             check(composition_device->Commit(), "IDCompositionDevice Commit");
+            // A device/visual recreation starts with a NEW identity matrix.
+            // Re-apply the most recently requested phone transform even if
+            // its generation was already applied to the now-destroyed visual.
+            applied_visual_generation = std::numeric_limits<std::uint64_t>::max();
         } else {
             (void)factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
         }
@@ -709,6 +834,7 @@ struct D3D11PreviewRenderer::Impl {
         const auto mask_pixel_blob = compile_shader(PreviewPixelShaders, "maskMain", "ps_5_0");
         const auto frame_pixel_blob = compile_shader(PreviewPixelShaders, "frameMain", "ps_5_0");
         const auto cutout_pixel_blob = compile_shader(PreviewPixelShaders, "cutoutMain", "ps_5_0");
+        const auto reference_shell_blob = compile_shader(PreviewPixelShaders, "referenceShellMain", "ps_5_0");
         check(device->CreateVertexShader(vertex_blob->GetBufferPointer(), vertex_blob->GetBufferSize(),
             nullptr, &vertex_shader), "CreateVertexShader");
         check(device->CreatePixelShader(pixel_blob->GetBufferPointer(), pixel_blob->GetBufferSize(),
@@ -725,6 +851,9 @@ struct D3D11PreviewRenderer::Impl {
         check(device->CreatePixelShader(cutout_pixel_blob->GetBufferPointer(),
             cutout_pixel_blob->GetBufferSize(), nullptr, &cutout_pixel_shader),
             "Create cutout PixelShader");
+        check(device->CreatePixelShader(reference_shell_blob->GetBufferPointer(),
+            reference_shell_blob->GetBufferSize(), nullptr, &reference_shell_shader),
+            "Create reference shell PixelShader");
 
         D3D11_BLEND_DESC blend_description{};
         blend_description.RenderTarget[0].BlendEnable = TRUE;
@@ -753,6 +882,7 @@ struct D3D11PreviewRenderer::Impl {
         sampler_description.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sampler_description.MaxLOD = D3D11_FLOAT32_MAX;
         check(device->CreateSamplerState(&sampler_description, &sampler), "CreateSamplerState");
+        load_reference_shell();
         recreate_target();
         output_state = {};
         output_state.monitor_generation = monitor_generation;
@@ -786,6 +916,8 @@ struct D3D11PreviewRenderer::Impl {
         if (composition_device) (void)composition_device->Commit();
 
         release_shared_gpu_frame();
+        if (target) logging::diagnostic_event(logging::DiagnosticEvent::TargetReleased,
+            0, 0, target_width, target_height);
         target.Reset();
         render_view.Reset();
         render_target.Reset();
@@ -797,15 +929,25 @@ struct D3D11PreviewRenderer::Impl {
         sampler.Reset();
         shape_constants.Reset();
         premultiplied_blend_state.Reset();
+        reference_aperture_view.Reset();
+        reference_aperture_texture.Reset();
+        reference_shell_view.Reset();
+        reference_shell_texture.Reset();
+        reference_shell_shader.Reset();
         cutout_pixel_shader.Reset();
         frame_pixel_shader.Reset();
         mask_pixel_shader.Reset();
         copy_pixel_shader.Reset();
         pixel_shader.Reset();
         vertex_shader.Reset();
+        if (composition_visual)
+            logging::diagnostic_event(logging::DiagnosticEvent::VisualDestroyed,
+                0, visual_rotation_request.generation);
         composition_visual.Reset();
         composition_target.Reset();
         composition_device.Reset();
+        if (swap_chain)
+            logging::diagnostic_event(logging::DiagnosticEvent::SwapChainDestroyed);
         swap_chain.Reset();
         factory.Reset();
         context.Reset();
@@ -828,6 +970,9 @@ struct D3D11PreviewRenderer::Impl {
 
     void rebuild_device_resources() {
         const auto removed_reason = device ? device->GetDeviceRemovedReason() : E_POINTER;
+        const auto started = std::chrono::steady_clock::now();
+        logging::diagnostic_event(logging::DiagnosticEvent::DeviceRebuildBegin,
+            0, 0, removed_reason, 0, 0, 0, removed_reason);
         logging::write(std::format(
             "d3d_preview device_rebuild_begin removed_hr=0x{:08X}",
             static_cast<unsigned>(removed_reason)));
@@ -837,6 +982,9 @@ struct D3D11PreviewRenderer::Impl {
             refresh_requested.store(true, std::memory_order_release);
             color_signature.store(0, std::memory_order_relaxed);
             logging::write("d3d_preview device_rebuild_complete");
+            logging::diagnostic_event(logging::DiagnosticEvent::DeviceRebuildEnd,
+                0, 0, std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - started).count());
         } catch (...) {
             release_device_resources();
             logging::write("d3d_preview device_rebuild_failed");
@@ -860,6 +1008,8 @@ struct D3D11PreviewRenderer::Impl {
             back_buffer.Get(), nullptr, &replacement);
         if (FAILED(result)) return result;
         target = std::move(replacement);
+        logging::diagnostic_event(logging::DiagnosticEvent::TargetCreated,
+            0, 0, target_width, target_height);
         return S_OK;
     }
 
@@ -876,6 +1026,8 @@ struct D3D11PreviewRenderer::Impl {
         // is reset. ResizeBuffers requires every back-buffer reference gone.
         context->ClearState();
         context->Flush();
+        if (target) logging::diagnostic_event(logging::DiagnosticEvent::TargetReleased,
+            0, 0, target_width, target_height);
         target.Reset();
         render_view.Reset();
         render_target.Reset();
@@ -980,8 +1132,16 @@ struct D3D11PreviewRenderer::Impl {
 
             void release_targets() noexcept { owner.release_swap_chain_targets(); }
             output::Failure resize(output::SurfaceFormat format) noexcept {
+                logging::diagnostic_event(logging::DiagnosticEvent::ResizeBegin,
+                    0, 0, owner.target_width, owner.target_height,
+                    owner.target_width, owner.target_height);
+                const auto started = std::chrono::steady_clock::now();
                 resize_hr = owner.swap_chain->ResizeBuffers(0,
                     owner.target_width, owner.target_height, dxgi_format(format), 0);
+                logging::diagnostic_event(logging::DiagnosticEvent::ResizeEnd,
+                    0, 0, owner.target_width, owner.target_height, dxgi_format(format),
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - started).count(), resize_hr);
                 return classify_output_failure(resize_hr);
             }
             output::Failure set_color_space(output::Mode mode) noexcept {
@@ -1021,6 +1181,10 @@ struct D3D11PreviewRenderer::Impl {
             return true;
         }
         if (result.applied) {
+            logging::diagnostic_event(logging::DiagnosticEvent::OutputModeChanged,
+                0, applied_visual_generation, hdr_surface_active() ? 1 : 0,
+                static_cast<std::int64_t>(output_state.actual_format),
+                static_cast<std::int64_t>(output_state.applied_color_space));
             color_signature.store(0, std::memory_order_relaxed);
             logging::write(std::format("d3d_preview output_switched output={}",
                 hdr_surface_active() ? "hdr_scrgb" : "sdr_bgra8"));
@@ -1070,8 +1234,12 @@ struct D3D11PreviewRenderer::Impl {
 
     void update_shape_constants(UINT width, UINT height, bool enabled, int rotation = 0,
         const media::DecodedFrame* frame = nullptr, float origin_x = 0.0F,
-        float origin_y = 0.0F, const DeviceFrameProfileData* frame_profile_override = nullptr) {
+        float origin_y = 0.0F, const DeviceFrameProfileData* frame_profile_override = nullptr,
+        bool allow_aperture = true, float crop_x = 1.0F,
+        float crop_y = 1.0F) {
         ShapeConstantData values{};
+        values.video_crop_x = crop_x;
+        values.video_crop_y = crop_y;
         values.output_width = static_cast<float>(width);
         values.output_height = static_cast<float>(height);
         values.shape_origin_x = origin_x;
@@ -1085,10 +1253,20 @@ struct D3D11PreviewRenderer::Impl {
         values.corner_exponent = curve_exponent;
         values.corner_enabled = enabled && normalized_radius > 0.0F ? 1.0F : 0.0F;
         values.rotation_quarter_turns = static_cast<float>(rotation);
+        values.padding[0] = static_cast<float>(target_width);
+        values.padding[1] = static_cast<float>(target_height);
         values.hdr_surface = hdr_surface_active() ? 1.0F : 0.0F;
         const auto local_frame_profile = frame_profile_override
             ? *frame_profile_override : device_frame_snapshot();
         const auto framed = device_frame_enabled(local_frame_profile);
+        values.color_padding[0] = allow_aperture && framed &&
+            reference_aperture_view && use_reference_shell(local_frame_profile) ? 1.0F : 0.0F;
+        // Shell PNG + connected-aperture mask must use the same device
+        // orientation as video, including counterclockwise and 180 turns.
+        // Kept independent of the per-pass video rotation to avoid rotating
+        // an already-oriented limited-pass texture a second time.
+        const auto shell_turns = rotation_quarter_turns.load(std::memory_order_relaxed);
+        values.color_padding[1] = static_cast<float>(((shell_turns % 4) + 4) % 4);
         const auto screen = device_screen_rect(local_frame_profile);
         const auto display_short_edge = std::min(screen.width, screen.height);
         values.frame_enabled = framed ? 1.0F : 0.0F;
@@ -1161,8 +1339,160 @@ struct D3D11PreviewRenderer::Impl {
             GetPropW(window, L"iPhoneMirrorFullScreen") == nullptr;
     }
 
+
+    // Windows Imaging Component decodes the exact bundled alpha PNG once per
+    // D3D device lifetime. Missing assets fail open to the legacy frame.
+    void load_reference_shell() {
+        // Frame creation can also happen on a renderer worker after device
+        // loss; initialize COM on whichever thread performs WIC decoding.
+        struct ScopedCom {
+            HRESULT result{CoInitializeEx(nullptr, COINIT_MULTITHREADED)};
+            ~ScopedCom() { if (SUCCEEDED(result)) CoUninitialize(); }
+        } apartment;
+        if (FAILED(apartment.result) &&
+            apartment.result != RPC_E_CHANGED_MODE) return;
+        // WPF extracts and SHA256-verifies the original embedded RGBA PNG
+        // BEFORE any preview renderer starts. The native renderer must consume
+        // that exact path; no user-controlled LocalAppData PNG may override it.
+        wchar_t shell_path[32768]{};
+        const auto shell_length = GetEnvironmentVariableW(
+            L"IPHONE_MIRROR_BUNDLED_SHELL", shell_path,
+            static_cast<DWORD>(std::size(shell_path)));
+        if (shell_length == 0 || shell_length >= std::size(shell_path)) {
+            logging::write("d3d_preview original_reference_shell_path_missing");
+            return;
+        }
+        const std::filesystem::path path(shell_path);
+        if (!std::filesystem::is_regular_file(path)) {
+            logging::write("d3d_preview original_reference_shell_file_missing");
+            return;
+        }
+        ComPtr<IWICImagingFactory> imaging;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+            CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&imaging)))) return;
+        ComPtr<IWICBitmapDecoder> decoder;
+        if (FAILED(imaging->CreateDecoderFromFilename(path.c_str(), nullptr,
+            GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder))) return;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (FAILED(decoder->GetFrame(0, &frame))) return;
+        ComPtr<IWICFormatConverter> converter;
+        if (FAILED(imaging->CreateFormatConverter(&converter)) ||
+            FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone, nullptr, 0.0,
+                WICBitmapPaletteTypeCustom))) return;
+        UINT width{}, height{};
+        if (FAILED(converter->GetSize(&width, &height)) || !width || !height ||
+            width > 2048 || height > 4096) return;
+        const auto pitch = width * 4U;
+        std::vector<BYTE> pixels(static_cast<std::size_t>(pitch) * height);
+        if (FAILED(converter->CopyPixels(nullptr, pitch,
+            static_cast<UINT>(pixels.size()), pixels.data()))) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA initial{};
+        initial.pSysMem = pixels.data();
+        initial.SysMemPitch = pitch;
+        if (FAILED(device->CreateTexture2D(&desc, &initial,
+                &reference_shell_texture)) ||
+            FAILED(device->CreateShaderResourceView(reference_shell_texture.Get(),
+                nullptr, &reference_shell_view))) {
+            reference_shell_texture.Reset();
+            reference_shell_view.Reset();
+            return;
+        }
+        logging::write(std::format("d3d_preview reference_shell_loaded={}x{}",
+            width, height));
+        // Decode the separately verified mask exported by WPF at startup.
+        // A different mask size is rejected rather than producing misaligned
+        // alpha in the display. It is never fetched from a stale user cache.
+        wchar_t mask_path[32768]{};
+        const auto mask_length = GetEnvironmentVariableW(
+            L"IPHONE_MIRROR_BUNDLED_APERTURE", mask_path,
+            static_cast<DWORD>(std::size(mask_path)));
+        if (!mask_length || mask_length >= std::size(mask_path) ||
+            !std::filesystem::is_regular_file(std::filesystem::path(mask_path))) {
+            logging::write("d3d_preview reference_aperture_file_missing");
+            return;
+        }
+        ComPtr<IWICBitmapDecoder> mask_decoder;
+        if (FAILED(imaging->CreateDecoderFromFilename(mask_path, nullptr,
+                GENERIC_READ, WICDecodeMetadataCacheOnLoad, &mask_decoder))) return;
+        ComPtr<IWICBitmapFrameDecode> mask_frame;
+        if (FAILED(mask_decoder->GetFrame(0, &mask_frame))) return;
+        ComPtr<IWICFormatConverter> mask_converter;
+        if (FAILED(imaging->CreateFormatConverter(&mask_converter)) ||
+            FAILED(mask_converter->Initialize(mask_frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone, nullptr, 0.0,
+                WICBitmapPaletteTypeCustom))) return;
+        UINT mask_width{}, mask_height{};
+        if (FAILED(mask_converter->GetSize(&mask_width, &mask_height)) ||
+            mask_width != width || mask_height != height) {
+            logging::write("d3d_preview reference_aperture_dimension_mismatch");
+            return;
+        }
+        std::vector<BYTE> mask_pixels(static_cast<std::size_t>(pitch) * height);
+        if (FAILED(mask_converter->CopyPixels(nullptr, pitch,
+                static_cast<UINT>(mask_pixels.size()), mask_pixels.data()))) return;
+        D3D11_SUBRESOURCE_DATA mask_initial{};
+        mask_initial.pSysMem = mask_pixels.data();
+        mask_initial.SysMemPitch = pitch;
+        if (FAILED(device->CreateTexture2D(&desc, &mask_initial,
+                &reference_aperture_texture)) ||
+            FAILED(device->CreateShaderResourceView(reference_aperture_texture.Get(),
+                nullptr, &reference_aperture_view))) {
+            reference_aperture_view.Reset();
+            reference_aperture_texture.Reset();
+            logging::write("d3d_preview reference_aperture_gpu_upload_failed");
+            return;
+        }
+        logging::write(std::format("d3d_preview reference_aperture_loaded={}x{}",
+            mask_width, mask_height));
+    }
+
+    bool use_reference_shell(const DeviceFrameProfileData& profile) const noexcept {
+        // The shared 994x2048 shell geometry uses 0.048 (source short-edge).
+        // Accept the correct calibrated profile instead of silently painting
+        // the old synthetic black frame when the PNG is already loaded.
+        return profile.enabled && reference_shell_view &&
+            std::abs(profile.side_inset - 0.048F) < 0.002F &&
+            profile.cutout_kind == 0;
+    }
+
+    void draw_reference_shell(const DeviceFrameProfileData& profile) {
+        if (!use_reference_shell(profile)) return;
+        D3D11_VIEWPORT viewport{};
+        viewport.Width = static_cast<float>(target_width);
+        viewport.Height = static_cast<float>(target_height);
+        viewport.MinDepth = 0;
+        viewport.MaxDepth = 1;
+        context->RSSetViewports(1, &viewport);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vertex_shader.Get(), nullptr, 0);
+        context->PSSetShader(reference_shell_shader.Get(), nullptr, 0);
+        update_shape_constants(target_width, target_height, false, 0, nullptr,
+            0.0F, 0.0F, &profile);
+        auto* texture_view = reference_shell_view.Get();
+        context->PSSetShaderResources(3, 1, &texture_view);
+        context->PSSetSamplers(0, 1, sampler.GetAddressOf());
+        constexpr float factor[] = {0, 0, 0, 0};
+        context->OMSetBlendState(premultiplied_blend_state.Get(), factor,
+            0xffffffffU);
+        context->Draw(3, 0);
+        context->OMSetBlendState(nullptr, factor, 0xffffffffU);
+        ID3D11ShaderResourceView* empty = nullptr;
+        context->PSSetShaderResources(3, 1, &empty);
+    }
+
     void draw_device_frame(const DeviceFrameProfileData& profile) {
         if (!device_frame_enabled(profile)) return;
+        if (use_reference_shell(profile)) { draw_reference_shell(profile); return; }
         D3D11_VIEWPORT viewport{};
         viewport.Width = static_cast<float>(target_width);
         viewport.Height = static_cast<float>(target_height);
@@ -1221,10 +1551,90 @@ struct D3D11PreviewRenderer::Impl {
             if (device_frame_enabled(frame_profile)) draw_device_frame(frame_profile);
             else draw_black_background(rounded_window_enabled());
         }
-        check(swap_chain->Present(1, 0), "Present black frame");
+        apply_visual_rotation_if_needed(true);
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentBegin,
+            0, applied_visual_generation, 0, target_width, target_height, 0);
+        const auto started = std::chrono::steady_clock::now();
+        const auto result = swap_chain->Present(1, 0);
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd,
+            0, applied_visual_generation, 0,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - started).count(),
+            target_width, target_height, result);
+        check(result, "Present black frame");
+    }
+
+    void apply_visual_rotation_if_needed(bool after_final_resize = false) noexcept {
+        if (!composition_mode || !composition_visual || !composition_device) return;
+        VisualRotationRequest request;
+        {
+            std::scoped_lock lock(visual_rotation_mutex);
+            request = visual_rotation_request;
+        }
+        if (request.generation == applied_visual_generation) return;
+        if (!request.active) {
+            // Do not reset the transform while the old portrait backbuffer
+            // is still inside the temporary square animation HWND. Switch
+            // identity only after its FINAL client size has been rendered.
+            if (!after_final_resize) return;
+            RECT client{};
+            if (!GetClientRect(window, &client) ||
+                target_width != static_cast<UINT>(client.right - client.left) ||
+                target_height != static_cast<UINT>(client.bottom - client.top))
+                return;
+        }
+
+        D2D_MATRIX_3X2_F matrix{};
+        if (request.active) {
+            constexpr float DegreesToRadians = 0.01745329251994329577F;
+            const float angle = request.degrees * DegreesToRadians;
+            const float c = std::cos(angle) * request.scale;
+            const float s = std::sin(angle) * request.scale;
+            // DComp transforms the ENTIRE swap-chain visual: shell, screen,
+            // video and aperture are guaranteed to move rigidly together.
+            // Screen coordinate Y increases downwards, so +90 is clockwise.
+            matrix._11 = c;
+            matrix._12 = s;
+            matrix._21 = -s;
+            matrix._22 = c;
+            matrix._31 = request.canvas_width * 0.5F -
+                c * static_cast<float>(target_width) * 0.5F +
+                s * static_cast<float>(target_height) * 0.5F;
+            matrix._32 = request.canvas_height * 0.5F -
+                s * static_cast<float>(target_width) * 0.5F -
+                c * static_cast<float>(target_height) * 0.5F;
+        } else {
+            matrix._11 = matrix._22 = 1.0F;
+        }
+        const auto set_result = composition_visual->SetTransform(matrix);
+        logging::diagnostic_event(logging::DiagnosticEvent::VisualSetTransform,
+            0, request.generation, std::lround(matrix._11 * 1000000),
+            std::lround(matrix._12 * 1000000),
+            std::lround(matrix._21 * 1000000),
+            std::lround(matrix._22 * 1000000), set_result);
+        if (FAILED(set_result)) {
+            logging::write("d3d_preview whole_visual_rotation_commit_failed");
+            return;
+        }
+        const auto commit_result = composition_device->Commit();
+        logging::diagnostic_event(logging::DiagnosticEvent::VisualCommit,
+            0, request.generation, std::lround(matrix._31 * 1000),
+            std::lround(matrix._32 * 1000), std::lround(request.degrees * 1000),
+            std::lround(request.scale * 1000000), commit_result);
+        if (FAILED(commit_result)) {
+            logging::write("d3d_preview whole_visual_rotation_commit_failed");
+            return;
+        }
+        applied_visual_generation = request.generation;
     }
 
     bool resize_if_needed(std::chrono::steady_clock::time_point now) {
+        // A single transparent HWND is enlarged to fit the entire rotation
+        // sweep while DComp transforms the original phone swap-chain within
+        // it. Resizing the source swap-chain to the square would distort both
+        // the opening geometry and the shell PNG.
+        if (hold_swap_chain_resize.load(std::memory_order_acquire))
+            return false;
         RECT rect{};
         if (!GetClientRect(window, &rect)) return false;
         const auto width = static_cast<UINT>(std::max<LONG>(0, rect.right - rect.left));
@@ -1237,10 +1647,19 @@ struct D3D11PreviewRenderer::Impl {
         if (now < next_resize_allowed) return false;
         next_resize_allowed = now + std::chrono::milliseconds(16);
         context->OMSetRenderTargets(0, nullptr, nullptr);
+        logging::diagnostic_event(logging::DiagnosticEvent::ResizeBegin,
+            0, 0, width, height, target_width, target_height);
+        const auto resize_started = std::chrono::steady_clock::now();
+        if (target) logging::diagnostic_event(logging::DiagnosticEvent::TargetReleased,
+            0, 0, target_width, target_height);
         target.Reset();
         output_state.target_valid = false;
         const auto resize_result = swap_chain->ResizeBuffers(
             0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+        logging::diagnostic_event(logging::DiagnosticEvent::ResizeEnd,
+            0, 0, width, height, DXGI_FORMAT_UNKNOWN,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - resize_started).count(), resize_result);
         if (FAILED(resize_result)) {
             const auto target_result = try_recreate_target();
             output_state.target_valid = SUCCEEDED(target_result);
@@ -1540,18 +1959,41 @@ struct D3D11PreviewRenderer::Impl {
         }
 
         const auto turns = ((rotation_quarter_turns.load(std::memory_order_relaxed) % 4) + 4) % 4;
-        const bool swaps_axes = (turns & 1) != 0;
-        const float source_aspect = swaps_axes
-            ? static_cast<float>(frame.height) / frame.width
-            : static_cast<float>(frame.width) / frame.height;
         const auto frame_profile = device_frame_snapshot();
         const auto framed = device_frame_enabled(frame_profile);
         const auto screen_area = device_screen_rect(frame_profile);
+        // A manually turned phone needs a rotated PORTRAIT source. However,
+        // AirPlay may already send 16:9 LANDSCAPE pixels after an actual iOS
+        // orientation switch. Rotating those pixels again makes a narrow,
+        // vertical video appear inside a horizontal silver iPhone shell.
+        // The shell/aperture always use their own quarter-turn transform.
+        const bool source_landscape = frame.width > frame.height;
+        const bool opening_landscape = screen_area.width > screen_area.height;
+        const auto staging_turns = staging_video_turns.load(std::memory_order_acquire);
+        const int video_turns = staging_turns >= 0
+            ? staging_turns
+            : ((turns & 1) != 0 && source_landscape && opening_landscape) ? 0 : turns;
+        const bool swaps_axes = (video_turns & 1) != 0;
+        const float source_aspect = swaps_axes
+            ? static_cast<float>(frame.height) / frame.width
+            : static_cast<float>(frame.width) / frame.height;
         const float target_aspect = screen_area.width / screen_area.height;
+        // Match FFmpeg recording's existing cover/crop layout. Contain
+        // left visible gutters for 16:9 AirPlay video in the wider shell.
+        // Only a landscape source in a landscape opening uses Cover here;
+        // transitional and portrait previews retain their previous fitting.
+        const bool landscape_cover = framed && source_landscape &&
+            (opening_landscape || staging_turns >= 0);
+        const auto crop = landscape_cover
+            ? landscape_cover_crop(source_aspect, target_aspect)
+            : VideoCoverCrop{};
         D3D11_VIEWPORT viewport{};
         viewport.TopLeftX = screen_area.x;
         viewport.TopLeftY = screen_area.y;
-        if (target_aspect > source_aspect) {
+        if (landscape_cover) {
+            viewport.Width = screen_area.width;
+            viewport.Height = screen_area.height;
+        } else if (target_aspect > source_aspect) {
             viewport.Height = screen_area.height;
             viewport.Width = viewport.Height * source_aspect;
             viewport.TopLeftX += (screen_area.width - viewport.Width) * 0.5F;
@@ -1560,22 +2002,59 @@ struct D3D11PreviewRenderer::Impl {
             viewport.Height = viewport.Width / source_aspect;
             viewport.TopLeftY += (screen_area.height - viewport.Height) * 0.5F;
         }
-        // The native window controller preserves the source/device-frame aspect
-        // in integer client pixels. Fill only sub-pixel rounding gaps inside
-        // the physical screen rectangle; genuine letterboxing remains intact.
-        const float horizontal_gap = screen_area.width - viewport.Width;
-        const float vertical_gap = screen_area.height - viewport.Height;
+        // Diagnostics only: correlate the actual shader UV transform, opening,
+        // viewport and HWND/backbuffer within the SAME decoded frame. This
+        // catches temporary misalignment that Present HRESULT alone misses.
+        // Bounded native trace writes asynchronously, never on the GPU thread.
+        if (logging::diagnostics_active()) {
+            const auto ppm = [](float value) -> std::int64_t {
+                return static_cast<std::int64_t>(std::llround(value * 1000000.0F));
+            };
+            const auto px = [](float value) -> std::int64_t {
+                return static_cast<std::int64_t>(std::llround(value));
+            };
+            const auto fid = frame.sequence_id;
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameGeometry,
+                fid, applied_visual_generation, video_turns,
+                ppm(crop.x), ppm(crop.y), staging_turns);
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameAperture,
+                fid, applied_visual_generation, px(screen_area.x), px(screen_area.y),
+                px(screen_area.width), px(screen_area.height));
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameViewport,
+                fid, applied_visual_generation, px(viewport.TopLeftX),
+                px(viewport.TopLeftY), px(viewport.Width), px(viewport.Height));
+            RECT actual_client{};
+            if (GetClientRect(window, &actual_client)) {
+                logging::diagnostic_event(logging::DiagnosticEvent::FrameClientGeometry,
+                    fid, applied_visual_generation,
+                    actual_client.right - actual_client.left,
+                    actual_client.bottom - actual_client.top,
+                    target_width, target_height);
+            }
+        }
+        // For a genuinely matching iPhone source, extend video 1.5 physical
+        // pixels beneath the PNG's antialiased aperture edge. The central-hole
+        // alpha mask clips the overscan; no metal-frame/background pixels leak
+        // through the rounded corners. Touch coordinates still use the EXACT
+        // unexpanded device_screen_rect above. Do not apply this to 16:9,
+        // 9:16 or other aspect-mismatched sources: they must not lose content.
         const float aspect_error = std::abs(target_aspect - source_aspect) /
             std::max(source_aspect, 0.000001F);
-        const float pixel_error_limit = 1.0F /
-            static_cast<float>(std::max(target_width, target_height));
-        if (horizontal_gap >= 0.0F && horizontal_gap < 1.0F &&
-            vertical_gap >= 0.0F && vertical_gap < 1.0F &&
-            aspect_error <= pixel_error_limit) {
-            viewport.TopLeftX = screen_area.x;
-            viewport.TopLeftY = screen_area.y;
-            viewport.Width = screen_area.width;
-            viewport.Height = screen_area.height;
+        if (framed && reference_aperture_view &&
+            use_reference_shell(frame_profile) && aspect_error <= 0.005F) {
+            constexpr float edge_bleed_pixels = 1.5F;
+            viewport.TopLeftX = std::max(0.0F,
+                screen_area.x - edge_bleed_pixels);
+            viewport.TopLeftY = std::max(0.0F,
+                screen_area.y - edge_bleed_pixels);
+            viewport.Width = std::min(
+                static_cast<float>(target_width) - viewport.TopLeftX,
+                screen_area.x + screen_area.width + edge_bleed_pixels -
+                    viewport.TopLeftX);
+            viewport.Height = std::min(
+                static_cast<float>(target_height) - viewport.TopLeftY,
+                screen_area.y + screen_area.height + edge_bleed_pixels -
+                    viewport.TopLeftY);
         }
         viewport.MinDepth = 0;
         viewport.MaxDepth = 1;
@@ -1614,13 +2093,18 @@ struct D3D11PreviewRenderer::Impl {
         const auto rounded = rounded_window_enabled();
         const auto draw_nv12 = [&](const D3D11_VIEWPORT& draw_viewport,
                                    UINT output_width, UINT output_height,
-                                   bool apply_corner, int rotation) {
+                                   bool apply_corner, int rotation,
+                                   bool apply_aperture,
+                                   float crop_x = 1.0F, float crop_y = 1.0F) {
             context->RSSetViewports(1, &draw_viewport);
             context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context->VSSetShader(vertex_shader.Get(), nullptr, 0);
             context->PSSetShader(pixel_shader.Get(), nullptr, 0);
             update_shape_constants(output_width, output_height, apply_corner, rotation, &frame,
-                draw_viewport.TopLeftX, draw_viewport.TopLeftY, &frame_profile);
+                draw_viewport.TopLeftX, draw_viewport.TopLeftY,
+                &frame_profile, apply_aperture, crop_x, crop_y);
+            auto* mask_view = reference_aperture_view.Get();
+            context->PSSetShaderResources(4, 1, &mask_view);
             ID3D11ShaderResourceView* nv12_views[] = {
                 shared_gpu_frame ? shared_gpu_y_view.Get() : y_view.Get(),
                 shared_gpu_frame ? shared_gpu_uv_view.Get() : uv_view.Get()};
@@ -1628,6 +2112,8 @@ struct D3D11PreviewRenderer::Impl {
             context->PSSetSamplers(0, 1, sampler.GetAddressOf());
             context->Draw(3, 0);
             context->PSSetShaderResources(0, 3, empty);
+            ID3D11ShaderResourceView* cleared_mask = nullptr;
+            context->PSSetShaderResources(4, 1, &cleared_mask);
         };
 
         if (!use_limited_pass) {
@@ -1646,9 +2132,10 @@ struct D3D11PreviewRenderer::Impl {
             draw_nv12(viewport,
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
-                rounded, turns);
+                rounded, video_turns, true, crop.x, crop.y);
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
+            if (framed) draw_reference_shell(frame_profile);
             // No synthetic island or notch over the real iOS video.
         } else {
             ensure_render_texture(limited_width, limited_height);
@@ -1659,7 +2146,7 @@ struct D3D11PreviewRenderer::Impl {
             limited_viewport.Height = static_cast<float>(limited_height);
             limited_viewport.MinDepth = 0;
             limited_viewport.MaxDepth = 1;
-            draw_nv12(limited_viewport, limited_width, limited_height, false, turns);
+            draw_nv12(limited_viewport, limited_width, limited_height, false, video_turns, false);
 
             // A resource must not remain bound as an RTV when it becomes the
             // SRV for the copy pass; explicit unbinding avoids a driver-side
@@ -1676,9 +2163,12 @@ struct D3D11PreviewRenderer::Impl {
             update_shape_constants(
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Width))),
                 std::max<UINT>(1, static_cast<UINT>(std::lround(viewport.Height))),
-                rounded, 0, nullptr, viewport.TopLeftX, viewport.TopLeftY, &frame_profile);
+                rounded, 0, nullptr, viewport.TopLeftX, viewport.TopLeftY,
+                &frame_profile, true, crop.x, crop.y);
             ID3D11ShaderResourceView* copy_view = render_view.Get();
             context->PSSetShaderResources(2, 1, &copy_view);
+            auto* mask_view = reference_aperture_view.Get();
+            context->PSSetShaderResources(4, 1, &mask_view);
             constexpr float frame_blend[] = {0, 0, 0, 0};
             if (framed)
                 context->OMSetBlendState(premultiplied_blend_state.Get(),
@@ -1687,18 +2177,92 @@ struct D3D11PreviewRenderer::Impl {
             if (framed)
                 context->OMSetBlendState(nullptr, frame_blend, 0xffffffffU);
             context->PSSetShaderResources(0, 3, empty);
+            ID3D11ShaderResourceView* cleared_mask = nullptr;
+            context->PSSetShaderResources(4, 1, &cleared_mask);
+            if (framed) draw_reference_shell(frame_profile);
             // Likewise leave the limited-render path's original pixels unobscured.
         }
         // The render loop applies the requested frame-rate cap. A nonblocking
         // flip presentation must not hold up the newest landscape frame when
         // DWM is late with a vblank; skip that presentation and keep capture
         // and decode independent of desktop composition.
-        const auto present_result = swap_chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+        // Reset the temporary transform on the SAME present that already
+        // contains the new landscape/portrait geometry. A separate reset
+        // before the resize would reveal a black or off-center intermediate.
+        // A final quarter-turn handoff resets the DComp matrix while
+        // presenting the FIRST frame rendered at the new HWND dimensions.
+        // That handoff cannot use DO_NOT_WAIT: dropping its Present would
+        // expose the previous frame under the new identity matrix (flash).
+        bool rotation_handoff_pending = false;
+        bool visual_rotation_active = false;
+        {
+            std::scoped_lock lock(visual_rotation_mutex);
+            visual_rotation_active = visual_rotation_request.active;
+            rotation_handoff_pending = !visual_rotation_active &&
+                visual_rotation_request.generation != applied_visual_generation;
+        }
+        // The render-loop's earlier HWND/target comparison can become stale
+        // after WPF sends the final SetWindowPos on its UI thread. On the
+        // third 2026-10-15 flash trace, the 1132x549 HWND received a Present
+        // of the OLD 549x1132 buffer with the NEW quarter-turn 0.3ms before
+        // ResizeBuffers. Never submit that intermediate geometry to DWM.
+        // During the 1s animation, a square HWND intentionally contains
+        // the unresized phone swap-chain and remains permitted.
+        if (composition_mode) {
+            RECT present_client{};
+            if (GetClientRect(window, &present_client) &&
+                should_defer_phone_present(visual_rotation_active,
+                    target_width, target_height,
+                    present_client.right - present_client.left,
+                    present_client.bottom - present_client.top)) {
+                refresh_requested.store(true, std::memory_order_release);
+                ++pipeline_geometry_deferrals;
+                logging::diagnostic_event(logging::DiagnosticEvent::FrameDropped,
+                    frame.sequence_id, applied_visual_generation, 2,
+                    frame.timestamp_100ns, target_width, target_height);
+                release_shared_gpu_frame();
+                return;
+            }
+        }
+        apply_visual_rotation_if_needed(true);
+        logging::diagnostic_event(logging::DiagnosticEvent::FrameSubmitted,
+            frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+            rotation_quarter_turns.load(std::memory_order_relaxed),
+            frame.timestamp_100ns == last_timestamp ? 1 : 0);
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentBegin,
+            frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+            target_width, target_height, rotation_handoff_pending ? 1 : 0);
+        const auto present_started = std::chrono::steady_clock::now();
+        const auto present_result = rotation_handoff_pending
+            ? swap_chain->Present(1, 0)
+            : swap_chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+        logging::diagnostic_event(logging::DiagnosticEvent::PresentEnd,
+            frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - present_started).count(),
+            target_width, target_height, present_result);
         if (present_result != DXGI_ERROR_WAS_STILL_DRAWING)
             check(present_result, "Present");
         release_shared_gpu_frame();
-        ++rendered_frames;
-        if (rendered_frames == 1) first_presented_at = std::chrono::steady_clock::now();
+        // DXGI_ERROR_WAS_STILL_DRAWING means no new frame was submitted.
+        // Count it as a drop, never inflate the displayed/encoded FPS.
+        if (present_result == DXGI_ERROR_WAS_STILL_DRAWING) {
+            ++skipped_present_frames;
+            logging::diagnostic_event(logging::DiagnosticEvent::FrameDropped,
+                frame.sequence_id, applied_visual_generation, 1,
+                frame.timestamp_100ns, 0, 0, present_result);
+        } else {
+            logging::diagnostic_event(logging::DiagnosticEvent::FramePresented,
+                frame.sequence_id, applied_visual_generation, frame.timestamp_100ns,
+                target_width, target_height);
+            const auto accepted_at = std::chrono::steady_clock::now();
+            if (last_accepted_present_at.time_since_epoch().count() != 0)
+                latest_present_interval_ms = std::chrono::duration<double, std::milli>(
+                    accepted_at - last_accepted_present_at).count();
+            last_accepted_present_at = accepted_at;
+            ++rendered_frames;
+            if (rendered_frames == 1) first_presented_at = accepted_at;
+        }
         DXGI_FRAME_STATISTICS frame_statistics{};
         const auto statistics_result = swap_chain->GetFrameStatistics(&frame_statistics);
         if (SUCCEEDED(statistics_result) && frame_statistics.SyncRefreshCount != 0) {
@@ -1729,19 +2293,84 @@ struct D3D11PreviewRenderer::Impl {
             const std::string display_fps_text = display_statistics_valid
                 ? std::format("{:.2f}", display_fps) : "unavailable";
             logging::write(std::format(
-                "d3d_preview render={} timestamp={} submit_fps={:.2f} display_fps={} "
-                "fps_cap={} render={}x{} stats_hr=0x{:08X}",
-                rendered_frames, frame.timestamp_100ns, present_fps,
-                display_fps_text,
-                max_fps.load(std::memory_order_relaxed),
+                "d3d_preview accepted={} skipped={} interval_ms={:.2f} timestamp={} "
+                "submit_fps={:.2f} vblank_hz={} requested_cap={} monitor_cap={} "
+                "render={}x{} stats_hr=0x{:08X}",
+                rendered_frames, skipped_present_frames, latest_present_interval_ms,
+                frame.timestamp_100ns, present_fps, display_fps_text,
+                max_fps.load(std::memory_order_relaxed), monitor_refresh_hz,
                 local_render_width, local_render_height,
                 static_cast<unsigned>(statistics_result)));
         }
     }
 
+    // A requested cap of zero means Auto: follow the monitor hosting this
+    // detached/main preview window, never a guessed fixed 60/120 Hz. Polling
+    // every two seconds also handles a window dragged between monitors.
+    std::uint32_t detect_monitor_refresh_hz() const noexcept {
+        const auto monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFOEXW info{};
+        info.cbSize = sizeof(info);
+        if (monitor && GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(&info))) {
+            DEVMODEW mode{};
+            mode.dmSize = sizeof(mode);
+            if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
+                mode.dmDisplayFrequency >= 24 && mode.dmDisplayFrequency <= 480)
+                return std::clamp<std::uint32_t>(mode.dmDisplayFrequency, 24, 480);
+        }
+        // If Windows won't report the monitor refresh, do not falsely claim
+        // that the display is 120Hz. This is a conservative render ceiling.
+        return 60;
+    }
+
+    // Emit only once per second: capture.log remains bounded and telemetry
+    // itself cannot overwhelm the renderer. The input metric measures unique
+    // decoded frames sampled by this renderer, NOT sender-encoded FPS.
+    void publish_pipeline_health(std::chrono::steady_clock::time_point now) {
+        if (pipeline_last_report.time_since_epoch().count() == 0) {
+            pipeline_last_report = now;
+            return;
+        }
+        const auto elapsed = std::chrono::duration<double>(
+            now - pipeline_last_report).count();
+        if (elapsed < 1.0) return;
+        const auto input_delta = pipeline_observed_frames - pipeline_last_reported_input;
+        const auto present_delta = rendered_frames - pipeline_last_reported_present;
+        const auto skipped_delta = skipped_present_frames - pipeline_last_reported_skipped;
+        const auto age_ms = [now](std::chrono::steady_clock::time_point when) {
+            return when.time_since_epoch().count() == 0 ? -1LL :
+                static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - when).count());
+        };
+        const auto input_age = age_ms(pipeline_last_input_at);
+        const auto present_age = age_ms(last_accepted_present_at);
+        const char* state = input_age < 0 ? "AWAITING_INPUT" :
+            input_age >= 500 ? "INPUT_IDLE_OR_STALLED" :
+            present_age < 0 ? "AWAITING_PRESENT" :
+            present_age >= 500 ? "PRESENT_STALLED" : "ACTIVE";
+        logging::write(std::format(
+            "d3d_preview pipeline_health hwnd=0x{:X} input_fps={:.2f} "
+            "present_fps={:.2f} present_skipped={} geometry_deferred={} "
+            "input_age_ms={} present_age_ms={} render={}x{} "
+            "requested_cap={} monitor_cap={} rotation={} state={}",
+            reinterpret_cast<std::uintptr_t>(window),
+            static_cast<double>(input_delta) / elapsed,
+            static_cast<double>(present_delta) / elapsed,
+            skipped_delta, pipeline_geometry_deferrals,
+            input_age, present_age, target_width, target_height,
+            max_fps.load(std::memory_order_relaxed),
+            monitor_refresh_hz,
+            rotation_quarter_turns.load(std::memory_order_relaxed), state));
+        pipeline_last_report = now;
+        pipeline_last_reported_input = pipeline_observed_frames;
+        pipeline_last_reported_present = rendered_frames;
+        pipeline_last_reported_skipped = skipped_present_frames;
+    }
+
     void run(std::stop_token token) noexcept {
         while (!token.stop_requested()) {
             try {
+                publish_pipeline_health(std::chrono::steady_clock::now());
                 if (!IsWindow(window)) break;
                 if (output_state.last_failure == output::Failure::DeviceLost ||
                     !device || !context || !swap_chain) {
@@ -1750,8 +2379,38 @@ struct D3D11PreviewRenderer::Impl {
                 // Coalesce interactive WM_SIZE bursts independently of media
                 // FPS. A resize iteration bypasses the media deadline below
                 // and immediately presents the newest retained frame.
+                apply_visual_rotation_if_needed();
                 const bool target_resized = resize_if_needed(
                     std::chrono::steady_clock::now());
+                // At the very end of a whole-phone rotation, the HWND has
+                // its final portrait/landscape client size while the old
+                // backbuffer may still be the opposite orientation. Never
+                // PRESENT the shader's new quarter-turn against that old
+                // geometry: it produces the reported giant bezel, vertical
+                // video and black flash. Finish ResizeBuffers first and
+                // reset the DComp matrix with the newly sized rendered frame.
+                bool waiting_for_rotation_resize = false;
+                bool pending_rotation_handoff = false;
+                {
+                    std::scoped_lock lock(visual_rotation_mutex);
+                    pending_rotation_handoff = !visual_rotation_request.active &&
+                        visual_rotation_request.generation !=
+                            applied_visual_generation;
+                    if (pending_rotation_handoff) {
+                        RECT final_rect{};
+                        if (GetClientRect(window, &final_rect)) {
+                            waiting_for_rotation_resize =
+                                target_width != static_cast<UINT>(
+                                    std::max<LONG>(0, final_rect.right - final_rect.left)) ||
+                                target_height != static_cast<UINT>(
+                                    std::max<LONG>(0, final_rect.bottom - final_rect.top));
+                        }
+                    }
+                }
+                if (waiting_for_rotation_resize) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
                 if (clear_requested.exchange(false, std::memory_order_acq_rel)) {
                     last_frame.reset();
                     last_timestamp = 0;
@@ -1763,8 +2422,27 @@ struct D3D11PreviewRenderer::Impl {
                     continue;
                 }
                 const auto requested_fps = max_fps.load(std::memory_order_relaxed);
-                const auto effective_fps = std::clamp<std::uint32_t>(requested_fps, 1, 120);
-                if (requested_fps != 0) {
+                const auto probe_now = std::chrono::steady_clock::now();
+                if (next_refresh_probe.time_since_epoch().count() == 0 ||
+                    probe_now >= next_refresh_probe) {
+                    const auto sampled_hz = detect_monitor_refresh_hz();
+                    if (sampled_hz != monitor_refresh_hz) {
+                        monitor_refresh_hz = sampled_hz;
+                        logging::write(std::format(
+                            "d3d_preview monitor_refresh_hz={}", sampled_hz));
+                    }
+                    next_refresh_probe = probe_now + std::chrono::seconds(2);
+                }
+                // Detect the *real* Windows display mode (e.g. 200Hz), but
+                // cap this pre6 renderer to 120 presentations per second.
+                // A high-refresh monitor alone never creates fresh iPhone frames.
+                const auto effective_fps = requested_fps == 0
+                    ? std::min<std::uint32_t>(monitor_refresh_hz, 120)
+                    : std::min<std::uint32_t>(
+                        std::clamp<std::uint32_t>(requested_fps, 1, 120),
+                        monitor_refresh_hz);
+                // Auto is monitor-limited, not unbounded busy-loop rendering.
+                {
                     const auto now = std::chrono::steady_clock::now();
                     if (scheduled_fps != effective_fps ||
                         next_present_due.time_since_epoch().count() == 0) {
@@ -1780,22 +2458,40 @@ struct D3D11PreviewRenderer::Impl {
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         continue;
                     }
-                } else {
-                    scheduled_fps = 0;
-                    next_present_due = {};
                 }
+                // The final transform reset is not optional: even if the
+                // decoder repeats the SAME timestamp, redraw and submit the
+                // new-sized frame until the pending handoff has committed.
                 const bool force_refresh = refresh_requested.exchange(false,
-                    std::memory_order_acq_rel);
+                    std::memory_order_acq_rel) || pending_rotation_handoff;
                 auto frame = provider ? provider() : nullptr;
-                if ((!frame || frame->timestamp_100ns == 0) && force_refresh)
+                // A still iPhone screen may not produce fresh decoded frames.
+                // Rotate/resize the retained frame instead of briefly painting
+                // a black swap chain while waiting for the sender to move.
+                if ((!frame || frame->timestamp_100ns == 0) &&
+                    (force_refresh || target_resized))
                     frame = last_frame;
+                if (frame && frame->timestamp_100ns != 0 &&
+                    frame->sequence_id != pipeline_last_sequence) {
+                    pipeline_last_sequence = frame->sequence_id;
+                    ++pipeline_observed_frames;
+                    pipeline_last_input_at = std::chrono::steady_clock::now();
+                }
                 if (!frame || frame->timestamp_100ns == 0) {
                     if (target_resized) present_black();
                     if (force_refresh) refresh_requested.store(true, std::memory_order_release);
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     continue;
                 }
-                const bool output_mode_changed = update_output_mode(*frame);
+                // HDR/SDR transitions call ResizeBuffers or rebuild D3D.
+                // Doing either while the phone is turning can destroy its
+                // intact shell/backbuffer. Defer output mode changes until
+                // the 1s DirectComposition transition has completed.
+                const bool defer_output_switch =
+                    hold_swap_chain_resize.load(std::memory_order_acquire) ||
+                    pending_rotation_handoff;
+                const bool output_mode_changed = !defer_output_switch &&
+                    update_output_mode(*frame);
                 if (!output_state.target_valid || !target) {
                     refresh_requested.store(true, std::memory_order_release);
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1806,13 +2502,30 @@ struct D3D11PreviewRenderer::Impl {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     continue;
                 }
+                if (last_frame && frame != last_frame &&
+                    frame->received_at > last_frame->received_at)
+                    logging::diagnostic_event(logging::DiagnosticEvent::FrameGap,
+                        frame->sequence_id, applied_visual_generation,
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            frame->received_at - last_frame->received_at).count(),
+                        frame->timestamp_100ns);
                 const auto render_started = std::chrono::steady_clock::now();
                 render(*frame);
+                // If a transient GPU upload/Present could not perform the
+                // final visual commit, retry the retained frame next loop,
+                // without waiting for the iPhone to emit a NEW timestamp.
+                if (pending_rotation_handoff) {
+                    std::scoped_lock lock(visual_rotation_mutex);
+                    if (!visual_rotation_request.active &&
+                        visual_rotation_request.generation !=
+                            applied_visual_generation)
+                        refresh_requested.store(true, std::memory_order_release);
+                }
                 const auto render_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - render_started).count();
                 last_timestamp = frame->timestamp_100ns;
                 last_frame = frame;
-                if (requested_fps != 0) {
+                {
                     const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double>(1.0 / static_cast<double>(effective_fps)));
                     const auto now = std::chrono::steady_clock::now();
@@ -1826,6 +2539,9 @@ struct D3D11PreviewRenderer::Impl {
                 const auto removed_reason = device
                     ? device->GetDeviceRemovedReason() : E_POINTER;
                 if (FAILED(removed_reason)) {
+                    logging::diagnostic_event(logging::DiagnosticEvent::DeviceLost,
+                        0, applied_visual_generation, removed_reason,
+                        0, 0, 0, removed_reason);
                     output_state.last_failure = output::Failure::DeviceLost;
                     output_state.target_valid = false;
                     output_state.applied_color_space =
@@ -1905,8 +2621,45 @@ void D3D11PreviewRenderer::set_device_frame_profile(bool enabled, float side_ins
 
 void D3D11PreviewRenderer::set_rotation(std::int32_t quarter_turns) noexcept {
     if (!impl_) return;
+    // The discrete quarter-turn is the final, correctly sized frame. Retire
+    // the early-landscape content override before the final DComp handoff.
+    impl_->staging_video_turns.store(-1, std::memory_order_release);
     impl_->rotation_quarter_turns.store(quarter_turns, std::memory_order_relaxed);
     impl_->refresh_requested.store(true, std::memory_order_release);
+}
+
+void D3D11PreviewRenderer::set_video_stage_rotation(std::int32_t turns) noexcept {
+    if (!impl_ || turns < -1 || turns > 3) return;
+    impl_->staging_video_turns.store(turns, std::memory_order_release);
+    impl_->refresh_requested.store(true, std::memory_order_release);
+}
+
+void D3D11PreviewRenderer::set_visual_rotation(float degrees,
+    float canvas_width, float canvas_height, float visual_scale,
+    bool active) noexcept {
+    if (!impl_) return;
+    if (!std::isfinite(degrees) || !std::isfinite(canvas_width) ||
+        !std::isfinite(canvas_height) || !std::isfinite(visual_scale) ||
+        visual_scale <= 0.0F || visual_scale > 1.0F) return;
+    // Publish the resize guard before Windows receives WM_SIZE for the
+    // temporary square animation host. Never touch the AirPlay session.
+    impl_->hold_swap_chain_resize.store(active, std::memory_order_release);
+    {
+        std::scoped_lock lock(impl_->visual_rotation_mutex);
+        auto& request = impl_->visual_rotation_request;
+        request.degrees = degrees;
+        request.canvas_width = canvas_width;
+        request.canvas_height = canvas_height;
+        request.scale = visual_scale;
+        request.active = active;
+        ++request.generation;
+        logging::diagnostic_event(logging::DiagnosticEvent::VisualRequested,
+            0, request.generation, std::lround(degrees * 1000),
+            std::lround(visual_scale * 1000000),
+            std::lround(canvas_width), std::lround(canvas_height));
+    }
+    if (!active)
+        impl_->refresh_requested.store(true, std::memory_order_release);
 }
 
 void D3D11PreviewRenderer::set_color_output_preference(

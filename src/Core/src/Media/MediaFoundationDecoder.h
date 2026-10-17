@@ -102,6 +102,7 @@ struct SdrRgb {
 } // namespace detail
 
 struct DecodedFrame {
+    std::uint64_t sequence_id{};
     std::uint32_t width{};
     std::uint32_t height{};
     // Byte stride for both NV12 and P010. P010 therefore normally reports at
@@ -135,13 +136,16 @@ namespace detail {
 // are filled with range-correct black and neutral chroma.
 [[nodiscard]] bool copy_nv12_frame_letterboxed(const DecodedFrame& frame,
     std::span<std::uint8_t> output, std::uint32_t output_width,
-    std::uint32_t output_height, bool canonicalize_sdr = false) noexcept;
+    std::uint32_t output_height, bool canonicalize_sdr = false,
+    bool allow_upscale = false) noexcept;
 // Copies a frame for encoded/streamed output. The result is always 8-bit
 // full-range BT.709 SDR NV12; HDR and non-BT.709 inputs are tone-mapped and
-// converted before being written.
+// converted before being written. allow_upscale=true is required by recordings
+// whose iOS source (e.g. 498x1080) is smaller than the selected canvas
+// (1080x1920). Without it the original tiny video is surrounded by black.
 [[nodiscard]] bool copy_nv12_frame_letterboxed_sdr(const DecodedFrame& frame,
     std::span<std::uint8_t> output, std::uint32_t output_width,
-    std::uint32_t output_height) noexcept;
+    std::uint32_t output_height, bool allow_upscale = false) noexcept;
 // Materializes a shared hardware frame for CPU-only API consumers. This is
 // intentionally lazy so the normal D3D preview path remains GPU-only.
 [[nodiscard]] bool materialize_gpu_frame(DecodedFrame& frame) noexcept;

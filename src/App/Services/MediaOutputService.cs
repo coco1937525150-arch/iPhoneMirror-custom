@@ -7,6 +7,10 @@ using IPhoneMirror.App.Interop;
 
 namespace IPhoneMirror.App.Services;
 
+// Measurements distinguish real source updates from nominal encoded frame slots.
+internal readonly record struct RecordingFrameMetrics(
+    double SourceFps, double WrittenSlotFps, long RepeatSlots, long MaxPipeWriteMs);
+
 internal enum MediaOutputKind
 {
     Recording,
@@ -22,7 +26,13 @@ internal sealed record MediaOutputRequest(
     uint Height,
     int FrameRate,
     int BitrateKbps,
-    string Authorization = "");
+    string Authorization = "",
+    bool IncludePhoneShell = false,
+    string? BackgroundImage = null,
+    string? PhoneShellImage = null,
+    bool UseBackgroundCanvas = false,
+    bool TransparentPhoneShellRecording = false,
+    int TransparentMovQuality = 18);
 
 internal sealed record MediaOutputCapabilities(
     bool FfmpegAvailable,
@@ -37,6 +47,7 @@ internal sealed record MediaOutputCapabilities(
     string Detail)
 {
     internal IReadOnlyList<string> H264EncoderCandidates { get; init; } = [];
+    internal bool HasProRes4444Encoder { get; init; }
 
     // Audio is optional: the capture pipeline can explicitly pass -an when
     // no PCM packet is available. Keep video-only output available with a
@@ -61,6 +72,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
         TimeSpan.FromMinutes(2);
     private static readonly TimeSpan StreamShutdownTimeout =
         TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan PumpTaskShutdownTimeout =
+        TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan UserStopTimeout =
+        TimeSpan.FromSeconds(20);
     private static readonly TimeSpan AudioSilenceGrace =
         TimeSpan.FromMilliseconds(100);
     private const uint DefaultAudioSampleRate = 48000;
@@ -69,21 +84,29 @@ internal sealed class MediaOutputService : IAsyncDisposable
     private const int MaximumVideoCatchUpSeconds = 2;
     private readonly Func<ulong, uint, uint, Nv12VideoFrame?> _frameProvider;
     private readonly Func<ulong, ulong, AudioPacket?> _audioProvider;
+    private readonly Func<uint, uint, string?, string?, PhoneShellComposition>
+        _compositionFactory;
+    private readonly object _stderrGate = new();
+    private readonly Queue<string> _stderrTail = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private CancellationTokenSource? _runCancellation;
     private Process? _process;
     private Task? _runTask;
+    private MediaOutputKind? _activeKind;
     private string _lastError = string.Empty;
 
     internal event Action<string, bool>? StatusChanged;
+    internal event Action<RecordingFrameMetrics>? RecordingMetricsChanged;
     internal bool IsRunning => _runTask is { IsCompleted: false };
     internal ulong SessionHandle { get; private set; }
 
     internal MediaOutputService(Func<ulong, uint, uint, Nv12VideoFrame?> frameProvider,
-        Func<ulong, ulong, AudioPacket?> audioProvider)
+        Func<ulong, ulong, AudioPacket?> audioProvider,
+        Func<uint, uint, string?, string?, PhoneShellComposition>? compositionFactory = null)
     {
         _frameProvider = frameProvider;
         _audioProvider = audioProvider;
+        _compositionFactory = compositionFactory ?? PhoneShellMediaComposer.Prepare;
     }
 
     internal static async Task<MediaOutputCapabilities> ProbeAsync(
@@ -194,13 +217,26 @@ internal sealed class MediaOutputService : IAsyncDisposable
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
+            // Do not read 120fps sample buffers for 1.2s while another output
+            // is already active. Perform high-rate preflight under the same
+            // lifecycle gate used by Start/Stop to serialize transitions.
             if (IsRunning) throw new InvalidOperationException("A media output is already active.");
-            capabilities = await ResolveWorkingEncoderAsync(capabilities,
-                request.Width, request.Height, cancellationToken);
-            if (!capabilities.HasH264Encoder)
-                throw new InvalidOperationException(
-                    "No installed FFmpeg H.264 encoder could encode at the requested size.");
+            // FFmpeg assigns the requested nominal FPS to rawvideo, regardless
+            // of actual source frame cadence. Refuse 120fps unless source PTS
+            // and observed distinct frame count BOTH establish genuine 120fps.
+            if (request.Kind == MediaOutputKind.Recording && request.FrameRate > 60)
+            {
+                var measured = await MeasureDistinctSourceFpsAsync(
+                    sessionHandle, request.Width, request.Height, cancellationToken);
+                DiagnosticLogger.Info("media_output", "high_fps_source_preflight",
+                    ("requested_fps", request.FrameRate), ("measured_fps", measured));
+                if (measured < request.FrameRate * 0.90)
+                    throw new InvalidOperationException(
+                        $"无法启动真实 {request.FrameRate}fps 录制：实际输入约 {measured:F1}fps。" +
+                        " 请改用 60fps，或确认 iPhone 视频流确实达到所选帧率。");
+            }
             _lastError = string.Empty;
+            lock (_stderrGate) _stderrTail.Clear();
             var firstAudio = await TryWaitForAudioAsync(sessionHandle, cancellationToken);
             string? recordingStagingPath = null;
             var processRequest = request;
@@ -221,8 +257,35 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 : null;
             NamedPipeServerStream? audioPipe = null;
             Process? process = null;
+            PhoneShellComposition? composition = null;
             try
             {
+                // Canvas/background and visible phone bezel are independent
+                // choices. The canvas still renders when the bezel is hidden.
+                if (request.IncludePhoneShell || request.UseBackgroundCanvas)
+                    composition = _compositionFactory(request.Width, request.Height,
+                        request.BackgroundImage, request.PhoneShellImage);
+                // The encoder sees the final composited canvas, not the phone
+                // capture resolution. Hardware encoders can accept one and reject
+                // the other, which previously surfaced only as a broken pipe.
+                var encoderWidth = (uint)(composition?.OutputWidth ?? (int)request.Width);
+                var encoderHeight = (uint)(composition?.OutputHeight ?? (int)request.Height);
+                if (!request.TransparentPhoneShellRecording)
+                    capabilities = await ResolveWorkingEncoderAsync(capabilities,
+                        encoderWidth, encoderHeight, cancellationToken, request.FrameRate);
+                if (!request.TransparentPhoneShellRecording && !capabilities.HasH264Encoder)
+                    throw new InvalidOperationException(
+                        $"没有可用的 H.264 编码器支持最终录制画布 {encoderWidth}×{encoderHeight}。" +
+                        " 请换较小的背景图或安装支持 libx264 的 FFmpeg。");
+                DiagnosticLogger.Info("media_output", "recording_preflight",
+                    ("kind", request.Kind), ("source_width", request.Width),
+                    ("source_height", request.Height),
+                    ("canvas_width", encoderWidth), ("canvas_height", encoderHeight),
+                    ("fps", request.FrameRate),
+                    ("encoder", request.TransparentPhoneShellRecording
+                        ? "prores_ks/yuva444p10le" : capabilities.PreferredH264Encoder),
+                    ("audio", includeAudio), ("shell", request.IncludePhoneShell),
+                    ("background_canvas", composition is not null));
                 audioPipe = audioPipeName is null ? null : new NamedPipeServerStream(
                     audioPipeName, PipeDirection.Out, 1, PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous, 64 * 1024, 64 * 1024);
@@ -231,10 +294,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         audioPipeName is null ? null : $@"\\.\pipe\{audioPipeName}",
                         audioSampleRate,
                         audioChannels,
-                        includeAudio: includeAudio));
+                        includeAudio: includeAudio, composition: composition));
                 process.ErrorDataReceived += (_, args) =>
                 {
-                    if (!string.IsNullOrWhiteSpace(args.Data)) _lastError = args.Data;
+                    if (!string.IsNullOrWhiteSpace(args.Data))
+                        CaptureFfmpegError(args.Data);
                 };
                 if (!process.Start())
                     throw new InvalidOperationException("FFmpeg could not be started.");
@@ -268,17 +332,20 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var activeProcess = process;
                 var activeAudioPipe = audioPipe;
                 var activeRecordingStagingPath = recordingStagingPath;
+                var activeComposition = composition;
                 _process = activeProcess;
+                _activeKind = request.Kind;
                 SessionHandle = sessionHandle;
                 _runCancellation = runCancellation;
                 _runTask = Task.Run(() => PumpAsync(activeProcess,
                     activeAudioPipe, sessionHandle, request, firstAudio,
                     audioSampleRate, audioChannels, activeRecordingStagingPath,
-                    runCancellation.Token),
+                    activeComposition, runCancellation.Token),
                     CancellationToken.None);
                 process = null;
                 audioPipe = null;
                 recordingStagingPath = null;
+                composition = null; // PumpAsync owns the temporary shell image.
                 StatusChanged?.Invoke(request.Kind == MediaOutputKind.Recording
                     ? "Recording" : "Live", false);
             }
@@ -292,6 +359,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
             {
                 if (process is not null) await DisposeFailedStartAsync(process);
                 audioPipe?.Dispose();
+                composition?.Cleanup();
                 if (recordingStagingPath is not null)
                     TryDeleteFile(recordingStagingPath);
             }
@@ -299,27 +367,103 @@ internal sealed class MediaOutputService : IAsyncDisposable
         finally { _lifecycleGate.Release(); }
     }
 
+    private void CaptureFfmpegError(string line)
+    {
+        lock (_stderrGate)
+        {
+            // FFmpeg's "Guessed Channel Layout: stereo" is a harmless input
+            // warning, not a diagnosis for an encoder abort. Keep the full
+            // stderr tail, but prefer lines that actually describe a failure.
+            if (line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("invalid", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("could not", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("unable to", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("not found", StringComparison.OrdinalIgnoreCase))
+                _lastError = line;
+            _stderrTail.Enqueue(line);
+            while (_stderrTail.Count > 24) _stderrTail.Dequeue();
+        }
+    }
+
+    private string GetFfmpegErrorTail()
+    {
+        lock (_stderrGate)
+        {
+            var tail = string.Join(" | ", _stderrTail);
+            return tail.Length > 2400 ? tail[^2400..] : tail;
+        }
+    }
+
+    private async Task<Exception> ExplainPipeFailureAsync(
+        Process process, IOException error)
+    {
+        // Wait briefly for the encoder's stderr reader to flush its final
+        // diagnostics. A closed stdin/PCM pipe is a symptom, not a root cause.
+        if (!process.HasExited)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(2));
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) { }
+        }
+        var tail = GetFfmpegErrorTail();
+        var exitCode = TryGetExitCode(process, out var code)
+            ? code.ToString() : "仍在运行";
+        DiagnosticLogger.Exception("media_output", "ffmpeg_pipe_closed", error,
+            ("exit_code", exitCode), ("stderr", tail));
+        var detail = string.IsNullOrWhiteSpace(tail)
+            ? "FFmpeg 没有返回详细错误，请查看 application.log。"
+            : tail;
+        return new IOException(
+            $"录制编码器输入管道提前关闭（FFmpeg 退出码：{exitCode}）。" +
+            $" 错误详情：{detail}。日志：{DiagnosticLogger.Path}", error);
+    }
+
     internal async Task StopAsync()
     {
         Task? task;
+        Process? process;
+        MediaOutputKind? activeKind;
         await _lifecycleGate.WaitAsync();
         try
         {
             _runCancellation?.Cancel();
             task = _runTask;
+            process = _process;
+            activeKind = _activeKind;
         }
         finally { _lifecycleGate.Release(); }
-        if (task is not null)
+        if (task is null) return;
+        DiagnosticLogger.Info("media_output", "stop_requested",
+            ("session_handle", SessionHandle));
+        // Recording needs time to drain pending raw video and write the MP4
+        // index/faststart atom. The old 20-second UI timeout killed FFmpeg
+        // BEFORE the 2-minute finalization window used by PumpAsync.
+        var stopTimeout = activeKind == MediaOutputKind.Recording
+            ? RecordingFinalizationTimeout + PumpTaskShutdownTimeout + TimeSpan.FromSeconds(15)
+            : UserStopTimeout;
+        try { await task.WaitAsync(stopTimeout); }
+        catch (OperationCanceledException) { }
+        catch (TimeoutException error) when (!task.IsCompleted)
         {
-            try { await task; }
-            catch (OperationCanceledException) { }
+            DiagnosticLogger.Exception("media_output", "stop_wait_timeout", error);
+            if (process is not null) await KillProcessAsync(process);
+            // Do not block the UI forever when a native GPU readback cannot
+            // observe cancellation. Preserve the diagnostic for the next run.
+            throw new TimeoutException(
+                $"Media output did not finish stopping within {stopTimeout.TotalSeconds:F0} seconds; FFmpeg was terminated.",
+                error);
         }
     }
 
     private async Task PumpAsync(Process process, NamedPipeServerStream? audioPipe,
         ulong sessionHandle, MediaOutputRequest request, AudioPacket? firstAudio,
         uint audioSampleRate, ushort audioChannels, string? recordingStagingPath,
-        CancellationToken cancellationToken)
+        PhoneShellComposition? composition, CancellationToken cancellationToken)
     {
         Exception? failure = null;
         Task? videoTask = null;
@@ -341,6 +485,18 @@ internal sealed class MediaOutputService : IAsyncDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+        catch (IOException error) when (!cancellationToken.IsCancellationRequested)
+        {
+            failure = await ExplainPipeFailureAsync(process, error);
+        }
+        catch (IOException) when (cancellationToken.IsCancellationRequested)
+        {
+            // FFmpeg may close a named pipe concurrently with an intentional
+            // user stop. An expected pipe closure is not a failed recording.
+        }
+        catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
         catch (Exception error)
         {
             failure = error;
@@ -348,6 +504,30 @@ internal sealed class MediaOutputService : IAsyncDisposable
         finally
         {
             pumpCancellation.Cancel();
+            // Wait for both producers to acknowledge cancellation BEFORE
+            // closing their destination streams. Previously closing stdin
+            // and the PCM pipe first raised spurious IOException /
+            // ObjectDisposedException during a normal "完成录制" action.
+            var pumps = Task.WhenAll(videoTask ?? Task.CompletedTask,
+                audioTask ?? Task.CompletedTask);
+            try
+            {
+                await pumps.WaitAsync(PumpTaskShutdownTimeout);
+            }
+            catch (OperationCanceledException) { }
+            catch (IOException) when (cancellationToken.IsCancellationRequested) { }
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested) { }
+            catch (TimeoutException error) when (!pumps.IsCompleted)
+            {
+                failure ??= new TimeoutException(
+                    "A media input task did not stop within 8 seconds.", error);
+                DiagnosticLogger.Exception("media_output", "pump_shutdown_timeout", error,
+                    ("kind", request.Kind));
+                await KillProcessAsync(process);
+            }
+            catch (Exception error) { failure ??= error; }
+            // EOF on both FFmpeg inputs is what finalizes MP4. Only signal
+            // it AFTER the tasks have released all normal write operations.
             try { process.StandardInput.Close(); }
             catch (Exception error)
             {
@@ -360,13 +540,6 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 DiagnosticLogger.ExceptionOnce("media-audio-pipe-dispose", "media_output",
                     "audio_pipe_dispose_failed", error);
             }
-            try
-            {
-                await Task.WhenAll(videoTask ?? Task.CompletedTask,
-                    audioTask ?? Task.CompletedTask);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception error) { failure ??= error; }
             var shutdownTimeout = request.Kind == MediaOutputKind.Recording
                 ? RecordingFinalizationTimeout : StreamShutdownTimeout;
             try
@@ -389,9 +562,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
             if (TryGetExitCode(process, out var exitCode) && exitCode != 0)
             {
                 failure ??= new InvalidOperationException(
-                    string.IsNullOrWhiteSpace(_lastError)
-                        ? $"FFmpeg exited with code {exitCode} while finalizing output."
-                        : _lastError);
+                    $"FFmpeg exited with code {exitCode} while finalizing output." +
+                    (string.IsNullOrWhiteSpace(_lastError)
+                        ? " No explicit FFmpeg error was reported. Recent stderr: " +
+                            GetFfmpegErrorTail()
+                        : " " + _lastError));
             }
             if (recordingStagingPath is not null)
             {
@@ -409,9 +584,17 @@ internal sealed class MediaOutputService : IAsyncDisposable
                             error);
                     }
                 }
-                if (failure is not null) TryDeleteFile(recordingStagingPath);
+                if (failure is not null)
+                {
+                    // Keep the partial file for manual recovery instead of
+                    // silently deleting possibly salvageable encoded video.
+                    DiagnosticLogger.Warning("media_output", "partial_recording_preserved",
+                        ("file", Path.GetFileName(recordingStagingPath)),
+                        ("error", failure.Message));
+                }
             }
             process.Dispose();
+            composition?.Cleanup();
             await _lifecycleGate.WaitAsync();
             try
             {
@@ -419,6 +602,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 {
                     _process = null;
                     _runTask = null;
+                    _activeKind = null;
                     _runCancellation?.Dispose();
                     _runCancellation = null;
                     SessionHandle = 0;
@@ -440,6 +624,17 @@ internal sealed class MediaOutputService : IAsyncDisposable
         var outputClock = Stopwatch.StartNew();
         long framesWritten = 0;
         ReadOnlyMemory<byte> lastFrame = default;
+        var statsClock = Stopwatch.StartNew();
+        long lastDistinctSourceFrames = 0;
+        long lastReportedSlots = 0;
+        long repeatedVideoSlots = 0;
+        long lastRepeatedVideoSlots = 0;
+        long lastWrittenSourceTimestamp = 0;
+        long lastFrameTimestamp = 0;
+        long maxEncoderWriteMilliseconds = 0;
+        var sourceWatch = Stopwatch.StartNew();
+        var lastNewSourceFrameAt = TimeSpan.Zero;
+        bool sourceStallReported = false;
         // Decouple the GPU->CPU frame readback from the pump timer. The
         // readback (materialize_gpu_frame + letterbox + SDR) is synchronous
         // and can exceed the frame interval on weak hardware, which delays
@@ -449,13 +644,40 @@ internal sealed class MediaOutputService : IAsyncDisposable
         var latch = new FrameLatch();
         using var readerCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken);
-        var readerTask = FrameReaderAsync(sessionHandle, request.Width,
-            request.Height, latch, frameInterval, readerCts.Token);
+        // Run GPU->CPU readback off the video scheduler thread; otherwise a
+        // synchronous frame copy can stall the first periodic output tick.
+        var readerTask = Task.Run(() => FrameReaderAsync(sessionHandle,
+            request.Width, request.Height, latch, frameInterval,
+            readerCts.Token), CancellationToken.None);
         try
         {
-            using var timer = new PeriodicTimer(frameInterval);
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            // The encoder must not depend on a 15.6ms Windows timer
+            // quantum when producing 120fps rawvideo. Keep the legacy
+            // low-overhead PeriodicTimer for 10–60fps recordings.
+            using var timer = request.FrameRate > 100
+                ? null : new PeriodicTimer(frameInterval);
+            var nextHighRateDeadline = frameInterval;
+            while (!cancellationToken.IsCancellationRequested)
             {
+                if (timer is not null)
+                {
+                    if (!await timer.WaitForNextTickAsync(cancellationToken))
+                        break;
+                }
+                else
+                {
+                    while (outputClock.Elapsed < nextHighRateDeadline)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var remaining = nextHighRateDeadline - outputClock.Elapsed;
+                        if (remaining > TimeSpan.FromMilliseconds(2))
+                            Thread.Sleep(0);
+                        else if (remaining > TimeSpan.Zero)
+                            Thread.SpinWait(128);
+                    }
+                    do { nextHighRateDeadline += frameInterval; }
+                    while (nextHighRateDeadline <= outputClock.Elapsed);
+                }
                 if (process.HasExited)
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(_lastError)
                         ? $"FFmpeg exited with code {process.ExitCode}." : _lastError);
@@ -468,32 +690,144 @@ internal sealed class MediaOutputService : IAsyncDisposable
                 var dueBeforeRead = CalculateDueVideoFrames(outputClock.Elapsed,
                     request.FrameRate, framesWritten);
                 if (dueBeforeRead <= 0) continue;
-                var buffered = latch.Get();
+                var sample = latch.GetSnapshot();
+                var buffered = sample.Frame;
                 if (!buffered.IsEmpty)
+                {
                     lastFrame = buffered;
+                    lastFrameTimestamp = sample.Timestamp100Ns;
+                    if (lastFrameTimestamp > lastWrittenSourceTimestamp)
+                    {
+                        lastNewSourceFrameAt = sourceWatch.Elapsed;
+                        sourceStallReported = false;
+                    }
+                }
                 else if (lastFrame.IsEmpty)
                 {
                     if (firstFrameWait.Elapsed > TimeSpan.FromSeconds(5))
-                        throw new TimeoutException("No projection frame was received for 5 seconds.");
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        DiagnosticLogger.Error("media_output", "first_frame_timeout",
+                            ("handle", AppLog.Handle(sessionHandle)),
+                            ("width", request.Width), ("height", request.Height),
+                            ("reason", latch.LastFailure));
+                        throw new TimeoutException(
+                            "No projection frame was received for 5 seconds." +
+                            (string.IsNullOrWhiteSpace(latch.LastFailure) ? string.Empty :
+                                " Last read error: " + latch.LastFailure));
+                    }
                     continue;
                 }
                 var schedule = CalculateVideoWritePlan(outputClock.Elapsed,
                     request.FrameRate, framesWritten);
                 framesWritten = schedule.FramesWrittenBaseline;
+                var sourceAgeMs = (sourceWatch.Elapsed - lastNewSourceFrameAt)
+                    .TotalMilliseconds;
+                if (!sourceStallReported && lastFrameTimestamp > 0 &&
+                    sourceAgeMs >= 250)
+                {
+                    FlashDiagnostics.Trace(39, (long)sourceAgeMs, request.FrameRate,
+                        lastFrameTimestamp);
+                    DiagnosticLogger.Warning("media_output", "recording_source_stalled",
+                        ("source_age_ms", Math.Round(sourceAgeMs)),
+                        ("fps", request.FrameRate));
+                    sourceStallReported = true;
+                }
                 for (long index = 0; index < schedule.FramesToWrite; ++index)
                 {
+                    if (lastFrameTimestamp > 0 &&
+                        lastFrameTimestamp <= lastWrittenSourceTimestamp)
+                        ++repeatedVideoSlots;
+                    var writeStart = Stopwatch.GetTimestamp();
                     await process.StandardInput.BaseStream.WriteAsync(lastFrame,
                         cancellationToken);
+                    var writeMs = Stopwatch.GetElapsedTime(writeStart).TotalMilliseconds;
+                    maxEncoderWriteMilliseconds = Math.Max(
+                        maxEncoderWriteMilliseconds, (long)Math.Ceiling(writeMs));
+                    if (writeMs >= 100)
+                    {
+                        FlashDiagnostics.Trace(41, (long)Math.Round(writeMs),
+                            request.FrameRate, schedule.FramesToWrite);
+                        DiagnosticLogger.Warning("media_output", "recording_encoder_write_stall",
+                            ("write_ms", Math.Round(writeMs)),
+                            ("fps", request.FrameRate));
+                    }
+                    if (lastFrameTimestamp > lastWrittenSourceTimestamp)
+                        lastWrittenSourceTimestamp = lastFrameTimestamp;
                     ++framesWritten;
+                }
+                if (statsClock.Elapsed >= TimeSpan.FromSeconds(5))
+                {
+                    var metrics = latch.SourceMetrics;
+                    var distinctThisWindow = metrics.Distinct - lastDistinctSourceFrames;
+                    var uniqueFps = distinctThisWindow / statsClock.Elapsed.TotalSeconds;
+                    DiagnosticLogger.Info("media_output", "video_frame_rate_observed",
+                        ("nominal_fps", request.FrameRate),
+                        ("distinct_input_fps", Math.Round(uniqueFps, 2)),
+                        ("input_read_samples", metrics.Reads),
+                        ("distinct_source_frames", metrics.Distinct),
+                        ("encoded_frame_slots", framesWritten),
+                        ("timestamp_100ns", metrics.LastTimestamp100Ns));
+                    var repeatedInWindow = repeatedVideoSlots - lastRepeatedVideoSlots;
+                    FlashDiagnostics.Trace(40, repeatedInWindow, framesWritten,
+                        metrics.LastTimestamp100Ns);
+                    if (uniqueFps < request.FrameRate * 0.8 ||
+                        repeatedInWindow > request.FrameRate ||
+                        maxEncoderWriteMilliseconds >= 100)
+                    {
+                        FlashDiagnostics.Trace(42, (long)Math.Round(uniqueFps * 1000),
+                            request.FrameRate, repeatedInWindow,
+                            maxEncoderWriteMilliseconds);
+                        DiagnosticLogger.Warning("media_output",
+                            "recording_unstable_window",
+                            ("unique_fps", Math.Round(uniqueFps, 2)),
+                            ("nominal_fps", request.FrameRate),
+                            ("repeat_slots", repeatedInWindow),
+                            ("max_pipe_write_ms", maxEncoderWriteMilliseconds));
+                    }
+                    // UI metrics are informational; a subscriber must never
+                    // be allowed to interrupt recording or FFmpeg output.
+                    if (request.Kind == MediaOutputKind.Recording)
+                    {
+                        var writtenSlotsPerSecond = (framesWritten - lastReportedSlots) /
+                            statsClock.Elapsed.TotalSeconds;
+                        try
+                        {
+                            RecordingMetricsChanged?.Invoke(new RecordingFrameMetrics(
+                                uniqueFps, writtenSlotsPerSecond, repeatedInWindow,
+                                maxEncoderWriteMilliseconds));
+                        }
+                        catch (Exception error)
+                        {
+                            DiagnosticLogger.Exception("media_output",
+                                "recording_metrics_subscriber_failed", error);
+                        }
+                    }
+                    lastReportedSlots = framesWritten;
+                    lastRepeatedVideoSlots = repeatedVideoSlots;
+                    maxEncoderWriteMilliseconds = 0;
+                    lastDistinctSourceFrames = metrics.Distinct;
+                    statsClock.Restart();
                 }
             }
         }
         finally
         {
             readerCts.Cancel();
-            try { await readerTask.ConfigureAwait(false); }
+            try
+            {
+                await readerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) { }
-            catch { /* Reader teardown failure does not affect the recording. */ }
+            catch (TimeoutException error)
+            {
+                DiagnosticLogger.Exception("media_output", "frame_reader_stop_timeout",
+                    error, ("handle", AppLog.Handle(sessionHandle)));
+            }
+            catch (Exception error)
+            {
+                DiagnosticLogger.Exception("media_output", "frame_reader_stop_error", error);
+            }
         }
     }
 
@@ -501,17 +835,111 @@ internal sealed class MediaOutputService : IAsyncDisposable
         uint height, FrameLatch latch, TimeSpan interval,
         CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(interval);
-        while (await timer.WaitForNextTickAsync(cancellationToken))
+        var loggedReadErrors = 0;
+        void ReadLatestFrame()
         {
             try
             {
                 var frame = _frameProvider(sessionHandle, width, height);
                 if (frame is not null)
-                    latch.Publish(GetNv12FramePayload(frame, width, height));
+                    latch.Publish(GetNv12FramePayload(frame, width, height),
+                        frame.Timestamp100Ns);
+                else
+                    latch.NoteFailure("Frame provider returned no NV12 data.");
             }
-            catch { /* Transient frame read failure; best-effort. */ }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Stop is cooperative; the caller owns the cancellation.
+            }
+            catch (Exception error)
+            {
+                latch.NoteFailure(error.GetType().Name + ": " + error.Message);
+                if (++loggedReadErrors <= 3)
+                    DiagnosticLogger.Exception("media_output", "nv12_frame_read_failed",
+                        error, ("handle", AppLog.Handle(sessionHandle)),
+                        ("width", width), ("height", height));
+            }
         }
+
+        if (interval < TimeSpan.FromMilliseconds(10))
+        {
+            // Windows periodic async timers can coalesce 8.33 ms deadlines
+            // into 15.6 ms waits. That causes artificial frame repetition
+            // even when a verified 120fps input is available. This branch
+            // runs only for experimental >100fps recording, on its dedicated
+            // Task.Run reader; never spin on the WPF UI or render thread.
+            var clock = Stopwatch.StartNew();
+            var deadline = interval;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var remaining = deadline - clock.Elapsed;
+                if (remaining > TimeSpan.FromMilliseconds(2))
+                {
+                    Thread.Sleep(0);
+                    continue;
+                }
+                if (remaining > TimeSpan.Zero)
+                {
+                    Thread.SpinWait(128);
+                    continue;
+                }
+                ReadLatestFrame();
+                // Skip overdue sampling deadlines rather than accumulating
+                // a backlog of stale frame copies and raising latency.
+                do { deadline += interval; }
+                while (deadline <= clock.Elapsed);
+            }
+            return;
+        }
+
+        using var timer = new PeriodicTimer(interval);
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+            ReadLatestFrame();
+    }
+
+    private Task<double> MeasureDistinctSourceFpsAsync(
+        ulong sessionHandle, uint width, uint height, CancellationToken cancellationToken)
+    {
+        // A Windows Task.Delay(4) may actually wait 15.6ms and wrongly
+        // reject a real 120fps feed. Observe on a worker using Stopwatch.
+        return Task.Run(() =>
+        {
+            var clock = Stopwatch.StartNew();
+            long firstTimestamp = 0, lastTimestamp = 0;
+            var distinct = 0;
+            var nextRead = TimeSpan.Zero;
+            while (clock.Elapsed < TimeSpan.FromMilliseconds(1200))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (clock.Elapsed < nextRead)
+                {
+                    Thread.SpinWait(256);
+                    continue;
+                }
+                var frame = _frameProvider(sessionHandle, width, height);
+                if (frame is { Timestamp100Ns: > 0 } &&
+                    frame.Timestamp100Ns > lastTimestamp)
+                {
+                    if (distinct == 0) firstTimestamp = frame.Timestamp100Ns;
+                    lastTimestamp = frame.Timestamp100Ns;
+                    ++distinct;
+                }
+                nextRead = clock.Elapsed + TimeSpan.FromMilliseconds(2.5);
+            }
+            return CalculateVerifiedSourceFps(distinct, clock.Elapsed,
+                lastTimestamp - firstTimestamp);
+        }, cancellationToken);
+    }
+
+    internal static double CalculateVerifiedSourceFps(int distinctFrames,
+        TimeSpan observedTime, long sourceTimestampSpan100Ns)
+    {
+        if (distinctFrames < 2 || observedTime <= TimeSpan.Zero ||
+            sourceTimestampSpan100Ns <= 0) return 0;
+        var sourceRate = (distinctFrames - 1) * 10_000_000.0 /
+            sourceTimestampSpan100Ns;
+        var observedRate = distinctFrames / observedTime.TotalSeconds;
+        return Math.Min(sourceRate, observedRate);
     }
 
     internal static long CalculateDueVideoFrames(TimeSpan elapsed,
@@ -536,11 +964,12 @@ internal sealed class MediaOutputService : IAsyncDisposable
         if (framesToWrite <= maximumCatchUpFrames)
             return (framesToWrite, framesWritten);
 
-        // Raw video has no timestamps. Drop the oldest backlog and advance the
-        // logical schedule so the next tick follows current wall time instead
-        // of repeatedly trying to drain an unbounded historical queue.
-        return (maximumCatchUpFrames,
-            checked(framesWritten + framesToWrite - maximumCatchUpFrames));
+        // Upstream v1.8.5-pre2: FFmpeg rawvideo timestamps come from bytes
+        // actually written, not our wall-clock baseline. Pretending skipped
+        // frames were sent silently shortens the video compared with PCM,
+        // yielding permanent audio/video drift after an encoder stall.
+        // Keep the debt but bound each individual write burst to two seconds.
+        return (maximumCatchUpFrames, framesWritten);
     }
 
     private async Task PumpAudioAsync(Process process, Stream output,
@@ -567,16 +996,26 @@ internal sealed class MediaOutputService : IAsyncDisposable
         var silenceChunkBytes = checked((int)Math.Max(blockAlign,
             bytesPerSecond / 50 / blockAlign * blockAlign));
         var silence = new byte[silenceChunkBytes];
-        var insertedSilence = firstAudio is null;
+        long silenceBytesWritten = 0;
+        var invalidPacketCount = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             if (process.HasExited)
                 throw new InvalidOperationException(string.IsNullOrWhiteSpace(_lastError)
                     ? $"FFmpeg exited with code {process.ExitCode}." : _lastError);
-            var packet = insertedSilence
-                ? ReadNewestAvailableAudioPacket(
-                    cursor => _audioProvider(sessionHandle, cursor), sequence)
-                : _audioProvider(sessionHandle, sequence);
+            // Never jump to the newest audio packet after an underrun:
+            // discarding buffered packets produces audible gaps and clicks.
+            // The provider's sequence cursor advances one packet at a time.
+            var packet = _audioProvider(sessionHandle, sequence);
+            if (packet is not null && packet.Sequence <= sequence)
+            {
+                // Treat a stale packet as temporary silence so that audio
+                // timestamps still advance instead of spinning indefinitely.
+                if (++invalidPacketCount <= 3)
+                    DiagnosticLogger.Warning("media_output", "audio_stale_sequence",
+                        ("received", packet.Sequence), ("last", sequence));
+                packet = null;
+            }
             if (packet is null)
             {
                 if (firstAudio is null || lastRealPacket.Elapsed >= AudioSilenceGrace)
@@ -592,26 +1031,73 @@ internal sealed class MediaOutputService : IAsyncDisposable
                         await output.WriteAsync(
                             silence.AsMemory(0, bytesToWrite), cancellationToken);
                         emittedBytes = checked(emittedBytes + bytesToWrite);
-                        insertedSilence = true;
+                        silenceBytesWritten += bytesToWrite;
+                        if (silenceBytesWritten >= bytesPerSecond)
+                        {
+                            DiagnosticLogger.Warning("media_output",
+                                "audio_silence_inserted",
+                                ("bytes", silenceBytesWritten),
+                                ("sample_rate", outputSampleRate),
+                                ("channels", outputChannels));
+                            silenceBytesWritten = 0;
+                        }
                         continue;
                     }
                 }
                 await Task.Delay(5, cancellationToken);
                 continue;
             }
-            if (packet.Sequence <= sequence)
-                throw new InvalidDataException(
-                    "The projection audio sequence did not advance.");
-            var normalized = normalizer.Convert(packet);
+            byte[] normalized;
+            try
+            {
+                normalized = normalizer.Convert(packet);
+            }
+            catch (InvalidDataException error)
+            {
+                // Keep a bounded PCM gap available for silence compensation;
+                // malformed packets must not kill the video encoder session.
+                sequence = packet.Sequence;
+                if (++invalidPacketCount <= 3)
+                    DiagnosticLogger.Warning("media_output", "audio_invalid_pcm",
+                        ("sequence", packet.Sequence), ("reason", error.Message));
+                continue;
+            }
             if (normalized.Length != 0)
             {
+                var afterWrite = checked(emittedBytes + normalized.Length);
+                // Buffered iPhone PCM may arrive in a burst after recovery.
+                // Do not feed minutes of audio into FFmpeg in a few seconds:
+                // pace the PCM by wall clock with at most 125ms audio lead.
+                while (true)
+                {
+                    var pacing = CalculateAudioPacingDelay(afterWrite,
+                        initialBytes, bytesPerSecond, audioClock.Elapsed);
+                    if (pacing <= TimeSpan.FromMilliseconds(1)) break;
+                    await Task.Delay(TimeSpan.FromMilliseconds(
+                        Math.Min(25.0, pacing.TotalMilliseconds)), cancellationToken);
+                }
                 await output.WriteAsync(normalized, cancellationToken);
-                emittedBytes = checked(emittedBytes + normalized.Length);
+                emittedBytes = afterWrite;
             }
             sequence = packet.Sequence;
             lastRealPacket.Restart();
-            insertedSilence = false;
-        }
+         }
+    }
+
+    internal static TimeSpan CalculateAudioPacingDelay(
+        long projectedBytes, long initialBytes, long bytesPerSecond,
+        TimeSpan elapsed)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(projectedBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(initialBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytesPerSecond);
+        var allowed = initialBytes +
+            Math.Max(0, elapsed.TotalSeconds) * bytesPerSecond +
+            bytesPerSecond * 0.125;
+        var aheadBytes = projectedBytes - allowed;
+        return aheadBytes > 0
+            ? TimeSpan.FromSeconds(aheadBytes / bytesPerSecond)
+            : TimeSpan.Zero;
     }
 
     internal sealed class Pcm16AudioNormalizer
@@ -726,11 +1212,24 @@ internal sealed class MediaOutputService : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var elapsed = Stopwatch.StartNew();
+        var rejected = 0;
         while (elapsed.Elapsed < TimeSpan.FromMilliseconds(250))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var packet = ReadNewestAvailableAudioPacket(
-                cursor => _audioProvider(sessionHandle, cursor), 0);
+            AudioPacket? packet;
+            try
+            {
+                packet = ReadNewestAvailableAudioPacket(
+                    cursor => _audioProvider(sessionHandle, cursor), 0);
+            }
+            catch (InvalidDataException error)
+            {
+                if (++rejected <= 2)
+                    DiagnosticLogger.Warning("media_output",
+                        "startup_audio_stale_packet", ("error", error.Message));
+                await Task.Delay(20, cancellationToken);
+                continue;
+            }
             if (packet is { SampleRate: >= 8000 and <= 192000,
                     Channels: >= 1 and <= 8, BitsPerSample: 16 } &&
                 packet.Pcm.Length != 0 &&
@@ -791,7 +1290,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
         MediaOutputCapabilities capabilities,
         string? audioPipePath = @"\\.\pipe\iphoneMirror-audio-test",
         uint audioSampleRate = 48000, ushort audioChannels = 2,
-        bool includeAudio = true)
+        bool includeAudio = true,
+        PhoneShellComposition? composition = null)
     {
         var args = new List<string>
         {
@@ -816,7 +1316,81 @@ internal sealed class MediaOutputService : IAsyncDisposable
             "-color_primaries", "bt709", "-color_trc", "bt709",
             "-i", "pipe:0",
         ]);
-        if (includeAudio)
+        if (composition is not null)
+        {
+            // File paths are ProcessStartInfo.ArgumentList elements, never
+            // interpolated into a filter expression or passed through a shell.
+            if (!request.TransparentPhoneShellRecording &&
+                composition.BackgroundFile is { Length: > 0 } background)
+                args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
+                    "-i", background]);
+            else if (request.TransparentPhoneShellRecording)
+                args.AddRange(["-f", "lavfi", "-i",
+                    $"color=c=black:s={composition.OutputWidth}x{composition.OutputHeight}:r={request.FrameRate}," +
+                    "format=rgba,colorchannelmixer=aa=0"]);
+            else
+                args.AddRange(["-f", "lavfi", "-i",
+                    $"color=c=white:s={composition.OutputWidth}x{composition.OutputHeight}:r={request.FrameRate}"]);
+            if (request.IncludePhoneShell)
+            {
+                if (string.IsNullOrEmpty(composition.ApertureMaskFile))
+                    throw new InvalidOperationException(
+                        "Recording shell must provide its original alpha-aperture matte.");
+                args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
+                    "-i", composition.ShellFile]);
+                args.AddRange(["-loop", "1", "-framerate", request.FrameRate.ToString(),
+                    "-i", composition.ApertureMaskFile]);
+            }
+            var videoIndex = includeAudio ? 1 : 0;
+            var bgIndex = videoIndex + 1;
+            var shellIndex = videoIndex + 2;
+            var maskIndex = videoIndex + 3;
+            args.AddRange(["-filter_complex",
+                // Resize the backdrop to the chosen output dimensions, independently
+                // from the native source frame. Crop only the background overflow.
+                (request.TransparentPhoneShellRecording
+                    ? $"[{bgIndex}:v]format=rgba[phone_bg];"
+                    : $"[{bgIndex}:v]scale={composition.OutputWidth}:{composition.OutputHeight}:" +
+                      "force_original_aspect_ratio=increase," +
+                      $"crop={composition.OutputWidth}:{composition.OutputHeight},setsar=1[phone_bg];") +
+                // Cover the entire shell viewport. 'decrease' + black pad
+                // exposed the background through the top/bottom of the bezel.
+                // Crop ONLY the phone video; the background stays untouched.
+                $"[{videoIndex}:v]" +
+                PhoneShellMediaComposer.VideoRotationFilter(composition.VideoRotationDegrees) +
+                $"scale={composition.ScreenWidth}:{composition.ScreenHeight}:" +
+                "force_original_aspect_ratio=increase," +
+                $"crop={composition.ScreenWidth}:{composition.ScreenHeight}:" +
+                "(iw-ow)/2:(ih-oh)/2,setsar=1" +
+                (request.IncludePhoneShell
+                    // The outside of the PNG is transparent just like the
+                    // middle. Merge the CENTRAL connected-hole mask into the
+                    // video before overlay, or corner pixels leak outside.
+                    ? "[phone_video_unmasked];" +
+                      $"[{maskIndex}:v]format=gray[phone_mask];" +
+                      "[phone_video_unmasked]format=rgba[phone_video_rgba];" +
+                      // alphamerge defaults to repeating an infinite-loop matte even AFTER
+                      // stdin video reaches EOF. That keeps the composited
+                      // MP4 video output alive forever during finalization.
+                      // The finite AirPlay video must own this filter's life.
+                      "[phone_video_rgba][phone_mask]alphamerge=shortest=1:repeatlast=0[phone_video];"
+                    : "[phone_video];") +
+                // A user may deliberately move the shell partially outside the
+                // background. Crop the moving screen via overlay, never crop
+                // the background canvas or stretch it to the phone dimensions.
+                $"[phone_bg][phone_video]overlay={composition.ScreenX}:{composition.ScreenY}:" +
+                "shortest=1:eof_action=endall:format=auto[phone_screen];" +
+                (request.IncludePhoneShell
+                    ? $"[phone_screen][{shellIndex}:v]overlay=0:0:shortest=1:format=auto," +
+                      (request.TransparentPhoneShellRecording
+                          ? "format=yuva444p10le[composited]"
+                          : "format=nv12[composited]")
+                    : "[phone_screen]format=nv12[composited]")]);
+            args.AddRange(["-map", "[composited]"]);
+            if (includeAudio) args.AddRange(["-map", "0:a:0"]);
+            else args.Add("-an");
+        }
+        else if (includeAudio)
         {
             // FFmpeg opens inputs sequentially. Opening the named audio pipe
             // first lets StartAsync complete its handshake before video data
@@ -827,16 +1401,26 @@ internal sealed class MediaOutputService : IAsyncDisposable
         {
             args.AddRange(["-map", "0:v:0", "-an"]);
         }
-        args.AddRange(["-c:v", capabilities.PreferredH264Encoder]);
-        AddEncoderOptions(args, capabilities.PreferredH264Encoder, request.Kind);
-        args.AddRange([
-            "-color_range", "pc", "-colorspace", "bt709",
-            "-color_primaries", "bt709", "-color_trc", "bt709",
-            "-pix_fmt", EncoderPixelFormat(capabilities.PreferredH264Encoder),
-            "-g", (request.FrameRate * 2).ToString(),
-            "-b:v", $"{request.BitrateKbps}k", "-maxrate", $"{request.BitrateKbps}k",
-            "-bufsize", $"{request.BitrateKbps * 2}k",
-        ]);
+        if (request.TransparentPhoneShellRecording)
+        {
+            // Keep alpha throughout the MOV recording; NV12 would discard it.
+            args.AddRange(["-c:v", "prores_ks", "-profile:v", "4444",
+                "-pix_fmt", "yuva444p10le", "-alpha_bits", "16",
+                "-qscale:v", request.TransparentMovQuality.ToString()]);
+        }
+        else
+        {
+            args.AddRange(["-c:v", capabilities.PreferredH264Encoder]);
+            AddEncoderOptions(args, capabilities.PreferredH264Encoder, request.Kind);
+            args.AddRange([
+                "-color_range", "pc", "-colorspace", "bt709",
+                "-color_primaries", "bt709", "-color_trc", "bt709",
+                "-pix_fmt", EncoderPixelFormat(capabilities.PreferredH264Encoder),
+                "-g", (request.FrameRate * 2).ToString(),
+                "-b:v", $"{request.BitrateKbps}k", "-maxrate", $"{request.BitrateKbps}k",
+                "-bufsize", $"{request.BitrateKbps * 2}k",
+            ]);
+        }
         if (includeAudio)
             args.AddRange(request.Kind == MediaOutputKind.Whip
                 ? ["-c:a", "libopus", "-ac", "2", "-b:a", "128k"]
@@ -844,7 +1428,10 @@ internal sealed class MediaOutputService : IAsyncDisposable
         switch (request.Kind)
         {
             case MediaOutputKind.Recording:
-                args.AddRange(["-movflags", "+faststart", "-y", request.Destination]);
+                if (request.TransparentPhoneShellRecording)
+                    args.AddRange(["-f", "mov", "-y", request.Destination]);
+                else
+                    args.AddRange(["-movflags", "+faststart", "-y", request.Destination]);
                 break;
             case MediaOutputKind.Rtmp:
                 args.AddRange(["-f", "flv", request.Destination]);
@@ -898,12 +1485,13 @@ internal sealed class MediaOutputService : IAsyncDisposable
             $"{Path.GetFileName(path)} / {preferredEncoder}")
         {
             H264EncoderCandidates = encoderCandidates,
+            HasProRes4444Encoder = HasToken(encoders, "prores_ks"),
         };
     }
 
     private static async Task<MediaOutputCapabilities> ResolveWorkingEncoderAsync(
         MediaOutputCapabilities capabilities, uint width, uint height,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, int frameRate = 30)
     {
         var candidates = capabilities.H264EncoderCandidates.Count == 0
             ? [capabilities.PreferredH264Encoder]
@@ -916,11 +1504,11 @@ internal sealed class MediaOutputService : IAsyncDisposable
         foreach (var encoder in ordered)
         {
             var usable = await CanEncodeNv12FrameAsync(capabilities.FfmpegPath,
-                encoder, width, height, cancellationToken);
+                encoder, width, height, cancellationToken, frameRate);
             DiagnosticLogger.Info("media_output", "encoder_probe",
                 ("file", Path.GetFileName(capabilities.FfmpegPath)),
                 ("encoder", encoder), ("width", width), ("height", height),
-                ("usable", usable));
+                ("fps", frameRate), ("usable", usable));
             if (usable)
             {
                 return capabilities with
@@ -940,7 +1528,8 @@ internal sealed class MediaOutputService : IAsyncDisposable
     }
 
     private static async Task<bool> CanEncodeNv12FrameAsync(string path,
-        string encoder, uint width, uint height, CancellationToken cancellationToken)
+        string encoder, uint width, uint height, CancellationToken cancellationToken,
+        int frameRate)
     {
         if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(encoder) ||
             width == 0 || height == 0 || (width & 1U) != 0 || (height & 1U) != 0)
@@ -958,7 +1547,7 @@ internal sealed class MediaOutputService : IAsyncDisposable
         {
             "-hide_banner", "-loglevel", "error", "-nostdin",
             "-f", "rawvideo", "-pixel_format", "nv12",
-            "-video_size", $"{width}x{height}", "-framerate", "30",
+            "-video_size", $"{width}x{height}", "-framerate", frameRate.ToString(),
             "-color_range", "pc", "-colorspace", "bt709",
             "-color_primaries", "bt709", "-color_trc", "bt709",
             "-i", "pipe:0", "-frames:v", "1", "-an", "-c:v", encoder,
@@ -1044,10 +1633,23 @@ internal sealed class MediaOutputService : IAsyncDisposable
             throw new InvalidOperationException("A compatible FFmpeg H.264 encoder is unavailable.");
         if (!capabilities.Supports(request.Kind))
             throw new InvalidOperationException("The requested FFmpeg output protocol is unavailable.");
-        if (request.Width is < 160 or > 3840 || request.Height is < 160 or > 2160 ||
+        if (request.TransparentPhoneShellRecording &&
+            (request.Kind != MediaOutputKind.Recording || !request.IncludePhoneShell ||
+             !capabilities.HasProRes4444Encoder ||
+             !string.Equals(Path.GetExtension(request.Destination), ".mov", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException(
+                "透明带壳录制只能输出 MOV，必须启用手机壳且 FFmpeg 支持 prores_ks (4444)。");
+        if (request.TransparentPhoneShellRecording &&
+            request.TransparentMovQuality is not (9 or 18 or 25))
+            throw new ArgumentOutOfRangeException(nameof(request),
+                "Transparent MOV quality must be 9, 18 or 25.");
+        if (request.Width is < 160 or > 4096 || request.Height is < 160 or > 4096 ||
             (request.Width & 1) != 0 || (request.Height & 1) != 0)
-            throw new ArgumentOutOfRangeException(nameof(request), "Output dimensions must be even and at most 3840x2160.");
-        if (request.FrameRate is < 10 or > 60 || request.BitrateKbps is < 500 or > 50000)
+            throw new ArgumentOutOfRangeException(nameof(request),
+                "Output width and height must be even and between 160 and 4096.");
+        var maxFps = request.Kind == MediaOutputKind.Recording ? 120 : 60;
+        if (request.FrameRate < 10 || request.FrameRate > maxFps ||
+            request.BitrateKbps is < 500 or > 150000)
             throw new ArgumentOutOfRangeException(nameof(request));
         if (string.IsNullOrWhiteSpace(request.Destination))
             throw new ArgumentException("An output destination is required.", nameof(request));
@@ -1289,14 +1891,64 @@ internal sealed class MediaOutputService : IAsyncDisposable
     internal sealed class FrameLatch
     {
         private ReadOnlyMemory<byte> _frame;
-
-        internal void Publish(ReadOnlyMemory<byte> frame)
+        private string? _lastFailure;
+        private long _lastSourceTimestamp;
+        private long _readSamples;
+        private long _distinctSourceFrames;
+        internal string? LastFailure { get { lock (this) return _lastFailure; } }
+        internal (long Reads, long Distinct, long LastTimestamp100Ns) SourceMetrics
         {
-            // Native readback reuses its array. The writer may still be awaiting
-            // a pipe write when the next frame arrives, so publish an owned,
-            // immutable snapshot rather than a view of the producer's buffer.
+            get
+            {
+                lock (this)
+                    return (_readSamples, _distinctSourceFrames, _lastSourceTimestamp);
+            }
+        }
+
+        internal void NoteFailure(string reason)
+        {
+            lock (this) { _lastFailure = reason; }
+        }
+
+        internal void Publish(ReadOnlyMemory<byte> frame, long sourceTimestamp100Ns = 0)
+        {
+            // Video frames can be suppressed by iOS when the screen is still:
+            // native readback often returns the exact SAME timestamp at 60Hz.
+            // A redundant 1080p NV12 ToArray allocates ~3MB on the LOH.
+            // Avoid the extra allocation and GC pressure without inventing
+            // a new source frame. One reader publishes into this latch.
+            if (sourceTimestamp100Ns > 0)
+            {
+                lock (this)
+                {
+                    if (!_frame.IsEmpty && sourceTimestamp100Ns == _lastSourceTimestamp)
+                    {
+                        ++_readSamples;
+                        _lastFailure = null;
+                        return;
+                    }
+                }
+            }
+            // A new frame gets an OWNED immutable copy: the native provider
+            // reuses its buffer, while FFmpeg may still be awaiting a pipe
+            // write that references the previous frame.
             var snapshot = frame.ToArray();
-            lock (this) { _frame = snapshot; }
+            lock (this)
+            {
+                _frame = snapshot;
+                _lastFailure = null;
+                ++_readSamples;
+                if (sourceTimestamp100Ns > _lastSourceTimestamp)
+                {
+                    _lastSourceTimestamp = sourceTimestamp100Ns;
+                    ++_distinctSourceFrames;
+                }
+            }
+        }
+
+        internal (ReadOnlyMemory<byte> Frame, long Timestamp100Ns) GetSnapshot()
+        {
+            lock (this) return (_frame, _lastSourceTimestamp);
         }
 
         internal ReadOnlyMemory<byte> Get()
